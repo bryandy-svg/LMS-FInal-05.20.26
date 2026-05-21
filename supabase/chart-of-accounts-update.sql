@@ -1,0 +1,56 @@
+alter table chart_of_accounts add column if not exists account_code text;
+alter table chart_of_accounts add column if not exists report_group text;
+
+delete from chart_of_accounts;
+
+insert into chart_of_accounts (account_code, account, report_group, type, normal_balance, notes)
+values
+('10000001','FHB Checking','Balance Sheet','Asset','Debit',null),
+('10040001','Credit Card Receivable','Balance Sheet','Asset','Debit',null),
+('10400001','Accounts Receivable (A/R)','Balance Sheet','Asset','Debit',null),
+('12000000','Heavy Equipment Asset','Balance Sheet','Asset','Debit',null),
+('12050001','Acc Dep','Balance Sheet','Asset','Credit',null),
+('12060001','Other Fixed Asset','Balance Sheet','Asset','Debit',null),
+('12061001','Furniture & Fixture','Balance Sheet','Asset','Debit',null),
+('12100001','Parts Inventory','Balance Sheet','Asset','Debit',null),
+('13000001','Intercompany - LMS Main','Balance Sheet','Asset','Debit',null),
+('13010001','Intercompany - PFM','Balance Sheet','Asset','Debit',null),
+('13020001','Intercompany - GWM','Balance Sheet','Asset','Debit',null),
+('13026000','Intercompany - Salas Holdings','Balance Sheet','Asset','Debit',null),
+('13027001','Intercompany - Proferre','Balance Sheet','Asset','Debit',null),
+('13028001','Intercompany - The Pit','Balance Sheet','Asset','Debit',null),
+('20000001','Accounts Payable (A/P)','Balance Sheet','Liability','Credit',null),
+('20020001','Credit Card Payable - LMS Impo','Balance Sheet','Liability','Credit',null),
+('20040001','Customer Deposit','Balance Sheet','Liability','Credit',null),
+('22000001','Commission','Balance Sheet','Liability','Credit',null),
+('23000001','Parts Accrual','Balance Sheet','Liability','Credit',null),
+('23050001','Parts in Transit','Balance Sheet','Liability','Credit',null),
+('29000001','Retained Earnings','Balance Sheet','Equity','Credit',null),
+('32000301','Parts Sales','Income Statement','Revenue','Credit',null),
+('32031301','Other Sales','Income Statement','Revenue','Credit',null),
+('34010401','LMS Service - Sales','Income Statement','Revenue','Credit',null),
+('34050401','DELIVERY CHARGE','Income Statement','Revenue','Credit',null),
+('34070401','DIAGNOSTIC FEE','Income Statement','Revenue','Credit',null),
+('34080401','DIAGNOSTIC FEE NAVAL BASE GUAM','Income Statement','Revenue','Credit',null),
+('35000501','Sales - Equipment Rental','Income Statement','Revenue','Credit',null),
+('41022201','COGS - Parts','Income Statement','Expense','Debit',null),
+('44010401','COGS - LMS Service','Income Statement','Expense','Debit',null),
+('49100301','QUOTE GAIN/LOSS','Income Statement','Revenue','Credit',null),
+('5000101','Depreciation Expense','Income Statement','Expense','Debit',null),
+('50010301','Dues & subscription','Income Statement','Expense','Debit',null),
+('51000401','Job Supplies','Income Statement','Expense','Debit',null),
+('51080401','Indirect Labor','Income Statement','Expense','Debit',null),
+('90000001','Miscellaneous Expense','Income Statement','Expense','Debit',null),
+('51150501','Repairs & Maintenance','Income Statement','Expense','Debit',null),
+('51200401','Training Expense','Income Statement','Expense','Debit',null),
+('53010301','Freight','Income Statement','Expense','Debit',null),
+('55000301','Communications','Income Statement','Expense','Debit',null),
+('57000301','Bank Charges and Fees','Income Statement','Expense','Debit',null),
+('60000301','Misc Income','Income Statement','Revenue','Credit',null),
+('80000301','Inventory Loss - Obsolete Part','Income Statement','Expense','Debit',null)
+on conflict (account) do update set
+  account_code = excluded.account_code,
+  report_group = excluded.report_group,
+  type = excluded.type,
+  normal_balance = excluded.normal_balance,
+  notes = excluded.notes;
