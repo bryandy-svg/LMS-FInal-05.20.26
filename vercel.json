@@ -1,0 +1,9 @@
+﻿{
+  "rewrites": [
+    { "source": "/scan/:path*", "destination": "/index.html" },
+    { "source": "/mobile/:path*", "destination": "/index.html" },
+    { "source": "/asset/:path*", "destination": "/index.html" },
+    { "source": "/equipment/:path*", "destination": "/index.html" },
+    { "source": "/repair/:path*", "destination": "/index.html" }
+  ]
+}
