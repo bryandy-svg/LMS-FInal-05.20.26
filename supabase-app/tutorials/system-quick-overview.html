@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LMS Imports - Quick System Overview</title>
+  <style>
+    :root { --ink:#17212b; --muted:#5c6b7c; --line:#d7e0e8; --panel:#fff; --bg:#f3f6f8; --brand:#0f6864; --soft:#e9f2f1; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Arial, Helvetica, sans-serif; background:var(--bg); color:var(--ink); }
+    .shell { display:grid; grid-template-columns:230px 1fr; min-height:100vh; }
+    aside { background:#f8fafb; border-right:1px solid var(--line); padding:18px 14px; }
+    .brand { font-weight:900; font-size:20px; color:#0b4c54; }
+    .tag { color:var(--muted); font-size:12px; margin:4px 0 18px; }
+    .chapter { width:100%; text-align:left; margin:4px 0; padding:10px 12px; border:1px solid transparent; background:transparent; border-radius:7px; color:#253342; cursor:pointer; font-weight:700; }
+    .chapter.active { background:var(--soft); border-color:#b9d6d3; color:#074e52; }
+    main { padding:22px; overflow:hidden; }
+    .top { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+    h1 { margin:0; font-size:26px; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; }
+    button { border:1px solid var(--line); background:#fff; border-radius:7px; padding:9px 13px; font-weight:800; color:#203040; cursor:pointer; }
+    button.primary { background:var(--brand); color:#fff; border-color:var(--brand); }
+    .video { position:relative; min-height:620px; background:linear-gradient(180deg, #f7fafb, #edf2f5); border:1px solid var(--line); border-radius:10px; overflow:hidden; box-shadow:0 20px 45px rgba(30,45,58,.08); }
+    .screen { padding:22px; transition:opacity .25s; }
+    .module-title { display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); padding-bottom:16px; margin-bottom:18px; }
+    .module-title strong { font-size:24px; }
+    .sub { color:var(--muted); font-size:13px; margin-top:5px; }
+    .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-bottom:16px; }
+    .card, .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .card { padding:16px; min-height:94px; }
+    .label { color:var(--muted); text-transform:uppercase; font-size:12px; font-weight:900; }
+    .value { font-size:28px; font-weight:900; margin:8px 0 4px; }
+    .panel { margin-top:14px; overflow:hidden; }
+    .panel-head { display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); }
+    .search { width:58%; padding:11px 12px; border:1px solid var(--line); border-radius:7px; background:#fff; color:#607080; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { border-bottom:1px solid var(--line); padding:12px; text-align:left; vertical-align:top; }
+    th { background:#eaf0f4; color:#253342; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .badge { display:inline-block; background:#edf2f5; padding:5px 9px; border-radius:999px; font-size:12px; font-weight:900; }
+    .badge.ok { background:#d9f3e3; color:#0a6b38; }
+    .badge.warn { background:#fff0c9; color:#855900; }
+    .quick-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
+    .quick-card { padding:16px; min-height:96px; }
+    .cursor { position:absolute; width:28px; height:28px; left:var(--x); top:var(--y); transition:left .45s ease, top .45s ease; filter:drop-shadow(0 8px 10px rgba(0,0,0,.25)); z-index:4; }
+    .cursor:before { content:""; display:block; width:0; height:0; border-top:24px solid #17212b; border-right:14px solid transparent; transform:rotate(-20deg); }
+    .subtitle { position:absolute; left:24px; right:24px; bottom:22px; background:rgba(15,24,33,.92); color:#fff; border-radius:10px; padding:16px 18px; font-size:20px; line-height:1.4; box-shadow:0 16px 32px rgba(0,0,0,.18); }
+    .subtitle small { display:block; color:#b8c8d7; font-size:12px; margin-bottom:4px; text-transform:uppercase; font-weight:900; letter-spacing:.06em; }
+    .progress { height:8px; background:#d9e2e8; border-radius:999px; overflow:hidden; margin-top:12px; }
+    .bar { height:100%; width:0; background:var(--brand); transition:width .2s; }
+    @media (max-width:900px) { .shell { grid-template-columns:1fr; } aside { display:none; } .stats, .quick-grid { grid-template-columns:1fr; } .video { min-height:720px; } .search { width:100%; } .module-title { align-items:flex-start; flex-direction:column; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">LMS Imports</div>
+      <div class="tag">Quick overview training</div>
+      <div id="chapters"></div>
+    </aside>
+    <main>
+      <div class="top">
+        <div><h1>Quick System Overview</h1><div class="sub">Subtitle-guided walkthrough of the actual workflow.</div></div>
+        <div class="controls">
+          <button id="prev">Previous</button>
+          <button class="primary" id="play">Play</button>
+          <button id="next">Next</button>
+        </div>
+      </div>
+      <div class="video" id="video">
+        <div class="screen" id="screen"></div>
+        <div class="cursor" id="cursor"></div>
+        <div class="subtitle"><small id="stepCount"></small><span id="caption"></span><div class="progress"><div class="bar" id="bar"></div></div></div>
+      </div>
+    </main>
+  </div>
+  <script>
+    const steps = [
+      { title:"Dashboard", x:"73%", y:"12%", caption:"Start on the dashboard. It summarizes inventory value, open sales, payables, fleet repair status, rentals, bank position, and action items.", html:dashboard() },
+      { title:"Products", x:"11%", y:"48%", caption:"Products is the SKU master. Stock is controlled by documents, while the master holds photos, units, bins, reorder points, alternate SKUs, and pricing rules.", html:products() },
+      { title:"Purchasing", x:"90%", y:"22%", caption:"Purchasing starts with a PO. From there, goods receipt, vendor invoice matching, AP posting, and check run keep accounting connected.", html:purchasing() },
+      { title:"Sales", x:"90%", y:"43%", caption:"Sales orders accept customer POs, reserve available stock, show parts to order for shortages, then create invoices when ready.", html:sales() },
+      { title:"Fleet", x:"20%", y:"66%", caption:"Fleet tracks every vehicle and equipment record, QR code, old QR code, parent-child relationship, location, photos, scan date, and repair status.", html:fleet() },
+      { title:"Repairs", x:"88%", y:"62%", caption:"Repairs manage work orders, issues, reserved parts, mechanic time, ready-to-close review, and work order invoices.", html:repairs() },
+      { title:"Accounting", x:"78%", y:"32%", caption:"Accounting receives the posted results: AR, AP, GL, check run, bank reconciliation, aging, and financial reports.", html:accounting() },
+    ];
+    let index = 0;
+    let timer = null;
+    const $ = (id) => document.getElementById(id);
+    function money(n) { return new Intl.NumberFormat("en-US", { style:"currency", currency:"USD" }).format(n); }
+    function badge(text, cls = "") { return `<span class="badge ${cls}">${text}</span>`; }
+    function card(label, value, sub) { return `<div class="card"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`; }
+    function table(heads, rows) { return `<table><thead><tr>${heads.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`; }
+    function header(title, sub, action = "Refresh") { return `<div class="module-title"><div><strong>${title}</strong><div class="sub">${sub}</div></div><div class="controls"><button>Excel</button><button>PDF / Print</button><button class="primary">${action}</button></div></div>`; }
+    function dashboard() { return `${header("Dashboard", "A clear view of stock, value, alerts, and movement.", "Load sample data")}<div class="stats">${card("Inventory Value", money(4895.87), "467 units on hand, 1 low stock")}${card("Open Sales / AR", "2", "$1,164.88 receivable pipeline")}${card("AP To Control", "8", "$3,393.45 payable exposure")}${card("Fleet & Repairs", "9", "1 open WO, 3 need repair")}</div><div class="panel"><div class="panel-head"><strong>Quick Access</strong></div><div class="quick-grid" style="padding:14px">${["Inventory","Purchasing","Sales","Fleet","Repairs","Accounting"].map(t => `<div class="card quick-card"><strong>${t}</strong><div class="sub">Open ${t.toLowerCase()} workflow</div></div>`).join("")}</div></div>`; }
+    function products() { return `${header("Products", "Manage SKUs, pricing, locations, reorder points, and batches.", "Add product")}<input class="search" value="Search SKU, name, supplier, location"><div class="panel"><div class="panel-head"><strong>Product Master</strong><span class="sub">Master data only; stock changes post from documents.</span></div>${table(["Photo","SKU","Product","Unit","Warehouse","Qty","Cost","Price","Status"], [["No photo","SKU-1001","All-Purpose Cleaner","Each","Main","96","$3.25","$7.99",badge("In stock","ok")],["No photo","SKU-1010","Bearing 6205-2RS","Each","Back Room","24","$5.25","$12.75",badge("In stock","ok")]])}</div>`; }
+    function purchasing() { return `${header("Purchasing", "Issue POs, receive goods, match invoices, and release payments.", "New PO")}<input class="search" value="Search purchase orders by PO, vendor, invoice, product"><div class="panel"><div class="panel-head"><strong>Purchase Orders</strong></div>${table(["PO","Date","Vendor","Terms","Total","Received","Invoice","Match","Payment","Status"], [["PO-7001","2026-05-16","Blue Ocean Fuel","30 days","$696.00","$288.00","BOF-5101",badge("Mismatch","warn"),badge("Not Ready"),badge("Partially Received","warn")],["PO-7005","2026-05-15","Pacific Tire Center","45 days","$992.00","$992.00","PT-9007",badge("Matched","ok"),badge("Ready to Pay","ok"),badge("Matched","ok")]])}</div>`; }
+    function sales() { return `${header("Sales Orders", "Track customer demand and committed inventory.", "New order")}<input class="search" value="Search sales orders by order, customer, PO, product, status"><div class="panel"><div class="panel-head"><strong>Sales Orders</strong></div>${table(["Order","Date","Customer","Customer PO","Payment","Lines","Status","Invoice"], [["SO-1001","2026-05-15","Luna Market","LM-PO-5542","PO","1",badge("Fulfilled","ok"),"P10001"],["SO-1004","2026-04-28","Island Schools","ISD-7781","PO","2",badge("Reserved","warn"),""]])}</div>`; }
+    function fleet() { return `${header("Fleet & Equipment", "Track vehicles, heavy equipment, readings, ownership, and assignments.", "Add asset")}<input class="search" value="Search fleet and equipment by tag, name, make, model, serial, plate, location"><div class="panel"><div class="panel-head"><strong>Vehicles & Heavy Equipment</strong></div>${table(["New QR","Asset #","Description","Type","Location","Scanned Date","Status"], [["QR","LMS-AS01","Walk-behind asphalt spreader","Equipment","Warehouse","2026-05-25",badge("Operational","ok")],["QR","3010","Silent type generator","Generator","Job Site","2026-05-24",badge("For Repair","warn")]])}</div>`; }
+    function repairs() { return `${header("Repairs", "Log service work, breakdowns, repair cost, vendors, and next due dates.", "New work order")}<div class="panel"><div class="panel-head"><strong>Repair & Service History</strong></div>${table(["WO #","Date","Asset","Priority","Mechanic","Parts","Labor","Status","Invoice"], [["WO-1004","2026-05-16","3010","Medium","Ari","1 reserved","0.00 hr",badge("Waiting Parts","warn"),""],["WO-1002","2026-05-04","EQ-14","Low","Jae","0","0.75 hr",badge("Closed"),"WO-10002"]])}</div>`; }
+    function accounting() { return `${header("Accounting", "AP, AR, GL, bank reconciliation, reports, and controls.", "Open accounting")}<div class="stats">${card("Accounts Receivable","2","Open invoices")}${card("Accounts Payable","8","Vendor invoices")}${card("Bank Recon","4","Unmatched transactions")}${card("GL Accounts","21","Active chart")}</div><div class="panel"><div class="panel-head"><strong>General Ledger</strong></div>${table(["Posting Date","Account","Customer","Vendor","Reference","Debit","Credit"], [["2026-05-16","Accounts Receivable","Luna Market","","P10001","$191.76",""],["2026-05-16","Parts Sales","Luna Market","","P10001","","$191.76"]])}</div>`; }
+    function render() {
+      const step = steps[index];
+      $("screen").innerHTML = step.html;
+      $("caption").textContent = step.caption;
+      $("stepCount").textContent = `${index + 1} of ${steps.length} - ${step.title}`;
+      $("cursor").style.setProperty("--x", step.x);
+      $("cursor").style.setProperty("--y", step.y);
+      $("bar").style.width = `${((index + 1) / steps.length) * 100}%`;
+      document.querySelectorAll(".chapter").forEach((button, i) => button.classList.toggle("active", i === index));
+    }
+    function buildChapters() {
+      $("chapters").innerHTML = steps.map((step, i) => `<button class="chapter" data-step="${i}">${i + 1}. ${step.title}</button>`).join("");
+      document.querySelectorAll(".chapter").forEach((button) => button.onclick = () => { index = Number(button.dataset.step); render(); });
+    }
+    function next() { index = (index + 1) % steps.length; render(); }
+    $("next").onclick = next;
+    $("prev").onclick = () => { index = (index - 1 + steps.length) % steps.length; render(); };
+    $("play").onclick = () => {
+      if (timer) { clearInterval(timer); timer = null; $("play").textContent = "Play"; return; }
+      $("play").textContent = "Pause";
+      timer = setInterval(next, 6500);
+    };
+    buildChapters();
+    render();
+  </script>
+</body>
+</html>
