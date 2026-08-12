@@ -481,7 +481,7 @@ let activeSuggestInput = null;
 let activeSuggestMenu = null;
 
 function isSuggestPicker(el) {
-  return !!el?.matches?.("input.suggest-input[list], input.column-filter");
+  return !!el?.matches?.("input.suggest-input[list], input.suggest-input[data-suggest-source], input.column-filter");
 }
 
 function datalistOptions(input) {
@@ -502,6 +502,8 @@ function columnFilterOptions(input) {
 
 function suggestOptions(input) {
   if (isProductSuggestInput(input)) return productSuggestOptions(input);
+  if (isWorkOrderSuggestInput(input)) return workOrderSuggestOptions(input);
+  if (isPurchaseJobsiteSuggestInput(input)) return purchaseJobsiteSuggestOptions(input);
   const values = input?.classList?.contains("column-filter") ? columnFilterOptions(input) : datalistOptions(input);
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
@@ -509,6 +511,20 @@ function suggestOptions(input) {
 function isProductSuggestInput(input) {
   return input?.dataset?.suggestSource === "products"
     || ["poProductOptions", "blanketReceiptProductOptions", "workOrderAdminProductOptions", "partRequestSkuOptions"].includes(input?.getAttribute?.("list"));
+}
+
+function isWorkOrderSuggestInput(input) {
+  return ["work_orders", "open_work_orders"].includes(input?.dataset?.suggestSource);
+}
+
+function isPurchaseJobsiteSuggestInput(input) {
+  return input?.dataset?.suggestSource === "purchase_jobsites";
+}
+
+function workOrderSuggestRows(input) {
+  return input?.dataset?.suggestSource === "open_work_orders"
+    ? (productMeta.openWorkOrders || [])
+    : (productMeta.workOrders || []);
 }
 
 function productSuggestOptions(input) {
@@ -540,9 +556,70 @@ function productSuggestOptions(input) {
     .map((item) => item.label);
 }
 
+function workOrderSuggestOptions(input) {
+  const terms = String(input?.value || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const query = terms.join(" ");
+  const matches = [];
+  for (const workOrder of workOrderSuggestRows(input)) {
+    const woNo = String(workOrder.wo_no || "").trim();
+    const asset = String(workOrder.asset_tag || "No asset").trim();
+    const customer = String(workOrder.bill_to_customer || "Internal").trim();
+    const status = String(workOrder.status || "Open").trim();
+    const haystack = `${woNo} ${asset} ${customer} ${status}`.toLowerCase();
+    if (!terms.every((term) => haystack.includes(term))) continue;
+    const woLower = woNo.toLowerCase();
+    const assetLower = asset.toLowerCase();
+    const customerLower = customer.toLowerCase();
+    const rank = woLower === query ? 0
+      : woLower.startsWith(query) ? 1
+      : assetLower.startsWith(query) ? 2
+      : customerLower.startsWith(query) ? 3
+      : woLower.includes(query) ? 4
+      : assetLower.includes(query) ? 5
+      : customerLower.includes(query) ? 6
+      : 7;
+    matches.push({ rank, label: workOrderOptionLabel(workOrder) });
+  }
+  return matches
+    .sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" }))
+    .slice(0, 60)
+    .map((item) => item.label);
+}
+
+function purchaseJobsiteSuggestOptions(input) {
+  const terms = String(input?.value || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const query = terms.join(" ");
+  return (productMeta.purchaseJobsiteRows || [])
+    .map((row) => {
+      const name = String(row.name || "").trim();
+      const source = String(row.source || "Saved Location").trim();
+      const haystack = `${name} ${source}`.toLowerCase();
+      if (!terms.every((term) => haystack.includes(term))) return null;
+      const lower = name.toLowerCase();
+      const rank = lower === query ? 0 : lower.startsWith(query) ? 1 : lower.includes(query) ? 2 : 3;
+      return { rank, name };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))
+    .slice(0, 60)
+    .map((item) => item.name);
+}
+
 function matchingSuggestOptions(input) {
   if (isProductSuggestInput(input)) {
     const values = productSuggestOptions(input);
+    input.dataset.suggestShowAll = "";
+    return values;
+  }
+  if (isWorkOrderSuggestInput(input)) {
+    const values = workOrderSuggestOptions(input);
+    input.dataset.suggestShowAll = "";
+    return values;
+  }
+  if (isPurchaseJobsiteSuggestInput(input)) {
+    const values = purchaseJobsiteSuggestOptions(input);
     input.dataset.suggestShowAll = "";
     return values;
   }
@@ -580,7 +657,7 @@ function positionSuggestMenu(input) {
   menu.style.left = `${Math.max(8, rect.left)}px`;
   menu.style.top = `${rect.bottom + 4}px`;
   const availableWidth = Math.max(260, window.innerWidth - Math.max(8, rect.left) - 14);
-  const preferredWidth = isProductSuggestInput(input) ? 760 : 220;
+  const preferredWidth = isProductSuggestInput(input) || isWorkOrderSuggestInput(input) ? 760 : isPurchaseJobsiteSuggestInput(input) ? 560 : 220;
   menu.style.width = `${Math.min(availableWidth, Math.max(preferredWidth, rect.width))}px`;
   menu.style.maxWidth = `${availableWidth}px`;
 }
@@ -596,19 +673,55 @@ function productSuggestOptionMarkup(value) {
   </button>`;
 }
 
+function workOrderSuggestOptionMarkup(value) {
+  const workOrder = resolveWorkOrderSuggestLookup(value, activeSuggestInput);
+  if (!workOrder) return `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`;
+  return `<button type="button" class="suggest-option work-order-suggest-row" data-suggest-value="${esc(value)}">
+    <span class="work-order-suggest-cell work-order-suggest-number" data-label="Work Order">${esc(workOrder.wo_no || "-")}</span>
+    <span class="work-order-suggest-cell work-order-suggest-asset" data-label="Asset">${esc(workOrder.asset_tag || "No asset")}</span>
+    <span class="work-order-suggest-cell" data-label="Customer">${esc(workOrder.bill_to_customer || "Internal")}</span>
+    <span class="work-order-suggest-cell" data-label="Status">${badge(workOrder.status || "Open")}</span>
+  </button>`;
+}
+
+function resolveWorkOrderSuggestLookup(value, input) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const directWo = text.split("|")[0].trim().toLowerCase();
+  const lower = text.toLowerCase();
+  return workOrderSuggestRows(input).find((workOrder) => {
+    const woNo = String(workOrder.wo_no || "").trim().toLowerCase();
+    const label = workOrderOptionLabel(workOrder).toLowerCase();
+    return woNo === directWo || label === lower || (woNo && lower.includes(woNo));
+  }) || null;
+}
+
+function purchaseJobsiteSuggestOptionMarkup(value) {
+  const row = (productMeta.purchaseJobsiteRows || []).find((item) => String(item.name || "").toLowerCase() === String(value || "").toLowerCase());
+  if (!row) return `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`;
+  return `<button type="button" class="suggest-option jobsite-suggest-row" data-suggest-value="${esc(row.name)}">
+    <span class="jobsite-suggest-cell jobsite-suggest-name" data-label="Jobsite / Location">${esc(row.name)}</span>
+    <span class="jobsite-suggest-cell" data-label="Source">${esc(row.source || "Saved Location")}</span>
+  </button>`;
+}
+
 function showSuggestMenu(input) {
   if (!isSuggestPicker(input)) return;
   activeSuggestInput = input;
   const menu = ensureSuggestMenu();
   const options = matchingSuggestOptions(input);
   positionSuggestMenu(input);
-  const emptyMessage = isProductSuggestInput(input) && !String(input.value || "").trim()
-    ? "Start typing a SKU, product name, or vendor"
+  const emptyMessage = (isProductSuggestInput(input) || isWorkOrderSuggestInput(input) || isPurchaseJobsiteSuggestInput(input)) && !String(input.value || "").trim()
+    ? isWorkOrderSuggestInput(input) ? "Start typing a work order number, asset, customer, or status" : isPurchaseJobsiteSuggestInput(input) ? "Start typing a jobsite, project, or location" : "Start typing a SKU, product name, or vendor"
     : "No matching choices";
   const isProductMenu = isProductSuggestInput(input);
+  const isWorkOrderMenu = isWorkOrderSuggestInput(input);
+  const isJobsiteMenu = isPurchaseJobsiteSuggestInput(input);
   menu.classList.toggle("product-suggest-menu", isProductMenu);
+  menu.classList.toggle("work-order-suggest-menu", isWorkOrderMenu);
+  menu.classList.toggle("jobsite-suggest-menu", isJobsiteMenu);
   menu.innerHTML = options.length
-    ? `${isProductMenu ? `<div class="product-suggest-header"><span>SKU</span><span>Product</span><span>Preferred Vendor</span><span>On Hand</span></div>` : ""}${options.map((value) => isProductMenu ? productSuggestOptionMarkup(value) : `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`).join("")}`
+    ? `${isProductMenu ? `<div class="product-suggest-header"><span>SKU</span><span>Product</span><span>Preferred Vendor</span><span>On Hand</span></div>` : isWorkOrderMenu ? `<div class="work-order-suggest-header"><span>Work Order</span><span>Asset</span><span>Customer</span><span>Status</span></div>` : isJobsiteMenu ? `<div class="jobsite-suggest-header"><span>Jobsite / Location</span><span>Source</span></div>` : ""}${options.map((value) => isProductMenu ? productSuggestOptionMarkup(value) : isWorkOrderMenu ? workOrderSuggestOptionMarkup(value) : isJobsiteMenu ? purchaseJobsiteSuggestOptionMarkup(value) : `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`).join("")}`
     : `<div class="suggest-empty">${esc(emptyMessage)}</div>`;
   menu.hidden = false;
   input.classList.add("picker-open");
@@ -6435,7 +6548,7 @@ async function renderPurchasingView() {
   currentCfg = tableMap.purchasing;
   $("viewTitle").textContent = "Purchasing";
   $("viewSub").textContent = "Issue POs, receive goods, match invoices, and release payments.";
-  const [pos, lines, receipts, vendors, products, workOrders, terms, incoterms, standardNotes, warehouses, fleet, locations, stockMovements] = await Promise.all([
+  const [pos, lines, receipts, vendors, products, workOrders, terms, incoterms, standardNotes, warehouses, fleet, locations, assetLocations, stockMovements] = await Promise.all([
     getAll("purchase_orders"),
     getAll("purchase_order_lines"),
     getAll("goods_receipts"),
@@ -6448,6 +6561,7 @@ async function renderPurchasingView() {
     getAll("warehouses"),
     getAll("assets").catch(() => []),
     getAll("locations").catch(() => []),
+    getAll("asset_locations").catch(() => []),
     getAll("stock_movements").catch(() => []),
   ]);
   const reversedReceiptRefs = new Set((stockMovements || []).filter((row) => /goods receipt reversal/i.test(row.type || "") || /^REV-GR-/i.test(row.reference_no || "")).map((row) => String(row.reference_no || "").replace(/^REV-/, "")));
@@ -6471,16 +6585,25 @@ async function renderPurchasingView() {
   productMeta.vendors = vendors.map((v) => v.name).filter(Boolean).sort();
   productMeta.products = products.sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
   productMeta.warehouses = warehouses.map((v) => v.name).filter(Boolean).sort();
+  productMeta.workOrders = (workOrders || []).sort((a, b) => String(a.wo_no || "").localeCompare(String(b.wo_no || "")));
   productMeta.openWorkOrders = (workOrders || []).filter(isOpenWorkOrder).sort((a, b) => String(a.wo_no || "").localeCompare(String(b.wo_no || "")));
   productMeta.terms = terms.map((t) => t.name).filter(Boolean).sort();
   productMeta.incoterms = incoterms.map((t) => t.name).filter(Boolean).sort();
   productMeta.standardPoNotes = standardNotes.sort((a, b) => String(a.title || "").localeCompare(String(b.title || "")));
-  productMeta.purchaseJobsites = [...new Set([
-    ...(fleet || []).flatMap((asset) => [asset.location, asset.jobsite, asset.project, asset.jobsite_project]),
-    ...(locations || []).map((row) => row.name || row.location || row.jobsite),
-    ...(pos || []).map((row) => row.jobsite_project),
-  ].map((value) => String(value || "").trim()).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  const jobsiteMap = new Map();
+  const addJobsite = (value, source) => {
+    const name = String(value || "").trim();
+    if (!name || /^general$/i.test(name)) return;
+    const key = name.toLowerCase();
+    if (!jobsiteMap.has(key)) jobsiteMap.set(key, { name, source });
+  };
+  (fleet || []).forEach((asset) => [asset.location, asset.jobsite, asset.project, asset.jobsite_project].forEach((value) => addJobsite(value, "Fleet & Equipment")));
+  (assetLocations || []).forEach((row) => addJobsite(row.name || row.location || row.value, "Fleet & Equipment Location"));
+  (locations || []).forEach((row) => addJobsite(row.name || row.location || row.jobsite, "Saved Location"));
+  (pos || []).forEach((row) => addJobsite(row.jobsite_project, "Purchase Order"));
+  productMeta.purchaseJobsiteRows = [...jobsiteMap.values()]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  productMeta.purchaseJobsites = productMeta.purchaseJobsiteRows.map((row) => row.name);
   purchaseContext = { products: productMeta.products, vendors: productMeta.vendors, vendorRows: vendors, openWorkOrders: productMeta.openWorkOrders, terms: productMeta.terms, incoterms: productMeta.incoterms, standardPoNotes: productMeta.standardPoNotes };
   $("content").innerHTML = `
     <div class="toolbar">
@@ -6509,7 +6632,7 @@ async function renderPurchasingView() {
 function renderFilteredPurchaseOrders() {
   const q = $("poSearch").value.toLowerCase();
   const rows = purchaseRowsForTab(currentRows, purchasingTab).filter((po) => !q || [
-    po.po_no, po.po_date, po.vendor, po.vendor_invoice_no, po.match_status, po.payment_status, po.status,
+    po.po_no, po.po_date, po.vendor, po.jobsite_project, po.ap_support_wo_no, po.vendor_invoice_no, po.match_status, po.payment_status, po.status,
     ...(po._lines || []).map((line) => `${line.sku} ${line.product_name}`)
   ].join(" ").toLowerCase().includes(q));
   $("poTableHost").innerHTML = purchaseOrderTableHtml(rows);
@@ -6526,7 +6649,7 @@ function isClosedPurchaseOrder(po) {
 }
 
 function purchaseOrderTableHtml(rows) {
-  const heads = ["PO", "Date", "Vendor", "Jobsite / Project", "Terms", "Incoterm", "Currency", "Parts", "Freight", "Landed Add", "PO Total", "Received", "Invoice", "Match", "Payment", "Status", ""];
+  const heads = ["PO", "Date", "Vendor", "Jobsite / Project", "Work Order", "Terms", "Incoterm", "Currency", "Parts", "Freight", "Landed Add", "PO Total", "Received", "Invoice", "Match", "Payment", "Status", ""];
   return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map(purchaseOrderRowHtml).join("") : `<tr><td colspan="${heads.length}" class="empty">No purchase orders yet.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -6544,7 +6667,8 @@ function purchaseOrderRowHtml(po) {
     <td>${esc(po.po_no)}</td>
     <td>${esc(formatDisplayDate(po.po_date))}</td>
     <td>${esc(po.vendor || "")}</td>
-    <td>${esc(po.jobsite_project || "")}</td>
+    <td>${esc(/^general$/i.test(po.jobsite_project || "") ? "" : po.jobsite_project || "")}</td>
+    <td>${esc(po.ap_support_wo_no || "")}</td>
     <td>${esc(po.payment_terms || "")}</td>
     <td>${esc(po.incoterm || "")}</td>
     <td>${po.foreign_order ? `${esc(po.currency_code || "")}<br><small>${esc(po.foreign_country || "")}</small>` : "USD"}</td>
@@ -6803,7 +6927,8 @@ async function openPurchaseOrderModal(po = null) {
       ${productInput("Number", "po_no", poNo)}
       ${productSelect("Vendor", "vendor", productMeta.vendors || [], po?.vendor || "", "New vendor")}
       ${productInput("Date", "po_date", po?.po_date || today(), "date")}
-      <div class="field"><label>Jobsite / Project</label><input class="suggest-input" data-product-field="jobsite_project" list="purchaseJobsiteOptions" value="${esc(po?.jobsite_project || "")}" placeholder="Search Fleet & Equipment locations or enter a new jobsite" autocomplete="off"><datalist id="purchaseJobsiteOptions">${(productMeta.purchaseJobsites || []).map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Select an available location or type a new one.</small></div>
+      <div class="field"><label>Jobsite / Project (optional)</label><input class="suggest-input" data-suggest-source="purchase_jobsites" data-product-field="jobsite_project" value="${esc(/^general$/i.test(po?.jobsite_project || "") ? "" : po?.jobsite_project || "")}" placeholder="Type a jobsite, project, or location" autocomplete="off" inputmode="search"><div class="actions table-actions"><button class="rowbtn" type="button" id="createPurchaseJobsiteBtn">+ Create new jobsite</button></div><small>Results appear after typing. Leave blank when this PO has no jobsite.</small></div>
+      <div class="field"><label>Work Order (optional)</label><input class="suggest-input" data-suggest-source="work_orders" data-product-field="ap_support_wo_no" value="${esc(po?.ap_support_wo_no ? workOrderOptionLabel((productMeta.workOrders || []).find((wo) => wo.wo_no === po.ap_support_wo_no) || { wo_no: po.ap_support_wo_no }) : "")}" placeholder="Type WO, asset, customer, or status" autocomplete="off" inputmode="search"><small>Optional. Results appear after typing.</small></div>
       ${productInput("Expected", "expected_date", po?.expected_date || "", "date")}
       ${productSelect("PO type", "po_type", ["Standard", "Blanket"], po?.po_type || "Standard")}
       ${productInput("Blanket spending limit", "spending_limit", po?.spending_limit ?? "", "number")}
@@ -6848,6 +6973,8 @@ async function openPurchaseOrderModal(po = null) {
   if (insertNoteBtn) insertNoteBtn.onclick = insertSelectedPoNote;
   const newNoteBtn = $("newPoNoteBtn");
   if (newNoteBtn) newNoteBtn.onclick = () => quickCreateStandardPoNote(po);
+  const createJobsiteBtn = $("createPurchaseJobsiteBtn");
+  if (createJobsiteBtn) createJobsiteBtn.onclick = quickCreatePurchaseJobsite;
   const poType = document.querySelector('[data-product-field="po_type"]');
   if (poType) poType.onchange = () => {
     const blanket = poType.value === "Blanket";
@@ -6868,7 +6995,7 @@ function purchaseLineRowHtml(line = {}, index = 0) {
   const woLabel = line.wo_no ? workOrderOptionLabel((productMeta.openWorkOrders || []).find((wo) => wo.wo_no === line.wo_no) || { wo_no: line.wo_no, asset_tag: "", bill_to_customer: "", status: "" }) : "";
   return `<tr>
     <td data-label="Product"><input class="suggest-input" list="poProductOptions" data-suggest-source="products" data-po-line="sku" data-line-index="${index}" value="${esc(label)}" placeholder="Type SKU, product name, or vendor" autocomplete="off" inputmode="search"></td>
-    <td data-label="WO #"><input class="suggest-input" list="poOpenWorkOrderOptions" data-po-line="wo_no" data-line-index="${index}" value="${esc(woLabel)}" placeholder="Search open WO, asset, customer" autocomplete="off">${openWorkOrderOptionsDatalist()}</td>
+    <td data-label="WO #"><input class="suggest-input" data-suggest-source="open_work_orders" data-po-line="wo_no" data-line-index="${index}" value="${esc(woLabel)}" placeholder="Type open WO, asset, or customer" autocomplete="off" inputmode="search"></td>
     <td data-label="UOM"><input data-po-line="unit" data-line-index="${index}" value="${esc(line.unit || product.unit || "")}" readonly></td>
     <td data-label="On Hand">${esc(product.qty ?? "")}</td>
     <td data-label="Qty"><input type="number" step="0.01" data-po-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}"></td>
@@ -6883,12 +7010,6 @@ function purchaseLineRowHtml(line = {}, index = 0) {
 function standardPoNotePickerHtml() {
   const notes = productMeta.standardPoNotes || [];
   return `<input class="suggest-input" id="poStandardNotePicker" list="poStandardNoteOptions" placeholder="Search reusable PO note" autocomplete="off"><datalist id="poStandardNoteOptions">${notes.map((note) => `<option value="${esc(note.title)}"></option>`).join("")}</datalist>`;
-}
-
-function openWorkOrderOptionsDatalist() {
-  if ($("poOpenWorkOrderOptions")) return "";
-  const options = (productMeta.openWorkOrders || []).map(workOrderOptionLabel);
-  return `<datalist id="poOpenWorkOrderOptions">${[...new Set(options)].map((v) => `<option value="${esc(v)}"></option>`).join("")}</datalist>`;
 }
 
 function workOrderOptionLabel(wo) {
@@ -6956,6 +7077,36 @@ async function quickCreatePurchaseVendor(po) {
     await openPurchaseOrderModal(po);
     const vendorField = document.querySelector('[data-product-field="vendor"]');
     if (vendorField) vendorField.value = name.trim();
+  } catch (error) {
+    alert(error.message || error);
+  }
+}
+
+async function quickCreatePurchaseJobsite() {
+  const field = document.querySelector('[data-product-field="jobsite_project"]');
+  const proposed = prompt("New jobsite / project name", String(field?.value || "").trim());
+  if (proposed === null) return;
+  const name = String(proposed || "").trim();
+  if (!name) return alert("Enter the jobsite or project name to create.");
+  const existing = (productMeta.purchaseJobsiteRows || []).find((row) => String(row.name || "").trim().toLowerCase() === name.toLowerCase());
+  if (existing) {
+    if (field) field.value = existing.name;
+    hideSuggestMenu();
+    return;
+  }
+  try {
+    const { error } = await supabase.from("asset_locations").upsert({ name }, { onConflict: "name" });
+    if (error) throw error;
+    await supabase.from("locations").upsert({ name }, { onConflict: "name" });
+    productMeta.purchaseJobsiteRows = [...(productMeta.purchaseJobsiteRows || []), { name, source: "Fleet & Equipment Location" }]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    productMeta.purchaseJobsites = productMeta.purchaseJobsiteRows.map((row) => row.name);
+    if (field) {
+      field.value = name;
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    hideSuggestMenu();
+    alert(`${name} was created and selected.`);
   } catch (error) {
     alert(error.message || error);
   }
@@ -7088,9 +7239,16 @@ async function savePurchaseOrderModal({ receiveAfterSave = false } = {}) {
     record.exchange_rate = 1;
     record.foreign_country = null;
   }
-  const missing = ["po_no", "vendor", "po_date", "jobsite_project", "payment_terms", "status"].filter((field) => !record[field]);
+  const headerWorkOrderText = String(record.ap_support_wo_no || "").trim();
+  const headerWorkOrder = headerWorkOrderText ? resolveWorkOrderLookup(headerWorkOrderText) : null;
+  if (headerWorkOrderText && !headerWorkOrder) {
+    alert("Choose a valid Work Order from the search results, or clear the optional Work Order field.");
+    return;
+  }
+  record.ap_support_wo_no = headerWorkOrder?.wo_no || null;
+  const missing = ["po_no", "vendor", "po_date", "payment_terms", "status"].filter((field) => !record[field]);
   if (missing.length) {
-    alert("Please complete PO number, vendor, date, jobsite/project, payment terms, and status.");
+    alert("Please complete PO number, vendor, date, payment terms, and status.");
     return;
   }
   if (record.foreign_order && (!record.foreign_country || !record.currency_code || record.exchange_rate <= 0)) {
@@ -7113,9 +7271,14 @@ async function savePurchaseOrderModal({ receiveAfterSave = false } = {}) {
       await upsertOne("incoterms", { name: record.incoterm.trim().toUpperCase(), notes: "" }, "name");
       record.incoterm = record.incoterm.trim().toUpperCase();
     }
-    if (record.jobsite_project) {
-      await supabase.from("locations").upsert({ name: record.jobsite_project.trim() }, { onConflict: "name" }).then(() => {}).catch(() => {});
-      record.jobsite_project = record.jobsite_project.trim();
+    if (String(record.jobsite_project || "").trim()) {
+      const jobsite = String(record.jobsite_project).trim();
+      const { error: assetLocationError } = await supabase.from("asset_locations").upsert({ name: jobsite }, { onConflict: "name" });
+      if (assetLocationError) throw assetLocationError;
+      await supabase.from("locations").upsert({ name: jobsite }, { onConflict: "name" });
+      record.jobsite_project = jobsite;
+    } else {
+      record.jobsite_project = "General";
     }
     const lineRows = allocatePurchaseLandedCost(parsePurchaseLineRows(), record);
     const blanket = record.po_type === "Blanket";
@@ -7140,8 +7303,8 @@ async function savePurchaseOrderModal({ receiveAfterSave = false } = {}) {
     record.posting_date = record.posting_date || record.po_date;
     const wasNew = !editing;
     const saved = blanket
-      ? await upsertOne("purchase_orders", record, "po_no")
-      : await upsertOneWithOptionalColumns("purchase_orders", record, "po_no", ["po_type", "spending_limit"], "PO saved. Run the Blanket PO SQL migration before creating a Blanket PO.");
+      ? await upsertOneWithOptionalColumns("purchase_orders", record, "po_no", ["ap_support_wo_no"], "PO saved, but its optional Work Order reference was not stored because the database column is not installed.")
+      : await upsertOneWithOptionalColumns("purchase_orders", record, "po_no", ["po_type", "spending_limit", "ap_support_wo_no"], "PO saved, but one or more optional PO fields are not installed in the database yet.");
     await supabase.from("purchase_order_lines").delete().eq("po_id", saved.id);
     await upsertMany("purchase_order_lines", lineRows.map((line) => {
       const { _allocation_weight, ...cleanLine } = line;
@@ -7984,7 +8147,8 @@ function printPurchaseOrder(poNo) {
     vendor.tax_id ? `Tax ID: ${vendor.tax_id}` : "",
   ].filter(Boolean);
   const poDetails = [
-    ["Jobsite / Project", po.jobsite_project || ""],
+    ["Jobsite / Project", /^general$/i.test(po.jobsite_project || "") ? "" : po.jobsite_project || ""],
+    ["Work Order", po.ap_support_wo_no || ""],
     ["PO Type", po.po_type || "Standard"],
     ["Spending Limit", isBlanketPurchaseOrder(po) ? money(po.spending_limit || 0) : ""],
     ["Received Against Limit", isBlanketPurchaseOrder(po) ? money(poReceivedTotal(po)) : ""],
@@ -8138,7 +8302,8 @@ async function emailPurchaseOrder(poNo) {
     `Please see purchase order ${po.po_no}.`,
     `PO Date: ${po.po_date || ""}`,
     po.expected_date ? `Expected Date: ${po.expected_date}` : "",
-    `Jobsite / Project: ${po.jobsite_project || ""}`,
+    `Jobsite / Project: ${/^general$/i.test(po.jobsite_project || "") ? "" : po.jobsite_project || ""}`,
+    `Work Order: ${po.ap_support_wo_no || ""}`,
     `Terms: ${po.payment_terms || ""}`,
     `Incoterm: ${po.incoterm || ""}`,
     `Parts subtotal: ${money(poPartsSubtotal(po))}`,
@@ -8158,8 +8323,8 @@ function isValidEmail(value) {
 }
 
 function exportPurchaseOrdersCsv() {
-  currentCfg = { labels: ["PO", "Date", "Vendor", "Jobsite / Project", "Terms", "Incoterm", "Foreign Order", "Country", "Currency", "Exchange Rate", "Landed Cost Enabled", "Allocation Method", "Parts Subtotal", "Freight", "Duty", "Other Landed", "Vendor PO Total", "Inventory Cost Total", "Received Vendor Cost", "Received Inventory Cost", "Invoice", "Invoice Amount", "Match", "Payment", "Status"], heads: [] };
-  currentRows = currentRows.map((po) => ({ PO: po.po_no, Date: po.po_date, Vendor: po.vendor, "Jobsite / Project": po.jobsite_project, Terms: po.payment_terms, Incoterm: po.incoterm, "Foreign Order": po.foreign_order ? "Yes" : "No", Country: po.foreign_country, Currency: po.currency_code, "Exchange Rate": po.exchange_rate, "Landed Cost Enabled": po.landed_cost_enabled ? "Yes" : "No", "Allocation Method": po.landed_cost_method, "Parts Subtotal": poPartsSubtotal(po), Freight: poFreight(po), Duty: po.duty_amount, "Other Landed": po.other_landed_cost_amount, "Vendor PO Total": poTotal(po), "Inventory Cost Total": poInventoryCostTotal(po), "Received Vendor Cost": poReceivedTotal(po), "Received Inventory Cost": poReceivedInventoryTotal(po), Invoice: po.vendor_invoice_no, "Invoice Amount": po.vendor_invoice_amount, Match: po.match_status, Payment: po.payment_status, Status: po.status }));
+  currentCfg = { labels: ["PO", "Date", "Vendor", "Jobsite / Project", "Work Order", "Terms", "Incoterm", "Foreign Order", "Country", "Currency", "Exchange Rate", "Landed Cost Enabled", "Allocation Method", "Parts Subtotal", "Freight", "Duty", "Other Landed", "Vendor PO Total", "Inventory Cost Total", "Received Vendor Cost", "Received Inventory Cost", "Invoice", "Invoice Amount", "Match", "Payment", "Status"], heads: [] };
+  currentRows = currentRows.map((po) => ({ PO: po.po_no, Date: po.po_date, Vendor: po.vendor, "Jobsite / Project": /^general$/i.test(po.jobsite_project || "") ? "" : po.jobsite_project, "Work Order": po.ap_support_wo_no, Terms: po.payment_terms, Incoterm: po.incoterm, "Foreign Order": po.foreign_order ? "Yes" : "No", Country: po.foreign_country, Currency: po.currency_code, "Exchange Rate": po.exchange_rate, "Landed Cost Enabled": po.landed_cost_enabled ? "Yes" : "No", "Allocation Method": po.landed_cost_method, "Parts Subtotal": poPartsSubtotal(po), Freight: poFreight(po), Duty: po.duty_amount, "Other Landed": po.other_landed_cost_amount, "Vendor PO Total": poTotal(po), "Inventory Cost Total": poInventoryCostTotal(po), "Received Vendor Cost": poReceivedTotal(po), "Received Inventory Cost": poReceivedInventoryTotal(po), Invoice: po.vendor_invoice_no, "Invoice Amount": po.vendor_invoice_amount, Match: po.match_status, Payment: po.payment_status, Status: po.status }));
   const rows = [currentCfg.labels, ...currentRows.map((r) => currentCfg.labels.map((h) => r[h] ?? ""))];
   const csv = rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
@@ -13832,8 +13997,8 @@ async function renderSuppliesIssuanceView() {
   currentCfg = {
     title: "Supplies Issuance",
     sub: "Issue supplies to employees or mechanics, with optional work order charging.",
-    heads: ["reference_no", "movement_date", "issued_to", "wo_no", "sku", "product_name", "qty", "warehouse", "unit_cost", "amount", "status", "notes"],
-    labels: ["Reference #", "Date", "Issued To", "WO #", "SKU", "Product", "Qty", "Warehouse", "Unit Cost", "Amount", "Status", "Notes"],
+    heads: ["actions", "reference_no", "movement_date", "issued_to", "wo_no", "sku", "product_name", "qty", "warehouse", "unit_cost", "amount", "status", "notes"],
+    labels: ["Actions", "Reference #", "Date", "Charged / Issued To", "WO #", "SKU", "Product", "Qty", "Warehouse", "Unit Cost", "Amount", "Status", "Notes"],
   };
   $("viewTitle").textContent = "Supplies Issuance";
   $("viewSub").textContent = "Issue supplies to employees or mechanics, and optionally charge them to a work order.";
@@ -13854,7 +14019,7 @@ async function renderSuppliesIssuanceView() {
     </div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Supplies Issuance</strong><span>Direct employee/mechanic issue or work-order issue.</span></div><div class="actions"><button id="suppliesCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newSupplyIssueBtn">New issue</button></div></div>
-      <div class="notice">Use this for shop supplies, consumables, and mechanic-issued items. Choose a work order when the supply should be part of that WO history and cost.</div>
+      <div class="notice">Choose General Shop for shared consumables or Mechanic Issuance for items assigned directly to a mechanic. One issuance may contain multiple parts. Choose a work order only when the supplies should also become part of that work order's history and cost.</div>
       <div id="supplyTableHost">${supplyIssueTableHtml(currentRows)}</div>
     </section>`;
   $("supplySearch").oninput = renderFilteredSupplyIssues;
@@ -13867,8 +14032,19 @@ async function renderSuppliesIssuanceView() {
 function supplyIssueRows({ movements = [], workOrders = [], workOrderParts = [], products = [] }) {
   const productById = new Map(products.map((p) => [p.id, p]));
   const woById = new Map(workOrders.map((wo) => [wo.id, wo]));
-  const direct = movements.filter((m) => /supplies issue/i.test(m.type || "")).map((m) => ({
-    reference_no: m.reference_no,
+  const relevantWorkOrderParts = workOrderParts.filter((part) => /supply issue|supplies issue/i.test(part.notes || "") || /supplies/i.test(part.issue || ""));
+  const workOrderPartByKey = new Map(relevantWorkOrderParts.map((part) => {
+    const ref = String(part.notes || "").match(/SM-\d+/)?.[0] || "";
+    return [`${ref}|${String(part.sku || "").toLowerCase()}`, part];
+  }).filter(([key]) => !key.startsWith("|")));
+  const movementReferences = new Set(movements.map((m) => String(m.reference_no || "")).filter(Boolean));
+  const originalMovements = movements.filter((m) => Number(m.qty || 0) < 0 && /supplies issue/i.test(m.type || "") && !/revers|return/i.test(m.type || ""));
+  const direct = originalMovements.map((m) => {
+    const baseReference = supplyIssueBaseReference(m);
+    const reversed = movementReferences.has(`REV-${m.reference_no}`);
+    const linkedWorkOrderPart = workOrderPartByKey.get(`${baseReference}|${String(m.sku || "").toLowerCase()}`);
+    return {
+    reference_no: baseReference,
     movement_date: m.movement_date,
     issued_to: m.sold_to || "",
     wo_no: /^(?:WO-|W\d)/i.test(m.document_no || "") ? m.document_no : "",
@@ -13878,17 +14054,26 @@ function supplyIssueRows({ movements = [], workOrders = [], workOrderParts = [],
     warehouse: m.from_warehouse || "",
     unit_cost: Number(m.unit_fifo_cost || 0),
     amount: Math.abs(Number(m.qty || 0)) * Number(m.unit_fifo_cost || 0),
-    status: "Posted",
+    status: reversed ? "Reversed" : /returned|reversed|void/i.test(linkedWorkOrderPart?.status || "") ? linkedWorkOrderPart.status : "Posted",
     notes: m.reason || "",
-  }));
-  const workOrderIssued = workOrderParts.filter((part) => /supply issue|supplies issue/i.test(part.notes || "") || /supplies/i.test(part.issue || "")).map((part) => {
+    source_kind: "movement",
+    source_id: m.id,
+    source_reference: m.reference_no,
+    product_id: m.product_id,
+    bin_shelf: m.from_bin_shelf || "",
+    work_order_part_id: linkedWorkOrderPart?.id || "",
+    work_order_part_notes: linkedWorkOrderPart?.notes || "",
+  };
+  });
+  const movementLineKeys = new Set(direct.map((row) => `${row.reference_no}|${String(row.sku || "").toLowerCase()}`));
+  const workOrderIssued = relevantWorkOrderParts.map((part) => {
     const wo = woById.get(part.wo_id) || {};
     const product = productById.get(part.product_id) || {};
     const notes = String(part.notes || "");
     const ref = notes.match(/SM-\d+/)?.[0] || `WO-${part.id?.slice?.(0, 8) || ""}`;
     const issueDate = notes.match(/ on (\d{4}-\d{2}-\d{2}) /i)?.[1] || wo.wo_date || "";
     const qty = Number(part.accepted_qty || part.qty_needed || 0);
-    return {
+    const row = {
       reference_no: ref,
       movement_date: issueDate,
       issued_to: notes.match(/to ([^|]+)/i)?.[1]?.trim() || notes || "",
@@ -13901,9 +14086,21 @@ function supplyIssueRows({ movements = [], workOrders = [], workOrderParts = [],
       amount: qty * Number(part.unit_cost || product.cost || 0),
       status: part.status || "Issued",
       notes,
+      source_kind: "work_order_part",
+      source_id: part.id,
+      product_id: part.product_id,
+      bin_shelf: product.bin_shelf || "",
     };
-  });
+    return row;
+  }).filter((row) => !movementLineKeys.has(`${row.reference_no}|${String(row.sku || "").toLowerCase()}`));
   return [...direct, ...workOrderIssued].sort((a, b) => String(b.movement_date || "").localeCompare(String(a.movement_date || "")));
+}
+
+function supplyIssueBaseReference(movement = {}) {
+  const reasonMatch = String(movement.reason || "").match(/supply issue\s+(SM-\d+)/i)?.[1];
+  if (reasonMatch) return reasonMatch.toUpperCase();
+  const reference = String(movement.reference_no || "").trim();
+  return reference.replace(/-[A-Z]+$/i, "") || String(movement.document_no || "").trim();
 }
 
 function supplyIssueTableHtml(rows) {
@@ -13911,6 +14108,10 @@ function supplyIssueTableHtml(rows) {
 }
 
 function supplyIssueCell(field, row) {
+  if (field === "actions") {
+    if (/reversed|returned|void/i.test(row.status || "")) return badge(row.status || "Reversed");
+    return `<button class="rowbtn danger" type="button" data-reverse-supply="${esc(row.reference_no)}">Reverse</button>`;
+  }
   if (field === "wo_no" && row[field]) return `<button class="linkbtn" type="button" data-supply-wo="${esc(row[field])}">${esc(row[field])}</button>`;
   if (["unit_cost", "amount"].includes(field)) return money(row[field]);
   if (field === "status") return badge(row[field]);
@@ -13927,6 +14128,7 @@ function renderFilteredSupplyIssues() {
 
 function bindSupplyIssueRows() {
   document.querySelectorAll("[data-supply-wo]").forEach((b) => b.onclick = () => loadView("repairs"));
+  document.querySelectorAll("[data-reverse-supply]").forEach((b) => b.onclick = () => reverseSupplyIssue(b.dataset.reverseSupply));
 }
 
 async function openSupplyIssueModal() {
@@ -13936,18 +14138,86 @@ async function openSupplyIssueModal() {
     <div class="form-grid">
       ${productInput("Reference #", "reference_no", reference)}
       ${productInput("Issue date", "movement_date", today(), "date")}
-      ${productSelect("Issued to employee / mechanic", "issued_to", productMeta.mechanics || [], "")}
-      <div class="field"><label>Work order (optional)</label><input class="suggest-input" list="supplyWoOptions" data-product-field="wo_lookup" placeholder="Search WO, asset, customer, status" autocomplete="off">${workOrderOptionsDatalist()}</div>
-      <div class="field wide"><label>Supply / product</label><input class="suggest-input" list="poProductOptions" data-product-field="product_lookup" placeholder="Search SKU, product, vendor" autocomplete="off">${productOptionsDatalist()}</div>
-      ${productInput("Quantity to issue", "qty", "", "number")}
-      ${productInput("Unit cost", "unit_cost", "", "number")}
-      ${productInput("Warehouse / bin", "warehouse", "")}
+      <div class="field wide"><label>Charge / issue to</label><div class="supply-mode-picker">
+        <label><input type="radio" name="supplyChargeMode" value="general_shop" checked><span><b>General Shop</b><small>Shared shop supplies and consumables</small></span></label>
+        <label><input type="radio" name="supplyChargeMode" value="mechanic"><span><b>Mechanic Issuance</b><small>Assign the supplies directly to a mechanic</small></span></label>
+      </div></div>
+      <div class="field" id="supplyMechanicField" hidden><label>Mechanic</label><select data-product-field="issued_to"><option value="">Select mechanic</option>${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("")}</select></div>
+      <div class="field"><label>Work order (optional)</label><input class="suggest-input" data-suggest-source="work_orders" data-product-field="wo_lookup" placeholder="Type WO, asset, customer, or status" autocomplete="off"><small>Results appear only after you start typing.</small></div>
       ${productInput("WO issue / use", "issue", "Supplies issuance")}
+      <div class="field wide"><label>Parts / supplies</label><div class="table-wrap supply-lines-wrap"><table class="line-table supply-line-table"><thead><tr><th>SKU / Product</th><th>Product Name</th><th>Qty</th><th>Unit Cost</th><th>Warehouse / Bin</th><th></th></tr></thead><tbody id="supplyLineRows">${supplyIssueLineRow(0)}</tbody></table></div><button class="rowbtn" type="button" id="addSupplyLineBtn">Add more parts</button>${productOptionsDatalist()}</div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes"></textarea></div>
     </div>
-    <p class="notice">If a work order is selected, the supply is added as an issued WO line and inventory is deducted. If no WO is selected, it posts as a direct employee/mechanic supplies issue.</p>`;
+    <p class="notice"><strong>Accounting when saved:</strong> Debit Job Supplies and Credit Parts Inventory for the total issued cost. The mechanic and optional work order remain attached as tracking details. Reversing posts the exact opposite entry and returns every quantity to inventory.</p>`;
+  document.querySelectorAll('input[name="supplyChargeMode"]').forEach((input) => input.onchange = syncSupplyChargeModeFields);
+  $("addSupplyLineBtn").onclick = () => {
+    const host = $("supplyLineRows");
+    host.insertAdjacentHTML("beforeend", supplyIssueLineRow(host.querySelectorAll("[data-supply-line]").length));
+    bindSupplyIssueLineRows();
+  };
+  bindSupplyIssueLineRows();
+  syncSupplyChargeModeFields();
   $("modalSave").onclick = saveSupplyIssueModal;
   $("modal").style.display = "flex";
+}
+
+function supplyIssueLineRow(index) {
+  return `<tr data-supply-line="${index}">
+    <td data-label="SKU / Product"><input class="suggest-input" list="poProductOptions" data-supply-line-field="product_lookup" placeholder="Type SKU, product, vendor" autocomplete="off"></td>
+    <td data-label="Product Name"><input data-supply-line-field="product_name" placeholder="Auto-filled" readonly></td>
+    <td data-label="Qty"><input data-supply-line-field="qty" type="number" min="0.01" step="any" placeholder="0"></td>
+    <td data-label="Unit Cost"><input data-supply-line-field="unit_cost" type="number" min="0" step="any" placeholder="Auto cost"></td>
+    <td data-label="Warehouse / Bin"><input data-supply-line-field="warehouse" placeholder="Auto location"></td>
+    <td data-label="Remove"><button class="rowbtn danger" type="button" data-remove-supply-line>Remove</button></td>
+  </tr>`;
+}
+
+function syncSupplyChargeModeFields() {
+  const mode = document.querySelector('input[name="supplyChargeMode"]:checked')?.value || "general_shop";
+  const mechanicField = $("supplyMechanicField");
+  const mechanicSelect = mechanicField?.querySelector('[data-product-field="issued_to"]');
+  if (mechanicField) mechanicField.hidden = mode !== "mechanic";
+  if (mechanicSelect) {
+    mechanicSelect.disabled = mode !== "mechanic";
+    if (mode !== "mechanic") mechanicSelect.value = "";
+  }
+}
+
+function bindSupplyIssueLineRows() {
+  const rows = [...document.querySelectorAll("[data-supply-line]")];
+  rows.forEach((row) => {
+    const lookup = row.querySelector('[data-supply-line-field="product_lookup"]');
+    const fill = () => {
+      const product = resolveProductLookup(lookup?.value);
+      const name = row.querySelector('[data-supply-line-field="product_name"]');
+      const cost = row.querySelector('[data-supply-line-field="unit_cost"]');
+      const warehouse = row.querySelector('[data-supply-line-field="warehouse"]');
+      if (!String(lookup?.value || "").trim()) {
+        if (name) name.value = "";
+        if (cost) cost.value = "";
+        if (warehouse) warehouse.value = "";
+        return;
+      }
+      if (!product) return;
+      lookup.value = `${product.sku} - ${product.name || ""}`;
+      if (name) name.value = product.name || "";
+      if (cost && !cost.value) cost.value = Number(product.cost || 0);
+      if (warehouse && !warehouse.value) warehouse.value = [product.warehouse, product.bin_shelf].filter(Boolean).join(" / ");
+    };
+    lookup.onchange = fill;
+    lookup.onblur = fill;
+    lookup.oninput = () => {
+      if (!lookup.value.trim()) fill();
+    };
+    row.querySelector("[data-remove-supply-line]").onclick = () => {
+      const allRows = document.querySelectorAll("[data-supply-line]");
+      if (allRows.length === 1) {
+        row.querySelectorAll("input").forEach((input) => input.value = "");
+        return;
+      }
+      row.remove();
+    };
+  });
 }
 
 function workOrderOptionsDatalist() {
@@ -13965,15 +14235,21 @@ function resolveWorkOrderLookup(value) {
 async function saveSupplyIssueModal() {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
-  const product = resolveProductLookup(record.product_lookup);
+  record.charge_mode = document.querySelector('input[name="supplyChargeMode"]:checked')?.value || "general_shop";
+  record.issued_to = record.charge_mode === "mechanic" ? record.issued_to : "General Shop";
   const workOrder = resolveWorkOrderLookup(record.wo_lookup);
-  const qty = Number(record.qty || 0);
-  if (!record.reference_no || !record.movement_date || !record.issued_to || !product || qty <= 0) {
-    alert("Reference #, date, issued to, product, and quantity are required.");
+  const lines = [...document.querySelectorAll("[data-supply-line]")].map((row) => {
+    const values = {};
+    row.querySelectorAll("[data-supply-line-field]").forEach((el) => values[el.dataset.supplyLineField] = el.value || null);
+    const product = resolveProductLookup(values.product_lookup);
+    return { ...values, product, qty: Number(values.qty || 0), unit_cost: Number(values.unit_cost || product?.cost || 0) };
+  }).filter((line) => String(line.product_lookup || "").trim() || line.qty);
+  if (!record.reference_no || !record.movement_date || !record.issued_to || !lines.length) {
+    alert("Reference #, date, charge/issue destination, and at least one part row are required.");
     return;
   }
-  if (qty > Number(product.qty || 0)) {
-    alert(`Only ${product.qty || 0} available for ${product.sku}. Receive stock first or create a parts request.`);
+  if (record.charge_mode === "mechanic" && !record.issued_to) {
+    alert("Choose the mechanic receiving this issuance.");
     return;
   }
   if (record.wo_lookup && !workOrder) {
@@ -13984,26 +14260,55 @@ async function saveSupplyIssueModal() {
     alert(`Work order ${workOrder.wo_no} is locked. Reverse the invoice or reopen the WO before adding supplies.`);
     return;
   }
-  const unitCost = Number(record.unit_cost || product.cost || 0);
-  const warehouse = record.warehouse || product.warehouse || "";
+  const duplicateSkus = lines.map((line) => String(line.product?.sku || line.product_lookup || "").trim().toLowerCase()).filter((sku, index, all) => sku && all.indexOf(sku) !== index);
+  if (duplicateSkus.length) {
+    alert("The same SKU appears more than once. Combine its quantity into one row before saving.");
+    return;
+  }
+  for (const line of lines) {
+    if (!line.product || line.qty <= 0) {
+      alert("Choose a valid Product Master item and enter a quantity greater than zero on every part row.");
+      return;
+    }
+    if (line.qty > Number(line.product.qty || 0)) {
+      alert(`Only ${line.product.qty || 0} available for ${line.product.sku}. Receive stock first or reduce the issued quantity.`);
+      return;
+    }
+  }
+  const savedLines = [];
   try {
-    if (workOrder) {
-      await upsertOne("work_order_parts", {
-        wo_id: workOrder.id,
-        issue: record.issue || "Supplies issuance",
-        product_id: product.id,
-        sku: product.sku,
-        product_name: product.name,
-        qty_needed: qty,
-        unit_cost: unitCost,
-        availability: "OK",
-        status: "Issued",
-        accepted_qty: qty,
-        notes: `Supply issue ${record.reference_no} on ${record.movement_date} to ${record.issued_to}${record.notes ? ` | ${record.notes}` : ""}`,
-      }, "id");
-    } else {
-      await upsertOneWithOptionalColumns("stock_movements", {
-        reference_no: record.reference_no,
+    await ensureSupplyIssueAccountingAccounts();
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const product = line.product;
+      const movementReference = `${record.reference_no}-${supplyIssueLineSuffix(index)}`;
+      const warehouseText = String(line.warehouse || "").trim();
+      const warehouse = warehouseText.split(" / ")[0] || product.warehouse || "";
+      const binShelf = warehouseText.includes(" / ") ? warehouseText.split(" / ").slice(1).join(" / ") : product.bin_shelf || "";
+      let workOrderPart = null;
+      if (workOrder) {
+        workOrderPart = await insertOneWithOptionalColumns("work_order_parts", {
+          wo_id: workOrder.id,
+          issue: record.issue || "Supplies issuance",
+          product_id: product.id,
+          sku: product.sku,
+          product_name: product.name,
+          qty_needed: line.qty,
+          unit_cost: line.unit_cost,
+          availability: "OK",
+          status: "Issued",
+          accepted_qty: line.qty,
+          notes: `Supply issue ${record.reference_no} on ${record.movement_date} to ${record.issued_to}${record.notes ? ` | ${record.notes}` : ""}`,
+        }, ["unit_cost"], "Supply issue saved, but this database does not store unit cost on the work-order supply line.");
+      }
+      const previousQty = Number(product.qty || 0);
+      const nextQty = previousQty - line.qty;
+      const { data: updatedProducts, error: productError } = await supabase.from("products").update({ qty: nextQty }).eq("id", product.id).select("id,qty");
+      if (productError) throw productError;
+      if (!(updatedProducts || []).length) throw new Error(`Inventory for ${product.sku} could not be deducted.`);
+      try {
+        await insertOneWithOptionalColumns("stock_movements", {
+        reference_no: movementReference,
         movement_date: record.movement_date,
         type: "Supplies Issue",
         product_id: product.id,
@@ -14011,34 +14316,195 @@ async function saveSupplyIssueModal() {
         product_name: product.name,
         sold_to: record.issued_to,
         sold_date: record.movement_date,
-        qty: -Math.abs(qty),
+        qty: -Math.abs(line.qty),
         from_warehouse: warehouse,
-        from_bin_shelf: product.bin_shelf || "",
-        unit_fifo_cost: unitCost,
-        total_fifo_cost: qty * unitCost,
-        document_no: record.reference_no,
+        from_bin_shelf: binShelf,
+        unit_fifo_cost: line.unit_cost,
+        total_fifo_cost: line.qty * line.unit_cost,
+        document_no: workOrder?.wo_no || record.reference_no,
         entered_by: profile?.full_name || profile?.username || "Owner",
-        reason: record.notes || "Supplies issued to employee/mechanic",
-      }, "reference_no", ["from_bin_shelf"], "Supply issue saved. Run the multi-location SQL update so bin/shelf details can be stored.");
+        reason: `Supply issue ${record.reference_no} | ${record.charge_mode === "mechanic" ? `Mechanic: ${record.issued_to}` : "General Shop"}${record.notes ? ` | ${record.notes}` : ""}`,
+      }, ["from_bin_shelf"], "Supply issue saved. Run the multi-location SQL update so bin/shelf details can be stored.");
+      } catch (movementError) {
+        await supabase.from("products").update({ qty: previousQty }).eq("id", product.id);
+        if (workOrderPart?.id) await supabase.from("work_order_parts").update({ status: "Returned", availability: "Not Issued", notes: appendDatedNote(workOrderPart.notes, "Inventory posting failed; issuance line was cancelled.") }).eq("id", workOrderPart.id);
+        throw movementError;
+      }
+      product.qty = nextQty;
+      savedLines.push({ ...line, product, warehouse, bin_shelf: binShelf, movement_reference: movementReference, work_order_part: workOrderPart });
     }
-    await supabase.from("products").update({ qty: Number(product.qty || 0) - qty }).eq("id", product.id);
-    await postSupplyIssueLedger({ ...record, qty, unit_cost: unitCost, warehouse }, product, workOrder);
+    await postSupplyIssueLedger(record, savedLines, workOrder);
+    await writeAuditLog({ tableName: "stock_movements", action: "Supplies Issuance Posted", afterData: { reference_no: record.reference_no, movement_date: record.movement_date, issued_to: record.issued_to, charge_mode: record.charge_mode, lines: savedLines.map((line) => ({ sku: line.product.sku, qty: line.qty, unit_cost: line.unit_cost })) } });
     await incrementSequence("stock");
     closeModal();
-    renderSuppliesIssuanceView();
+    await renderSuppliesIssuanceView();
+    alert(`${record.reference_no} posted successfully with ${savedLines.length} part line${savedLines.length === 1 ? "" : "s"}.`);
   } catch (error) {
+    if (savedLines.length) await rollbackFailedSupplyIssue(record, savedLines, workOrder, error.message || String(error));
     alert(error.message || error);
   }
 }
 
-async function postSupplyIssueLedger(record, product, workOrder) {
-  const total = Number(record.qty || 0) * Number(record.unit_cost || 0);
-  if (!total) return;
-  const expenseAccount = workOrder ? "Repairs & Maintenance" : "Job Supplies";
-  await upsertMany("general_ledger", [
-    { entry_date: record.movement_date, posting_date: record.movement_date, account: expenseAccount, mechanic: record.issued_to, asset: workOrder?.asset_tag || null, description: `${record.issue || "Supplies issue"} ${product.sku}`, reference: record.reference_no, debit: total, credit: 0, source: "Supplies Issue", status: "Posted" },
-    { entry_date: record.movement_date, posting_date: record.movement_date, account: "Parts Inventory", mechanic: record.issued_to, asset: workOrder?.asset_tag || null, description: `${record.issue || "Supplies issue"} ${product.sku}`, reference: record.reference_no, debit: 0, credit: total, source: "Supplies Issue", status: "Posted" },
-  ], "id");
+function supplyIssueLineSuffix(index) {
+  let n = Number(index || 0) + 1;
+  let result = "";
+  while (n > 0) {
+    n -= 1;
+    result = String.fromCharCode(65 + (n % 26)) + result;
+    n = Math.floor(n / 26);
+  }
+  return result;
+}
+
+async function postSupplyIssueLedger(record, lines, workOrder) {
+  const expenseAccount = "Job Supplies";
+  const mechanic = record.charge_mode === "mechanic" ? record.issued_to : null;
+  const ledgerRows = [];
+  (lines || []).forEach((line) => {
+    const total = Number(line.qty || 0) * Number(line.unit_cost || 0);
+    if (!total) return;
+    const description = `${record.issue || "Supplies issue"} ${line.product.sku} - ${line.product.name || ""}${workOrder?.wo_no ? ` | ${workOrder.wo_no}` : ""}`;
+    ledgerRows.push(
+      { entry_date: record.movement_date, posting_date: record.movement_date, account: expenseAccount, mechanic, asset: workOrder?.asset_tag || null, description, reference: record.reference_no, debit: total, credit: 0, source: "Supplies Issue", status: "Posted" },
+      { entry_date: record.movement_date, posting_date: record.movement_date, account: "Parts Inventory", mechanic, asset: workOrder?.asset_tag || null, description, reference: record.reference_no, debit: 0, credit: total, source: "Supplies Issue", status: "Posted" },
+    );
+  });
+  if (!ledgerRows.length) return;
+  assertBalancedLedgerRows(ledgerRows, `Supplies issue ${record.reference_no}`);
+  await upsertMany("general_ledger", ledgerRows, "id");
+}
+
+async function ensureSupplyIssueAccountingAccounts() {
+  const chart = await getAll("chart_of_accounts");
+  const hasAccount = (name) => chart.some((row) => String(row.account || "").trim().toLowerCase() === name.toLowerCase());
+  const missing = ["Job Supplies", "Parts Inventory"].filter((name) => !hasAccount(name));
+  if (missing.length) {
+    throw new Error(`Supplies issuance cannot post because these accounts are missing from Chart of Accounts: ${missing.join(", ")}. Add the account(s) before issuing inventory.`);
+  }
+}
+
+async function rollbackFailedSupplyIssue(record, savedLines, workOrder, problem) {
+  const products = await getAll("products");
+  const productById = new Map(products.map((product) => [String(product.id), product]));
+  for (const line of savedLines) {
+    const product = productById.get(String(line.product.id)) || line.product;
+    const previousQty = Number(product.qty || 0);
+    await supabase.from("products").update({ qty: previousQty + Number(line.qty || 0) }).eq("id", product.id);
+    product.qty = previousQty + Number(line.qty || 0);
+    await insertOneWithOptionalColumns("stock_movements", {
+      reference_no: `REV-${line.movement_reference}`,
+      movement_date: record.movement_date,
+      type: "Supplies Issue Reversal",
+      product_id: product.id,
+      sku: product.sku,
+      product_name: product.name,
+      qty: Math.abs(Number(line.qty || 0)),
+      to_warehouse: line.warehouse || product.warehouse || null,
+      to_bin_shelf: line.bin_shelf || product.bin_shelf || null,
+      unit_fifo_cost: Number(line.unit_cost || 0),
+      total_fifo_cost: Math.abs(Number(line.qty || 0)) * Number(line.unit_cost || 0),
+      document_no: workOrder?.wo_no || record.reference_no,
+      entered_by: activeAuditUser(),
+      reason: `Automatic rollback of incomplete supply issue ${record.reference_no}: ${problem}`,
+    }, ["to_bin_shelf"]);
+    if (line.work_order_part?.id) await supabase.from("work_order_parts").update({ status: "Returned", availability: "Returned to Inventory", notes: appendDatedNote(line.work_order_part.notes, `Issuance rolled back: ${problem}`) }).eq("id", line.work_order_part.id);
+  }
+}
+
+async function reverseSupplyIssue(referenceNo) {
+  const reference = String(referenceNo || "").trim();
+  const rows = currentRows.filter((row) => row.reference_no === reference && !/reversed|returned|void/i.test(row.status || ""));
+  if (!rows.length) return alert(`${reference} is already reversed or has no active lines to reverse.`);
+  await loadAccountingCloseDate();
+  const enteredDate = prompt(`Reversal date for ${reference}\n\nEnter as mm/dd/yyyy. This date controls the accounting posting period.`, formatDisplayDate(today()));
+  if (enteredDate === null) return;
+  const reversalDate = parseFlexibleDate(enteredDate);
+  if (!reversalDate) return alert("Enter a valid reversal date as mm/dd/yyyy.");
+  if (reversalDate > today()) return alert("Reversal date cannot be in the future.");
+  if (isLockedAccountingDate(reversalDate)) return alert(`Reversal date ${formatDisplayDate(reversalDate)} is inside a closed accounting period. Choose a date in an open period.`);
+  const reason = prompt(`Reason for reversing ${reference}`, "Issued in error / supplies returned");
+  if (reason === null || !reason.trim()) return;
+  const totalQty = rows.reduce((sum, row) => sum + Number(row.qty || 0), 0);
+  if (!confirm(`Reverse ${reference}?\n\n${rows.length} part line${rows.length === 1 ? "" : "s"} and ${totalQty} total unit${totalQty === 1 ? "" : "s"} will be returned to inventory. The original issuance and the reversal will both remain in history.`)) return;
+  try {
+    const [products, movements] = await Promise.all([getAll("products"), getAll("stock_movements")]);
+    const productById = new Map(products.map((product) => [String(product.id), product]));
+    const productBySku = new Map(products.map((product) => [String(product.sku || "").trim().toLowerCase(), product]));
+    const movementRefs = new Set(movements.map((movement) => String(movement.reference_no || "")));
+    let returnedQty = 0;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const product = productById.get(String(row.product_id || "")) || productBySku.get(String(row.sku || "").trim().toLowerCase());
+      if (!product?.id) throw new Error(`Product Master item ${row.sku || row.product_name || ""} was not found. The reversal stopped before changing this line.`);
+      const sourceReference = row.source_reference || `${reference}-${supplyIssueLineSuffix(index)}`;
+      const reversalReference = `REV-${sourceReference}`;
+      if (movementRefs.has(reversalReference)) continue;
+      const qty = Math.abs(Number(row.qty || 0));
+      const previousQty = Number(product.qty || 0);
+      const { data: updatedProducts, error: productError } = await supabase.from("products").update({ qty: previousQty + qty }).eq("id", product.id).select("id,qty");
+      if (productError) throw productError;
+      if (!(updatedProducts || []).length) throw new Error(`Inventory for ${product.sku} could not be returned.`);
+      try {
+        await insertOneWithOptionalColumns("stock_movements", {
+          reference_no: reversalReference,
+          movement_date: reversalDate,
+          type: "Supplies Issue Reversal",
+          product_id: product.id,
+          sku: product.sku,
+          product_name: product.name,
+          qty,
+          to_warehouse: row.warehouse || product.warehouse || null,
+          to_bin_shelf: row.bin_shelf || product.bin_shelf || null,
+          unit_fifo_cost: Number(row.unit_cost || product.cost || 0),
+          total_fifo_cost: qty * Number(row.unit_cost || product.cost || 0),
+          document_no: row.wo_no || reference,
+          entered_by: activeAuditUser(),
+          reason: `Return from reversed supplies issue ${reference}: ${reason.trim()}`,
+        }, ["to_bin_shelf"], "Supplies were returned. Run the multi-location SQL update so bin/shelf details can be stored.");
+      } catch (movementError) {
+        await supabase.from("products").update({ qty: previousQty }).eq("id", product.id);
+        throw movementError;
+      }
+      product.qty = previousQty + qty;
+      movementRefs.add(reversalReference);
+      returnedQty += qty;
+      const workOrderPartId = row.work_order_part_id || (row.source_kind === "work_order_part" ? row.source_id : "");
+      if (workOrderPartId) {
+        await supabase.from("work_order_parts").update({ status: "Returned", availability: "Returned to Inventory", notes: appendDatedNote(row.work_order_part_notes || row.notes, `Supply issue ${reference} reversed on ${formatDisplayDate(reversalDate)}: ${reason.trim()}`) }).eq("id", workOrderPartId);
+      }
+    }
+    const reversalLedgerReference = `REV-${reference}`;
+    const { data: existingReversal, error: existingError } = await supabase.from("general_ledger").select("id").eq("source", "Supplies Issue Reversal").eq("reference", reversalLedgerReference).limit(1);
+    if (existingError) throw existingError;
+    if (!(existingReversal || []).length) {
+      const { data: originalLedger, error: ledgerError } = await supabase.from("general_ledger").select("*").eq("source", "Supplies Issue").eq("reference", reference);
+      if (ledgerError) throw ledgerError;
+      const reversalRows = (originalLedger || []).map((row) => ({
+        entry_date: reversalDate,
+        posting_date: reversalDate,
+        account: row.account,
+        customer: row.customer,
+        vendor: row.vendor,
+        mechanic: row.mechanic,
+        asset: row.asset,
+        description: `Reverse ${reference}: ${reason.trim()}`,
+        reference: reversalLedgerReference,
+        debit: Number(row.credit || 0),
+        credit: Number(row.debit || 0),
+        source: "Supplies Issue Reversal",
+        status: "Posted",
+      })).filter((row) => row.debit || row.credit);
+      if (reversalRows.length) {
+        assertBalancedLedgerRows(reversalRows, `Supplies issue reversal ${reference}`);
+        await upsertMany("general_ledger", reversalRows, "id");
+      }
+    }
+    await writeAuditLog({ tableName: "stock_movements", action: "Supplies Issuance Reversed", beforeData: { reference_no: reference, active_lines: rows.length, qty: totalQty }, afterData: { reference_no: reference, returned_qty: returnedQty, reversal_date: reversalDate }, reason: reason.trim() });
+    await renderSuppliesIssuanceView();
+    alert(`${reference} was reversed. ${returnedQty} unit${returnedQty === 1 ? "" : "s"} were returned to inventory.`);
+  } catch (error) {
+    alert(`Could not fully reverse ${reference}.\n\n${error.message || error}`);
+  }
 }
 
 async function reverseRental(rentalNo) {

@@ -57,11 +57,25 @@ button.danger { color: #8f2d24; border-color: #e6c5c0; background: #fbf1ef; }
 .product-suggest-cell { min-width: 0; overflow-wrap: anywhere; }
 .product-suggest-sku, .product-suggest-name { font-weight: 800; }
 .product-suggest-qty { text-align: right; font-variant-numeric: tabular-nums; }
+.work-order-suggest-menu { padding: 0; max-height: 360px; }
+.work-order-suggest-header, .work-order-suggest-row { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(130px, 1fr) minmax(230px, 1.8fr) minmax(110px, .8fr); gap: 12px; align-items: center; }
+.work-order-suggest-header { position: sticky; top: 0; z-index: 1; padding: 9px 12px; background: #eaf0f3; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; }
+.work-order-suggest-row { border-radius: 0; padding: 10px 12px; border-bottom: 1px solid #edf1f3; font-weight: 500; }
+.work-order-suggest-row:last-child { border-bottom: 0; }
+.work-order-suggest-cell { min-width: 0; overflow-wrap: anywhere; }
+.work-order-suggest-number, .work-order-suggest-asset { font-weight: 800; }
+.jobsite-suggest-menu { padding: 0; max-height: 360px; }
+.jobsite-suggest-header, .jobsite-suggest-row { display: grid; grid-template-columns: minmax(230px, 1.8fr) minmax(140px, 1fr); gap: 12px; align-items: center; }
+.jobsite-suggest-header { position: sticky; top: 0; z-index: 1; padding: 9px 12px; background: #eaf0f3; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; }
+.jobsite-suggest-row { border-radius: 0; padding: 10px 12px; border-bottom: 1px solid #edf1f3; font-weight: 500; }
+.jobsite-suggest-row:last-child { border-bottom: 0; }
+.jobsite-suggest-cell { min-width: 0; overflow-wrap: anywhere; }
+.jobsite-suggest-name { font-weight: 800; }
 @media (max-width: 620px) {
-  .product-suggest-menu { left: 8px !important; right: 8px; width: auto !important; max-width: none !important; }
-  .product-suggest-header { display: none; }
-  .product-suggest-row { grid-template-columns: 1fr 1fr; gap: 7px 12px; padding: 11px 12px; }
-  .product-suggest-cell::before { content: attr(data-label); display: block; margin-bottom: 2px; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+  .product-suggest-menu, .work-order-suggest-menu, .jobsite-suggest-menu { left: 8px !important; right: 8px; width: auto !important; max-width: none !important; }
+  .product-suggest-header, .work-order-suggest-header, .jobsite-suggest-header { display: none; }
+  .product-suggest-row, .work-order-suggest-row, .jobsite-suggest-row { grid-template-columns: 1fr 1fr; gap: 7px 12px; padding: 11px 12px; }
+  .product-suggest-cell::before, .work-order-suggest-cell::before, .jobsite-suggest-cell::before { content: attr(data-label); display: block; margin-bottom: 2px; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
   .product-suggest-qty { text-align: left; }
 }
 .suggest-empty { padding: 10px; color: var(--muted); font-size: 13px; font-weight: 800; }
@@ -648,6 +662,22 @@ th { background: var(--head); color: #1f3145; font-size: 12px; text-transform: u
 .module-group strong { color: var(--teal); font-size: 12px; text-transform: uppercase; }
 .checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); }
 .checkline input { width: auto; }
+.supply-mode-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.supply-mode-picker label { position: relative; display: flex; align-items: flex-start; gap: 10px; min-height: 76px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: #fff; cursor: pointer; text-transform: none; }
+.supply-mode-picker label:has(input:checked) { border-color: #587481; background: #edf4f7; box-shadow: inset 0 0 0 1px #587481; }
+.supply-mode-picker input { width: auto; margin-top: 3px; }
+.supply-mode-picker b, .supply-mode-picker small { display: block; }
+.supply-mode-picker b { color: var(--ink); font-size: 14px; }
+.supply-mode-picker small { margin-top: 4px; color: var(--muted); font-weight: 500; line-height: 1.35; }
+.supply-lines-wrap { margin-top: 2px; border: 1px solid var(--line); border-radius: 8px; }
+.supply-line-table { min-width: 1040px; width: 100%; }
+.supply-line-table th:nth-child(1), .supply-line-table td:nth-child(1) { min-width: 280px; }
+.supply-line-table th:nth-child(2), .supply-line-table td:nth-child(2) { min-width: 220px; }
+.supply-line-table th:nth-child(3), .supply-line-table td:nth-child(3) { width: 100px; }
+.supply-line-table th:nth-child(4), .supply-line-table td:nth-child(4) { width: 130px; }
+.supply-line-table th:nth-child(5), .supply-line-table td:nth-child(5) { min-width: 210px; }
+.supply-line-table input { width: 100%; min-width: 0; }
+#addSupplyLineBtn { align-self: flex-start; margin-top: 9px; }
 .notice { margin: 14px 0 0; padding: 12px 14px; border: 1px solid #d6c7ad; background: #f8f4ed; color: #5f513e; border-radius: 7px; }
 .support-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-bottom: 12px; }
 .support-grid .notice { margin: 0; }
@@ -710,6 +740,13 @@ th { background: var(--head); color: #1f3145; font-size: 12px; text-transform: u
 .module-training-content ol { margin: 0; padding-left: 22px; }
 .module-training-content li { margin: 0 0 9px; line-height: 1.5; color: #334155; }
 @media (max-width: 760px) {
+  .supply-mode-picker { grid-template-columns: 1fr; }
+  .supply-line-table { display: block; min-width: 0; }
+  .supply-line-table thead { display: none; }
+  .supply-line-table tbody, .supply-line-table tr, .supply-line-table td { display: block; width: 100%; min-width: 0 !important; }
+  .supply-line-table tr { margin-bottom: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .supply-line-table td { border: 0; padding: 5px 0; }
+  .supply-line-table td::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 900; text-transform: uppercase; }
   .module-training-overlay { padding: 0; }
   .module-training-dialog { min-height: 100%; border-radius: 0; }
   .module-training-dialog > header { padding: 16px; }
