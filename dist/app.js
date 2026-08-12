@@ -7,7 +7,7 @@ const modules = [
   { group: "Home", items: [["dashboard", "Dashboard"]] },
   { group: "Inventory", items: [["products", "Products"], ["movements", "Stock Movement"], ["inventory", "Inventory Balance"], ["purchasing", "Purchasing"], ["receipts", "Goods Receipts"]] },
   { group: "Sales & Billing", items: [["quotes", "Quotations"], ["orders", "Sales Orders"], ["salestopurchase", "Parts to Order"], ["rentals", "Rentals"], ["invoices", "Invoices"], ["payments", "Customer Payments"]] },
-  { group: "Fleet & Repairs", items: [["assets", "Fleet & Equipment"], ["outsidefleet", "Outside Customer Fleet"], ["equipmentrepairquotes", "Equipment Repair Quotes"], ["equipmentrequests", "Equipment Requests"], ["equipmentrepairqueue", "Equipment Subject to Repair"], ["equipmenthistory", "Equipment History"], ["repairs", "Repairs"], ["supplies", "Supplies Issuance"], ["partsrequests", "Parts Requests"], ["fuel", "Fuel Portal"], ["mechanics", "Mechanics"]] },
+  { group: "Fleet & Repairs", items: [["assets", "Fleet & Equipment"], ["outsidefleet", "Outside Customer Fleet"], ["equipmentrepairquotes", "Equipment Repair Quotes"], ["equipmentrequests", "Equipment Requests"], ["equipmentrepairqueue", "Equipment Repair Requests"], ["equipmenthistory", "Equipment History"], ["repairs", "Repairs"], ["supplies", "Supplies Issuance"], ["partsrequests", "Parts Requests"], ["fuel", "Fuel Portal"], ["mechanics", "Mechanics"]] },
   { group: "Trucking", items: [["truckingrequests", "Move Requests"], ["trucking", "Dispatcher Scheduler"], ["truckingassigned", "Assigned Driver"], ["truckingtickets", "Tickets"], ["truckingrates", "Rate Sheet"]] },
   { group: "Accounting", items: [["accounting", "Accounting"], ["coa", "Chart of Accounts"], ["bank", "Bank Reconciliation"], ["checkrun", "Check Run"], ["aging", "Aging Summary"]] },
   { group: "Masters", items: [["vendors", "Vendors"], ["customers", "Customers"], ["users", "Users"], ["settings", "Settings"]] },
@@ -145,6 +145,7 @@ let trainingIndex = 0;
 let trainingAutoplay = null;
 let activeTrainingSteps = [];
 let productMeta = { vendors: [], categories: [], units: [], warehouses: [] };
+let partyMasterMeta = { customers: [], vendors: [], loaded: false };
 let purchaseContext = { products: [], vendors: [], vendorRows: [] };
 const productColumnDefs = [
   ["photo", "Photo"], ["sku", "SKU"], ["name", "Product"], ["source_vendor", "Preferred Vendor"], ["category", "Category"], ["unit", "Unit"],
@@ -210,12 +211,72 @@ function bindChrome() {
   setupModalSafetyControls();
   setupSeamlessDropdowns();
   setupUiRecommendations();
+  document.addEventListener("click", handleCreatePartButtonClick);
+  document.addEventListener("click", handleDocumentReferenceClick);
   $("content").addEventListener("input", rememberModuleSearch);
   new MutationObserver(() => {
     enhanceColumnFilters();
+    enhanceDocumentReferenceLinks();
     queueMicrotask(() => applySavedColumnPreferences($("content")));
     queueMicrotask(restoreModuleSearches);
   }).observe($("content"), { childList: true, subtree: true });
+}
+
+function documentReferenceType(value) {
+  const ref = String(value || "").trim();
+  if (/^PO-\d+$/i.test(ref)) return "purchasing";
+  if (/^SO-\d+$/i.test(ref)) return "orders";
+  if (/^(?:WO-\d+|W\d{5,})$/i.test(ref)) return "repairs";
+  return "";
+}
+
+function enhanceDocumentReferenceLinks(root = $("content")) {
+  if (!root) return;
+  root.querySelectorAll("td, dd, small, .badge").forEach((element) => {
+    if (element.dataset.documentReferenceEnhanced === "1" || element.closest("button, a, input, select, textarea")) return;
+    if (element.children.length) return;
+    const ref = String(element.textContent || "").trim();
+    const view = documentReferenceType(ref);
+    if (!view) return;
+    element.dataset.documentReferenceEnhanced = "1";
+    element.innerHTML = `<button type="button" class="document-reference-link" data-document-reference="${esc(ref)}" data-document-view="${esc(view)}" title="Open ${esc(ref)}">${esc(ref)}</button>`;
+  });
+}
+
+async function handleDocumentReferenceClick(event) {
+  const button = event.target.closest?.("[data-document-reference]");
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const ref = String(button.dataset.documentReference || "").trim();
+  const view = button.dataset.documentView || documentReferenceType(ref);
+  if (!view || !canAccess(view)) return alert(`Your user does not have access to open ${ref}.`);
+  await loadView(view);
+  if (view === "purchasing") {
+    const row = (currentRows || []).find((item) => String(item.po_no || "").toLowerCase() === ref.toLowerCase());
+    if (row) return openPurchaseOrderModal(row);
+  }
+  if (view === "orders") {
+    const row = (currentRows || []).find((item) => String(item.order_no || "").toLowerCase() === ref.toLowerCase());
+    if (row) return openSalesOrderModal(row);
+  }
+  if (view === "repairs") {
+    const row = (currentRows || []).find((item) => String(item.wo_no || "").toLowerCase() === ref.toLowerCase());
+    if (row) return openWorkOrderEditModal(row);
+  }
+  alert(`${ref} was not found in the current records.`);
+}
+
+function createPartButtonMarkup(label = "Create new part") {
+  return `<button class="rowbtn" type="button" data-create-part>${esc(label)}</button>`;
+}
+
+function handleCreatePartButtonClick(event) {
+  const button = event.target.closest("[data-create-part]");
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openQuickPartOverlay();
 }
 
 function moduleSearchStorageKey(input) {
@@ -506,6 +567,8 @@ function suggestOptions(input) {
   if (isWorkOrderSuggestInput(input)) return workOrderSuggestOptions(input);
   if (isPurchaseJobsiteSuggestInput(input)) return purchaseJobsiteSuggestOptions(input);
   if (isEquipmentSuggestInput(input)) return equipmentSuggestOptions(input);
+  if (isCustomerSuggestInput(input)) return customerSuggestOptions(input);
+  if (isVendorSuggestInput(input)) return vendorSuggestOptions(input);
   const values = input?.classList?.contains("column-filter") ? columnFilterOptions(input) : datalistOptions(input);
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
@@ -525,6 +588,65 @@ function isPurchaseJobsiteSuggestInput(input) {
 
 function isEquipmentSuggestInput(input) {
   return input?.dataset?.suggestSource === "equipment";
+}
+
+function isCustomerSuggestInput(input) {
+  return input?.dataset?.suggestSource === "customers";
+}
+
+function isVendorSuggestInput(input) {
+  return input?.dataset?.suggestSource === "vendors";
+}
+
+async function ensurePartyMasterSuggestRows(force = false) {
+  if (partyMasterMeta.loaded && !force) return partyMasterMeta;
+  const [customers, vendors] = await Promise.all([
+    getAll("customers").catch(() => []),
+    getAll("vendors").catch(() => []),
+  ]);
+  partyMasterMeta = {
+    customers: customers.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" })),
+    vendors: vendors.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" })),
+    loaded: true,
+  };
+  return partyMasterMeta;
+}
+
+function partySuggestOptions(input, rows = []) {
+  const terms = String(input?.value || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const query = terms.join(" ");
+  return (rows || []).map((row) => {
+    const name = String(row.name || row.customer || row.vendor || "").trim();
+    const reference = String(row.reference || "").trim();
+    const email = String(row.email || "").trim();
+    const phone = String(row.phone || "").trim();
+    const termsValue = String(row.terms || "").trim();
+    const status = String(row.credit_status || row.status || "").trim();
+    const haystack = `${reference} ${name} ${email} ${phone} ${termsValue} ${status}`.toLowerCase();
+    if (!name || !terms.every((term) => haystack.includes(term))) return null;
+    const nameLower = name.toLowerCase();
+    const referenceLower = reference.toLowerCase();
+    const rank = nameLower === query ? 0
+      : referenceLower === query ? 1
+      : nameLower.startsWith(query) ? 2
+      : referenceLower.startsWith(query) ? 3
+      : nameLower.includes(query) ? 4
+      : referenceLower.includes(query) ? 5
+      : 6;
+    return { rank, name };
+  }).filter(Boolean)
+    .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))
+    .slice(0, 80)
+    .map((item) => item.name);
+}
+
+function customerSuggestOptions(input) {
+  return partySuggestOptions(input, partyMasterMeta.customers || []);
+}
+
+function vendorSuggestOptions(input) {
+  return partySuggestOptions(input, partyMasterMeta.vendors || []);
 }
 
 function equipmentSuggestRows(input) {
@@ -727,6 +849,16 @@ function matchingSuggestOptions(input) {
     input.dataset.suggestShowAll = "";
     return values;
   }
+  if (isCustomerSuggestInput(input)) {
+    const values = customerSuggestOptions(input);
+    input.dataset.suggestShowAll = "";
+    return values;
+  }
+  if (isVendorSuggestInput(input)) {
+    const values = vendorSuggestOptions(input);
+    input.dataset.suggestShowAll = "";
+    return values;
+  }
   if (input?.dataset?.suggestShowAll === "1") {
     input.dataset.suggestShowAll = "";
     return suggestOptions(input)
@@ -761,7 +893,7 @@ function positionSuggestMenu(input) {
   menu.style.left = `${Math.max(8, rect.left)}px`;
   menu.style.top = `${rect.bottom + 4}px`;
   const availableWidth = Math.max(260, window.innerWidth - Math.max(8, rect.left) - 14);
-  const preferredWidth = isEquipmentSuggestInput(input) ? 1040 : isProductSuggestInput(input) || isWorkOrderSuggestInput(input) ? 760 : isPurchaseJobsiteSuggestInput(input) ? 560 : 220;
+  const preferredWidth = isEquipmentSuggestInput(input) ? 1040 : isProductSuggestInput(input) || isWorkOrderSuggestInput(input) || isCustomerSuggestInput(input) || isVendorSuggestInput(input) ? 860 : isPurchaseJobsiteSuggestInput(input) ? 560 : 220;
   menu.style.width = `${Math.min(availableWidth, Math.max(preferredWidth, rect.width))}px`;
   menu.style.maxWidth = `${availableWidth}px`;
 }
@@ -832,25 +964,58 @@ function equipmentSuggestOptionMarkup(value, input) {
   </button>`;
 }
 
+function partySuggestRow(value, rows = []) {
+  const exact = String(value || "").trim().toLowerCase();
+  return (rows || []).find((row) => String(row.name || row.customer || row.vendor || "").trim().toLowerCase() === exact) || null;
+}
+
+function customerSuggestOptionMarkup(value) {
+  const customer = partySuggestRow(value, partyMasterMeta.customers);
+  if (!customer) return `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`;
+  return `<button type="button" class="suggest-option customer-suggest-row" data-suggest-value="${esc(customer.name)}">
+    <span class="customer-suggest-cell customer-suggest-reference" data-label="Reference">${esc(customer.reference || "-")}</span>
+    <span class="customer-suggest-cell customer-suggest-name" data-label="Customer">${esc(customer.name || "-")}</span>
+    <span class="customer-suggest-cell" data-label="Email">${esc(customer.email || "-")}</span>
+    <span class="customer-suggest-cell" data-label="Phone">${esc(customer.phone || "-")}</span>
+    <span class="customer-suggest-cell" data-label="Terms / Credit">${esc([customer.terms, customer.credit_status].filter(Boolean).join(" / ") || "-")}</span>
+  </button>`;
+}
+
+function vendorSuggestOptionMarkup(value) {
+  const vendor = partySuggestRow(value, partyMasterMeta.vendors);
+  if (!vendor) return `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`;
+  return `<button type="button" class="suggest-option vendor-suggest-row" data-suggest-value="${esc(vendor.name)}">
+    <span class="vendor-suggest-cell vendor-suggest-reference" data-label="Reference">${esc(vendor.reference || "-")}</span>
+    <span class="vendor-suggest-cell vendor-suggest-name" data-label="Vendor">${esc(vendor.name || "-")}</span>
+    <span class="vendor-suggest-cell" data-label="Email">${esc(vendor.email || "-")}</span>
+    <span class="vendor-suggest-cell" data-label="Phone">${esc(vendor.phone || "-")}</span>
+    <span class="vendor-suggest-cell" data-label="Terms">${esc(vendor.terms || "-")}</span>
+  </button>`;
+}
+
 function showSuggestMenu(input) {
   if (!isSuggestPicker(input)) return;
   activeSuggestInput = input;
   const menu = ensureSuggestMenu();
   const options = matchingSuggestOptions(input);
   positionSuggestMenu(input);
-  const emptyMessage = (isProductSuggestInput(input) || isWorkOrderSuggestInput(input) || isPurchaseJobsiteSuggestInput(input) || isEquipmentSuggestInput(input)) && !String(input.value || "").trim()
-    ? isWorkOrderSuggestInput(input) ? "Start typing a work order number, asset, customer, or status" : isPurchaseJobsiteSuggestInput(input) ? "Start typing a jobsite, project, or location" : isEquipmentSuggestInput(input) ? "Start typing an asset number, equipment name, plate, serial, VIN, type, or location" : "Start typing a SKU, product name, or vendor"
+  const emptyMessage = (isProductSuggestInput(input) || isWorkOrderSuggestInput(input) || isPurchaseJobsiteSuggestInput(input) || isEquipmentSuggestInput(input) || isCustomerSuggestInput(input) || isVendorSuggestInput(input)) && !String(input.value || "").trim()
+    ? isWorkOrderSuggestInput(input) ? "Start typing a work order number, asset, customer, or status" : isPurchaseJobsiteSuggestInput(input) ? "Start typing a jobsite, project, or location" : isEquipmentSuggestInput(input) ? "Start typing an asset number, equipment name, plate, serial, VIN, type, or location" : isCustomerSuggestInput(input) ? "Start typing a customer name, reference, email, or phone" : isVendorSuggestInput(input) ? "Start typing a vendor name, reference, email, or phone" : "Start typing a SKU, product name, or vendor"
     : "No matching choices";
   const isProductMenu = isProductSuggestInput(input);
   const isWorkOrderMenu = isWorkOrderSuggestInput(input);
   const isJobsiteMenu = isPurchaseJobsiteSuggestInput(input);
   const isEquipmentMenu = isEquipmentSuggestInput(input);
+  const isCustomerMenu = isCustomerSuggestInput(input);
+  const isVendorMenu = isVendorSuggestInput(input);
   menu.classList.toggle("product-suggest-menu", isProductMenu);
   menu.classList.toggle("work-order-suggest-menu", isWorkOrderMenu);
   menu.classList.toggle("jobsite-suggest-menu", isJobsiteMenu);
   menu.classList.toggle("equipment-suggest-menu", isEquipmentMenu);
+  menu.classList.toggle("customer-suggest-menu", isCustomerMenu);
+  menu.classList.toggle("vendor-suggest-menu", isVendorMenu);
   menu.innerHTML = options.length
-    ? `${isProductMenu ? `<div class="product-suggest-header"><span>SKU</span><span>Product</span><span>Preferred Vendor</span><span>On Hand</span></div>` : isWorkOrderMenu ? `<div class="work-order-suggest-header"><span>Work Order</span><span>Asset</span><span>Customer</span><span>Status</span></div>` : isJobsiteMenu ? `<div class="jobsite-suggest-header"><span>Jobsite / Location</span><span>Source</span></div>` : isEquipmentMenu ? `<div class="equipment-suggest-header"><span>Asset #</span><span>Equipment</span><span>Status</span><span>Type / Model / Size</span><span>Plate #</span><span>Serial / VIN</span><span>Location</span></div>` : ""}${options.map((value) => isProductMenu ? productSuggestOptionMarkup(value) : isWorkOrderMenu ? workOrderSuggestOptionMarkup(value) : isJobsiteMenu ? purchaseJobsiteSuggestOptionMarkup(value) : isEquipmentMenu ? equipmentSuggestOptionMarkup(value, input) : `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`).join("")}`
+    ? `${isProductMenu ? `<div class="product-suggest-header"><span>SKU</span><span>Product</span><span>Preferred Vendor</span><span>On Hand</span></div>` : isWorkOrderMenu ? `<div class="work-order-suggest-header"><span>Work Order</span><span>Asset</span><span>Customer</span><span>Status</span></div>` : isJobsiteMenu ? `<div class="jobsite-suggest-header"><span>Jobsite / Location</span><span>Source</span></div>` : isEquipmentMenu ? `<div class="equipment-suggest-header"><span>Asset #</span><span>Equipment</span><span>Status</span><span>Type / Model / Size</span><span>Plate #</span><span>Serial / VIN</span><span>Location</span></div>` : isCustomerMenu ? `<div class="customer-suggest-header"><span>Reference</span><span>Customer</span><span>Email</span><span>Phone</span><span>Terms / Credit</span></div>` : isVendorMenu ? `<div class="vendor-suggest-header"><span>Reference</span><span>Vendor</span><span>Email</span><span>Phone</span><span>Terms</span></div>` : ""}${options.map((value) => isProductMenu ? productSuggestOptionMarkup(value) : isWorkOrderMenu ? workOrderSuggestOptionMarkup(value) : isJobsiteMenu ? purchaseJobsiteSuggestOptionMarkup(value) : isEquipmentMenu ? equipmentSuggestOptionMarkup(value, input) : isCustomerMenu ? customerSuggestOptionMarkup(value) : isVendorMenu ? vendorSuggestOptionMarkup(value) : `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`).join("")}`
     : `<div class="suggest-empty">${esc(emptyMessage)}</div>`;
   menu.hidden = false;
   input.classList.add("picker-open");
@@ -1505,7 +1670,7 @@ const moduleTrainingDetails = {
   assets: ["Search asset number, plate, VIN/serial, make/model or description before creating a record so the same equipment is not entered twice.", "Use Add Asset for LMS-owned fleet and use Outside Customer Fleet for customer-owned equipment.", "Complete asset number, description, type/general type, make, model, VIN/serial, plate, size and ownership details.", "Set parent asset and relationship when a trailer, attachment or component belongs to another unit.", "Record the current physical location and assigned operator; these can later update from trucking, fuel, equipment request and repair workflows.", "Enter odometer or engine-hour readings using the correct measurement for that equipment.", "Upload the photo and preserve both new and old QR-code information so printed/scanned codes continue pointing to the same asset.", "Use the column filters and saved views to find equipment by location, operator, status, plate or repair condition.", "Review status after a work order is opened; the work-order reference should identify equipment currently under repair.", "Before changing or deleting master information, review Equipment History so repair, fuel and movement references remain understandable."],
   outsidefleet: ["Create customer-owned equipment here instead of mixing it with LMS-owned assets.", "Maintain customer, PO, plate number, VIN, make/model, reference and status.", "Use the reference or searchable plate number when opening billable repairs and track the assigned work order.", "Update location and status as customer equipment moves through service."],
   equipmentrequests: ["The requestor opens New Request and selects one or more equipment items from Fleet & Equipment.", "For every equipment line, verify asset number, description, requested location and the correct requested date range.", "Enter requestor name, required email, customer PO number and attach the PO document when required.", "Capture the requestor signature before submission; editing must preserve the signature unless the user deliberately clears it.", "After submission, confirm the successful-submission message and review the Pending request.", "The approver reviews availability and decides whether each asset requires a Pre-Delivery Inspection.", "When PDI is required, approve the line and let the system create a separate repair work order using the new W-number sequence.", "For multi-equipment requests, verify every line remains present after edit or approval.", "Track Approved, Issued, Returned, Denied or Cancelled status instead of deleting transaction history.", "Use Fleet & Equipment afterward to verify requested-by, approved-by, location and status were updated correctly."],
-  equipmentrepairqueue: ["Review assets flagged by QR scan or inspection as needing repair.", "Confirm the asset, reported issue, location and urgency.", "Create or assign the repair work order, then continue all labor and parts activity in Repairs."],
+  equipmentrepairqueue: ["Review Equipment Repair Requests submitted from the mobile request login, QR scan, or Fleet & Equipment.", "Confirm the asset, requestor, required PO number, reported issue, location and priority.", "Create or assign the repair work order, then continue all labor and parts activity in Repairs."],
   equipmenthistory: ["Select an asset to view its complete repair timeline.", "Review issues, parts, mechanic hours, recurring failures and total cost.", "Use date filters and export for management or maintenance planning."],
   repairs: ["Before creating a work order, search the asset and confirm it does not already have another active work order.", "Open New Work Order and confirm the system-generated W-number, date, asset, work type and priority.", "Select the Opening Mechanic from Mechanic Master; before labor starts, this person appears in the Mechanic column.", "Enter Jobsite separately for customer charging and Actual Equipment Location separately for Fleet & Equipment location updating.", "Add every reported issue as its own issue row with date, assigned mechanic, status and notes.", "For billable customer repairs, select the customer and customer PO; use manager override only with approver and reason.", "The assigned mechanic opens the mobile work order, reviews details and clocks in before performing chargeable work.", "Currently Clocked In shows every active labor session and start time so supervisors can identify missed clock-outs.", "When a different mechanic actually clocks in, the Mechanic column updates from the opening mechanic to actual labor personnel.", "Mechanics request parts by Product Master SKU, enter quantity and photo when helpful, and wait for acceptance/issue.", "After parts are received and accepted, verify Waiting Parts changes back to In Progress when no pending shortage remains.", "Use Ask Help or Invite Helper when another mechanic works on the job; each mechanic must keep a separate labor session.", "Mechanics enter work performed and clock out; administrators can correct or add missing labor time and delete an incorrect labor entry.", "Mark Ready to Close only after all work, parts and notes are complete; an administrator then reviews and closes the work order.", "Create the customer invoice/PDF when applicable and verify parts COGS, inventory and revenue accounting entries.", "Use Reverse or Void for incorrect finalized activity; do not delete work-order history needed for equipment records and audit."],
   supplies: ["Use this for shop supplies or parts issued directly to an employee/mechanic.", "Optionally select a work order so cost and history follow that repair.", "Confirm SKU, quantity, warehouse and recipient before posting because stock is reduced."],
@@ -1810,7 +1975,7 @@ const trainingTours = {
     { view: "invoices", title: "Invoices", body: "Invoices come from parts sales, rentals, equipment sales, and work orders. Paid invoices are locked and should be reversed instead of deleted.", target: "#invoiceTableHost" },
     { view: "payments", title: "Customer payments", body: "Use Customer Payments to collect AR. Payments post to cash or bank accounts and clear customer invoice balances.", target: "#paymentTableHost" },
     { view: "assets", title: "Fleet asset master", body: "Fleet stores photos, new and old QR codes, asset number, description, type, make, model, location, readings, operator, QR print flag, and repair status.", target: "#newAssetBtn" },
-    { view: "equipmentrepairqueue", title: "Equipment subject to repair", body: "When an asset QR scan requests repair, the asset appears here. Assigning a work order changes the asset repair status to the work order reference.", target: "#repairAssetHost" },
+    { view: "equipmentrepairqueue", title: "Equipment Repair Requests", body: "Mobile-login and QR-scan repair requests enter the same queue. Review the PO, requestor, equipment details and issue before assigning a work order.", target: "#repairAssetHost" },
     { view: "equipmenthistory", title: "Equipment history", body: "Equipment History summarizes parts used, labor, work order issues, recurring problems, and repair cost by asset.", target: "#content" },
     { view: "repairs", title: "Repairs and work orders", body: "Repairs are separated into Open, Ready to Close, Closed Not Invoiced, Invoiced, and Voided work orders. Invoiced work orders are locked unless reversed; voided work orders stay for history.", target: "#repairTableHost" },
     { view: "repairs", title: "Mechanic mobile view", body: "Mechanic users see a simplified mobile workflow: assigned WOs only, active clock-in status, parts request, parts acceptance, helper request, and Ready to Close.", target: "#content" },
@@ -1953,7 +2118,7 @@ function renderNav() {
     ];
   };
   const visibleModules = isDualRequestPortalUser()
-    ? [{ group: "Requests", items: [["equipmentrequests", "Equipment Requests"], ["truckingrequests", "Move Requests"]] }]
+    ? [{ group: "Requests", items: [["requestportal", "Request Choices"], ["equipmentrequests", "Equipment Requests"], ["truckingrequests", "Move Requests"], ["equipmentrepairqueue", "Equipment Repair Requests"]] }]
     : isMechanicUser()
     ? [{ group: "Mechanic", items: [["repairs", "Work Orders"]] }]
     : isEquipmentRequestUser()
@@ -2181,16 +2346,19 @@ function isDualRequestPortalUser() {
   const mods = userModules();
   const visible = mods.filter((m) => m && m !== "dashboard");
   return !mods.includes("all")
-    && visible.length === 2
+    && visible.length >= 2
     && visible.includes("equipmentrequests")
-    && visible.includes("truckingrequests");
+    && visible.includes("truckingrequests")
+    && visible.every((moduleId) => ["equipmentrequests", "truckingrequests", "equipmentrepairqueue"].includes(moduleId));
 }
 
 function dualRequestPortalTabs(activeView) {
   if (!isDualRequestPortalUser()) return "";
   return `<nav class="request-portal-switcher" aria-label="Request type">
+    <button type="button" class="${activeView === "requestportal" ? "active" : ""}" data-request-portal-view="requestportal">Request choices</button>
     <button type="button" class="${activeView === "equipmentrequests" ? "active" : ""}" data-request-portal-view="equipmentrequests">Equipment Requests</button>
     <button type="button" class="${activeView === "truckingrequests" ? "active" : ""}" data-request-portal-view="truckingrequests">Trucking Move Requests</button>
+    <button type="button" class="${activeView === "equipmentrepairqueue" ? "active" : ""}" data-request-portal-view="equipmentrepairqueue">Equipment Repair Requests</button>
   </nav>`;
 }
 
@@ -2239,7 +2407,7 @@ function isTruckingRequestorUser() {
 }
 
 function defaultView() {
-  if (isDualRequestPortalUser()) return "equipmentrequests";
+  if (isDualRequestPortalUser()) return "requestportal";
   if (isMechanicUser()) return "repairs";
   if (isEquipmentRequestUser()) return "equipmentrequests";
   if (isFuelUser()) return "fuel";
@@ -2439,7 +2607,7 @@ function hasAssetHash() {
 }
 
 function canAccess(view) {
-  if (isDualRequestPortalUser()) return view === "equipmentrequests" || view === "truckingrequests";
+  if (isDualRequestPortalUser()) return ["requestportal", "equipmentrequests", "truckingrequests", "equipmentrepairqueue"].includes(view);
   if (isMechanicUser()) return view === "repairs";
   if (isEquipmentRequestUser()) return view === "equipmentrequests";
   if (isFuelUser()) return view === "fuel";
@@ -2454,7 +2622,7 @@ function canAccess(view) {
 
 async function loadView(view) {
   if (!session) return;
-  if (isDualRequestPortalUser() && !["equipmentrequests", "truckingrequests"].includes(view)) view = "equipmentrequests";
+  if (isDualRequestPortalUser() && !["requestportal", "equipmentrequests", "truckingrequests", "equipmentrepairqueue"].includes(view)) view = "requestportal";
   if (isMechanicUser()) view = "repairs";
   if (!isDualRequestPortalUser() && isEquipmentRequestUser()) view = "equipmentrequests";
   if (isFuelUser()) view = "fuel";
@@ -2471,6 +2639,8 @@ async function loadView(view) {
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   $("content").innerHTML = `<div class="empty">Loading...</div>`;
   try {
+    await ensurePartyMasterSuggestRows();
+    if (view === "requestportal") return await renderRequestPortalHome();
     if (view === "dashboard") return await renderDashboard();
     if (view === "products") return await renderProductsView();
     if (view === "movements") return await renderStockMovementView();
@@ -7238,7 +7408,7 @@ async function openPurchaseOrderModal(po = null) {
 }
 
 function purchaseLineRows(lines) {
-  return `<div class="table-wrap po-line-wrap"><table class="line-table po-line-table"><thead><tr><th>Product</th><th>WO #</th><th>UOM</th><th>On Hand</th><th>Qty</th><th>Weight</th><th>Foreign Cost</th><th>USD Cost</th><th>Landed Unit</th><th>Amount</th></tr></thead><tbody id="poLineBody">${lines.map((line, i) => purchaseLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addPoLineBtn">Add row</button></div>`;
+  return `<div class="table-wrap po-line-wrap"><table class="line-table po-line-table"><thead><tr><th>Product</th><th>WO #</th><th>UOM</th><th>On Hand</th><th>Qty</th><th>Weight</th><th>Foreign Cost</th><th>USD Cost</th><th>Landed Unit</th><th>Amount</th></tr></thead><tbody id="poLineBody">${lines.map((line, i) => purchaseLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addPoLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function purchaseLineRowHtml(line = {}, index = 0) {
@@ -7326,6 +7496,7 @@ async function quickCreatePurchaseVendor(po) {
   try {
     if (!await approveMasterNameCreation("vendors", name)) return;
     await upsertOne("vendors", { reference: await nextRefPreview("vendor", "V-", "vendors", "reference"), name: name.trim(), terms: "30 days" }, "name");
+    await ensurePartyMasterSuggestRows(true);
     await renderPurchasingView();
     await openPurchaseOrderModal(po);
     const vendorField = document.querySelector('[data-product-field="vendor"]');
@@ -8085,7 +8256,7 @@ async function openGoodsReceiptModal(po) {
       ${productInput("PO #", "po_no", po.po_no)}
       ${productInput("Vendor", "vendor", po.vendor || "")}
       <div class="field wide"><label>Items received</label>${goodsReceiptRows(po)}</div>
-      ${isBlanketPurchaseOrder(po) ? `<div class="field wide"><div class="actions table-actions"><button type="button" class="rowbtn" id="addBlanketReceiptRowBtn">Add receipt row</button></div></div>
+      ${isBlanketPurchaseOrder(po) ? `<div class="field wide"><div class="actions table-actions"><button type="button" class="rowbtn" id="addBlanketReceiptRowBtn">Add receipt row</button>${createPartButtonMarkup()}</div></div>
       <div class="field"><label>Spending limit</label><input value="${esc(money(po.spending_limit || 0))}" disabled></div>
       <div class="field"><label>Previously received</label><input value="${esc(money(poReceivedTotal(po)))}" disabled></div>
       <div class="field"><label><input type="checkbox" id="blanketLimitOverride"> Manager override if over limit</label><small>Manager/Admin only; a reason is mandatory.</small></div>
@@ -8871,12 +9042,22 @@ async function renderQuotationsView() {
   currentCfg = tableMap.quotes;
   $("viewTitle").textContent = "Quotations";
   $("viewSub").textContent = "Create customer quotes and convert accepted quotes to sales orders.";
-  const [quotes, lines, customers, products] = await Promise.all([
+  const [quotes, lines, customers, products, salesOrders] = await Promise.all([
     getAll("quotations"),
     getAll("quotation_lines"),
     getAll("customers"),
     getAll("products"),
+    getAll("sales_orders").catch(() => []),
   ]);
+  const inactiveSalesOrders = new Set(salesOrders.filter((order) => /void|reversed|cancel/i.test(String(order.status || ""))).map((order) => order.order_no));
+  const staleLinks = [...new Set(quotes.map((quote) => quote.sales_order_no).filter((orderNo) => orderNo && inactiveSalesOrders.has(orderNo)))];
+  for (const orderNo of staleLinks) await releaseQuotationFromSalesOrder(orderNo, `Linked Sales Order ${orderNo} is cancelled, void, or reversed`);
+  quotes.forEach((quote) => {
+    if (!quote.sales_order_no || !inactiveSalesOrders.has(quote.sales_order_no)) return;
+    quote.status = "Draft";
+    quote.sales_order_no = null;
+    quote.accepted_date = null;
+  });
   currentRows = quotes.sort((a, b) => String(b.quote_date || "").localeCompare(String(a.quote_date || "")));
   currentRows.forEach((quote) => quote._lines = lines.filter((line) => line.quote_id === quote.id));
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
@@ -8991,7 +9172,7 @@ async function openQuotationModal(quote = null) {
 }
 
 function quotationLineRows(lines) {
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Unit</th><th>Qty</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button><button class="rowbtn" type="button" id="quickCreateQuotePartBtn">Quick create part</button></div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Unit</th><th>Qty</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function quotationLineRowHtml(line = {}, index = 0) {
@@ -9184,6 +9365,7 @@ async function quickCreateQuotationCustomer(quote) {
   try {
     if (!await approveMasterNameCreation("customers", name)) return;
     await upsertOne("customers", { reference: await nextRefPreview("customer", "C-", "customers", "reference"), name: name.trim(), terms: "30 days" }, "name");
+    await ensurePartyMasterSuggestRows(true);
     await renderQuotationsView();
     await openQuotationModal(quote);
     const customerField = document.querySelector('[data-product-field="customer"]');
@@ -9399,7 +9581,7 @@ function salesOrderRowHtml(order) {
     <td>${toOrderQty ? badge(`${toOrderQty} to order`) : ""}</td>
     <td>${Number(order.deposit_amount || 0) ? `${money(order.deposit_amount)}<br><small>${esc(order.deposit_invoice_no || "")}</small>` : ""}</td>
     <td>${money(salesOrderTotal(order))}</td>
-    <td><div class="rowactions"><button class="rowbtn" type="button" data-sales-sign="${esc(order.order_no)}">Sign</button><button class="rowbtn" type="button" data-sales-pdf="${esc(order.order_no)}">PDF</button>${!inactive && /special order|backorder/i.test(order.order_type || "") && !order.deposit_invoice_no && !issued ? `<button class="rowbtn" type="button" data-sales-deposit="${esc(order.order_no)}">Deposit invoice</button>` : ""}${!inactive ? `<button class="rowbtn" type="button" data-sales-invoice="${esc(order.order_no)}">Inv</button>` : ""}${!inactive && !issued ? `<button class="rowbtn" type="button" data-sales-issue="${esc(order.order_no)}">Deliver / Issue</button><button class="rowbtn" type="button" data-sales-edit="${esc(order.order_no)}">Edit</button>` : ""}${!inactive && issued ? `<button class="rowbtn danger" type="button" data-sales-reverse="${esc(order.order_no)}">Reverse</button>` : ""}${!inactive && !issued ? `<button class="rowbtn danger" type="button" data-sales-void="${esc(order.order_no)}">Void</button>` : ""}</div></td>
+    <td><div class="rowactions"><button class="rowbtn" type="button" data-sales-sign="${esc(order.order_no)}">Sign</button><button class="rowbtn" type="button" data-sales-pdf="${esc(order.order_no)}">PDF</button>${!inactive && salesOrderAtOrBelowReorder(order) ? `<button class="rowbtn" type="button" data-sales-create-po="${esc(order.order_no)}">Create PO</button>` : ""}${!inactive && /special order|backorder/i.test(order.order_type || "") && !order.deposit_invoice_no && !issued ? `<button class="rowbtn" type="button" data-sales-deposit="${esc(order.order_no)}">Deposit invoice</button>` : ""}${!inactive ? `<button class="rowbtn" type="button" data-sales-invoice="${esc(order.order_no)}">Inv</button>` : ""}${!inactive && !issued ? `<button class="rowbtn" type="button" data-sales-issue="${esc(order.order_no)}">Deliver / Issue</button><button class="rowbtn" type="button" data-sales-edit="${esc(order.order_no)}">Edit</button>` : ""}${!inactive && issued ? `<button class="rowbtn danger" type="button" data-sales-reverse="${esc(order.order_no)}">Reverse</button>` : ""}${!inactive && !issued ? `<button class="rowbtn danger" type="button" data-sales-void="${esc(order.order_no)}">Void</button>` : ""}</div></td>
   </tr>`;
 }
 
@@ -9415,6 +9597,14 @@ function salesOrderShortageQty(order) {
   }, 0);
 }
 
+function salesOrderAtOrBelowReorder(order = {}) {
+  return (order._lines || []).some((line) => {
+    const product = (productMeta.products || []).find((item) => item.id === line.product_id || String(item.sku || "").toLowerCase() === String(line.sku || "").toLowerCase());
+    if (!product) return false;
+    return Number(product.qty || 0) - Number(line.qty || 0) <= Math.max(0, Number(product.reorder_point || 0));
+  });
+}
+
 function bindSalesRows() {
   document.querySelectorAll("[data-sales-edit]").forEach((b) => b.onclick = () => openSalesOrderModal(currentRows.find((order) => order.order_no === b.dataset.salesEdit)));
   document.querySelectorAll("[data-sales-void]").forEach((b) => b.onclick = () => voidSalesOrder(b.dataset.salesVoid));
@@ -9424,7 +9614,15 @@ function bindSalesRows() {
   document.querySelectorAll("[data-sales-issue]").forEach((b) => b.onclick = () => issueSalesOrder(b.dataset.salesIssue));
   document.querySelectorAll("[data-sales-invoice]").forEach((b) => b.onclick = () => invoiceSalesOrder(b.dataset.salesInvoice));
   document.querySelectorAll("[data-sales-deposit]").forEach((b) => b.onclick = () => createSalesOrderDepositInvoice(b.dataset.salesDeposit));
+  document.querySelectorAll("[data-sales-create-po]").forEach((b) => b.onclick = () => openSalesOrderReorderPrompt(b.dataset.salesCreatePo));
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
+}
+
+async function openSalesOrderReorderPrompt(orderNo) {
+  const order = (currentRows || []).find((row) => row.order_no === orderNo);
+  if (!order) return;
+  const opened = await openSalesReorderPoPrompt({ sourceNo: order.order_no, sourceLabel: `Sales Order ${order.order_no}`, lines: order._lines || [] });
+  if (!opened) alert(`${order.order_no} has no new reorder quantity to purchase. An existing linked reorder PO may already cover the requirement.`);
 }
 
 async function openSalesOrderModal(order = null, options = {}) {
@@ -9463,7 +9661,7 @@ async function openSalesOrderModal(order = null, options = {}) {
 }
 
 function salesLineRows(lines) {
-  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Inventory / FIFO Cost</th><th>Qty</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button></div>`;
+  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Inventory / FIFO Cost</th><th>Qty</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function salesLineRowHtml(line = {}, index = 0) {
@@ -9771,6 +9969,7 @@ async function quickCreateSalesCustomer(order) {
   try {
     if (!await approveMasterNameCreation("customers", name)) return;
     await upsertOne("customers", { reference: await nextRefPreview("customer", "C-", "customers", "reference"), name: name.trim(), terms: "30 days" }, "name");
+    await ensurePartyMasterSuggestRows(true);
     await renderSalesOrdersView();
     await openSalesOrderModal(order);
     const customerField = document.querySelector('[data-product-field="customer"]');
@@ -9835,6 +10034,7 @@ async function saveSalesOrderModal() {
       await updateOneWithOptionalColumns("purchase_orders", { linked_sales_order_no: saved.order_no }, "po_no", record.source_po_no, ["linked_sales_order_no"], "Sales Order saved. Run the Purchase Order Destination SQL update so its link appears on the PO.");
     }
     await writeAuditLog({ tableName: "sales_orders", action: wasNew ? "Created" : "Updated", beforeData: editing, afterData: { ...saved, lines: lineRows } });
+    if (/void|reversed|cancel/i.test(String(saved.status || ""))) await releaseQuotationFromSalesOrder(saved.order_no, `Sales Order saved as ${saved.status}`);
     if (wasNew) await incrementSequence("so");
     productMeta.pendingSalesPoSource = null;
     closeModal();
@@ -9908,12 +10108,11 @@ async function openSalesReorderPoPrompt({ sourceNo, sourceLabel, lines = [] } = 
   modalBody.innerHTML = `
     <div class="notice"><strong>${esc(sourceLabel || sourceNo)}</strong> contains ${candidates.length} part${candidates.length === 1 ? "" : "s"} that will be out of stock or at/below the reorder point. Select the parts to purchase and confirm their vendors.</div>
     <div class="field reorder-po-mode"><label>Create purchase orders</label><select id="salesReorderPoMode"><option value="vendor">Group selected parts by vendor</option><option value="part">Create a separate PO for each part</option></select></div>
-    <datalist id="salesReorderVendorOptions">${vendorNames.map((vendor) => `<option value="${esc(vendor)}"></option>`).join("")}</datalist>
     <div class="table-wrap"><table class="line-table"><thead><tr><th>Include</th><th>SKU</th><th>Part</th><th>On Hand</th><th>SO Qty</th><th>Reorder Point</th><th>Projected</th><th>PO Qty</th><th>Vendor</th><th>Est. Cost</th></tr></thead><tbody>
       ${candidates.map((item, index) => `<tr data-sales-reorder-row data-index="${index}" data-product-id="${esc(item.product_id || "")}" data-sku="${esc(item.sku)}" data-product-name="${esc(item.product_name)}" data-unit="${esc(item.unit)}" data-unit-cost="${esc(item.unit_cost)}">
         <td><input type="checkbox" data-sales-reorder-include checked></td><td>${esc(item.sku)}</td><td>${esc(item.product_name)}</td><td>${esc(item.on_hand)}</td><td>${esc(item.ordered_qty)}</td><td>${esc(item.reorder_point)}</td><td>${esc(item.projected_qty)}</td>
         <td><input type="number" min="0.01" step="0.01" data-sales-reorder-qty value="${esc(item.po_qty)}"></td>
-        <td><input class="suggest-input" list="salesReorderVendorOptions" data-sales-reorder-vendor value="${esc(item.vendor)}" placeholder="Select or enter vendor"></td>
+        <td><input class="suggest-input" data-suggest-source="vendors" data-sales-reorder-vendor value="${esc(item.vendor)}" placeholder="Type vendor name, reference, email, or phone" autocomplete="off" inputmode="search"></td>
         <td data-sales-reorder-cost>${money(item.po_qty * item.unit_cost)}</td>
       </tr>`).join("")}
     </tbody></table></div>
@@ -10068,6 +10267,7 @@ async function voidSalesOrder(orderNo) {
       special_order_status: "Cancelled",
       notes: [order.notes, `Voided ${formatDisplayDate(details.voidDate)} by ${profile?.full_name || profile?.username || "Owner"}: ${details.reason}`].filter(Boolean).join("\n"),
     }, "id", order.id, ["special_order_status"]);
+    await releaseQuotationFromSalesOrder(orderNo, `Sales Order voided on ${formatDisplayDate(details.voidDate)}: ${details.reason}`);
     renderSalesOrdersView();
   } catch (error) {
     alert(error.message || error);
@@ -10121,10 +10321,31 @@ async function reverseSalesOrder(orderNo) {
       special_order_status: /special order|backorder/i.test(order.order_type || "") ? "Ready for Delivery" : "Unfulfilled",
       notes: [order.notes, `Reversed ${today()} by ${profile?.full_name || profile?.username || "Owner"}: ${reason.trim()}`].filter(Boolean).join("\n"),
     }, "id", order.id, ["special_order_status"]);
+    await releaseQuotationFromSalesOrder(orderNo, `Sales Order reversed on ${formatDisplayDate(today())}: ${reason.trim()}`);
     renderSalesOrdersView();
   } catch (error) {
     alert(error.message || error);
   }
+}
+
+async function releaseQuotationFromSalesOrder(orderNo, reason = "Related Sales Order cancelled") {
+  if (!orderNo) return 0;
+  const { data: quotations, error } = await supabase.from("quotations").select("*").eq("sales_order_no", orderNo);
+  if (error) throw error;
+  let released = 0;
+  for (const quote of quotations || []) {
+    const after = {
+      status: "Draft",
+      sales_order_no: null,
+      accepted_date: null,
+      last_activity_at: new Date().toISOString(),
+      notes: [quote.notes, `Returned to Draft: ${reason}. Previous linked Sales Order: ${orderNo}.`].filter(Boolean).join("\n"),
+    };
+    await updateOneWithOptionalColumns("quotations", after, "id", quote.id, ["last_activity_at"]);
+    await writeAuditLog({ tableName: "quotations", action: "Released from cancelled Sales Order", beforeData: quote, afterData: { ...quote, ...after } });
+    released += 1;
+  }
+  return released;
 }
 
 function salesOrderAccountingReady(order) {
@@ -10743,6 +10964,16 @@ function workOrderAssetDetails(wo = {}) {
   return outside ? { serial: outside.vin || "", plate: outside.plate || "", name: outside.description || [outside.make, outside.model].filter(Boolean).join(" "), operator: outside.operator || outside.assigned_operator || "" } : { serial: "", plate: "", name: "", operator: "" };
 }
 
+function workOrderAssetDetailsFromLists(wo = {}, assets = [], outsideFleet = []) {
+  const key = String(wo.asset_tag || "").trim().toLowerCase();
+  const owned = (assets || []).find((asset) => [asset.asset_tag, asset.vin_serial, asset.plate].some((value) => String(value || "").trim().toLowerCase() === key));
+  if (owned) return { serial: owned.vin_serial || owned.serial_no || owned.vin || "", plate: owned.plate || "", name: owned.name || owned.description || "", operator: owned.assigned_operator || "" };
+  const outside = (outsideFleet || []).find((asset) => [asset.reference, asset.vin, asset.plate].some((value) => String(value || "").trim().toLowerCase() === key));
+  return outside
+    ? { serial: outside.vin || outside.vin_serial || outside.serial_no || "", plate: outside.plate || "", name: outside.description || [outside.make, outside.model].filter(Boolean).join(" "), operator: outside.operator || outside.assigned_operator || "" }
+    : { serial: "", plate: "", name: "", operator: "" };
+}
+
 function openingMechanicForWorkOrder(wo) {
   const noteMatch = String(wo?.notes || "").match(/Opened by mechanic:\s*([^\r\n]+)/i);
   if (noteMatch?.[1]) return noteMatch[1].trim();
@@ -11127,7 +11358,7 @@ function mechanicWorkOrderCard(wo, mechanic, active, tab = "open") {
       <label class="mechanic-label">Issue worked on</label>
       <select data-mech-issue="${esc(wo.wo_no)}">${(issueOptions.length ? issueOptions : ["General work order"]).map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select>
       <div class="mechanic-request">
-        <strong>Request parts</strong>
+        <div class="actions"><strong>Request parts</strong>${createPartButtonMarkup()}</div>
         <input class="suggest-input" list="poProductOptions" data-mech-part-lookup="${esc(wo.wo_no)}" placeholder="Search SKU, name, vendor, or leave blank" autocomplete="off">
         <input data-mech-part-desc="${esc(wo.wo_no)}" placeholder="Describe part needed if SKU is unknown">
         <label class="camera-upload">Take / upload part photo<input type="file" accept="image/*" capture="environment" data-mech-part-photo="${esc(wo.wo_no)}"></label>
@@ -11874,6 +12105,9 @@ async function openNewWorkOrderModal(prefill = {}) {
       ${productSelect("Manager override", "manager_override", ["No", "Yes"], "No")}
       ${productInput("Override by", "override_by", "")}
       <div class="field wide"><label>Asset search</label><input class="suggest-input" data-suggest-source="equipment" data-equipment-source="master" data-product-field="asset_lookup" value="${esc(assetLookup)}" placeholder="Type asset #, equipment, plate, serial, VIN, type, or location" autocomplete="off" inputmode="search"><small>Results appear in separate columns after you start typing.</small></div>
+      <div class="field"><label>Serial #</label><input id="newWorkOrderSerial" value="${esc(prefillAsset?.vin_serial || outsideAsset?.vin || "")}" readonly></div>
+      <div class="field"><label>License plate</label><input id="newWorkOrderPlate" value="${esc(prefillAsset?.plate || outsideAsset?.plate || "")}" readonly></div>
+      <div class="field"><label>Equipment name</label><input id="newWorkOrderEquipmentName" value="${esc(prefillAsset?.name || outsideAsset?.description || "")}" readonly></div>
       ${productSelect("Work type", "work_type", ["Repair", "Preventive Maintenance", "Breakdown", "Inspection", "Rental Checkout"], prefill.workType || "Repair")}
       ${productSelect("Priority", "priority", ["Low", "Medium", "High"], prefill.priority || "Medium")}
       ${workOrderLocationInput("Jobsite (for charging)", "jobsite_location", prefill.jobsiteLocation || prefill.jobsite || "")}
@@ -12030,9 +12264,15 @@ function fillWorkOrderAssetReadings(value) {
   const odometer = document.querySelector('[data-product-field="odometer"]');
   const hours = document.querySelector('[data-product-field="engine_hours"]');
   const operator = document.querySelector('[data-product-field="operator"]');
+  const serial = $("newWorkOrderSerial");
+  const plate = $("newWorkOrderPlate");
+  const equipmentName = $("newWorkOrderEquipmentName");
   if (odometer && !Number(odometer.value || 0)) odometer.value = Number(asset.odometer || 0);
   if (hours && !Number(hours.value || 0)) hours.value = Number(asset.engine_hours || 0);
   if (operator && !String(operator.value || "").trim()) operator.value = asset.assigned_operator || asset.operator || "";
+  if (serial) serial.value = asset.vin_serial || asset.serial_no || asset.vin || "";
+  if (plate) plate.value = asset.plate || asset.license_plate || "";
+  if (equipmentName) equipmentName.value = asset.name || asset.description || [asset.make, asset.model].filter(Boolean).join(" ");
 }
 
 function newWorkOrderIssueTable(firstIssue = "", savedRows = []) {
@@ -12167,6 +12407,7 @@ async function openWorkOrderEditModal(wo) {
   }
   await ensureWorkOrderModalMeta();
   editing = wo;
+  const editAssetDetails = workOrderAssetDetails(wo);
   $("modalTitle").textContent = `Edit work order ${wo.wo_no}`;
   $("modalBody").innerHTML = `
     <div class="form-grid">
@@ -12180,6 +12421,9 @@ async function openWorkOrderEditModal(wo) {
       ${productSelect("Manager override", "manager_override", ["No", "Yes"], wo.manager_override ? "Yes" : "No")}
       ${productInput("Override by", "override_by", wo.override_by || "")}
       ${productInput("Asset tag", "asset_tag", wo.asset_tag || "")}
+      <div class="field"><label>Serial #</label><input value="${esc(editAssetDetails.serial || "")}" readonly><small>From Fleet &amp; Equipment or Outside Customer Fleet.</small></div>
+      <div class="field"><label>License plate</label><input value="${esc(editAssetDetails.plate || "")}" readonly></div>
+      <div class="field"><label>Equipment name</label><input value="${esc(editAssetDetails.name || "")}" readonly></div>
       ${productSelect("Work type", "work_type", ["Repair", "Preventive Maintenance", "Breakdown", "Inspection", "Rental Checkout"], wo.work_type || "Repair")}
       ${productSelect("Priority", "priority", ["Low", "Medium", "High"], wo.priority || "Medium")}
       ${workOrderLocationInput("Jobsite (for charging)", "jobsite_location", wo.jobsite_location || "")}
@@ -12720,6 +12964,21 @@ function laborNarrativeDate(labor, fallbackDate = "") {
   return parsed.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
 }
 
+function guamDateKey(value, fallbackDate = "") {
+  const text = String(value || fallbackDate || "").trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text.slice(0, 10);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Pacific/Guam",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(parsed).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 function laborNarrativeTime(value) {
   const parsed = new Date(value);
   if (!value || Number.isNaN(parsed.getTime())) return "";
@@ -12874,7 +13133,7 @@ function mechanicIssueEditRow(row = {}, index = 0) {
 
 function mechanicReservePartsTable(issueOptions) {
   const rows = Array.from({ length: 5 }, (_, index) => mechanicReservePartRow(index, issueOptions));
-  return `${productOptionsDatalist()}<div class="table-wrap" data-clock-table="part"><table class="line-table"><thead><tr><th>Part / SKU</th><th>Description Needed</th><th>Photo</th><th>On Hand</th><th>Available</th><th>Qty Needed</th><th>Unit Cost</th><th>Markup %</th><th>Selling Price</th><th>Issue</th><th>In-stock Alternatives</th></tr></thead><tbody id="clockPartBody">${rows.join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" data-add-clock-row="part">Add part row</button></div><p class="muted" id="clockPartPhotoStatus"></p><p class="notice">Product Master fills cost and selling price. If Markup % is entered, Selling Price recalculates from Unit Cost. Mechanics may still request by description/photo when the SKU is unknown.</p>`;
+  return `${productOptionsDatalist()}<div class="table-wrap" data-clock-table="part"><table class="line-table"><thead><tr><th>Part / SKU</th><th>Description Needed</th><th>Photo</th><th>On Hand</th><th>Available</th><th>Qty Needed</th><th>Unit Cost</th><th>Markup %</th><th>Selling Price</th><th>Issue</th><th>In-stock Alternatives</th></tr></thead><tbody id="clockPartBody">${rows.join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" data-add-clock-row="part">Add part row</button>${createPartButtonMarkup()}</div><p class="muted" id="clockPartPhotoStatus"></p><p class="notice">Product Master fills cost and selling price. If Markup % is entered, Selling Price recalculates from Unit Cost. Mechanics may still request by description/photo when the SKU is unknown.</p>`;
 }
 
 function mechanicReservePartRow(index = 0, issueOptions = []) {
@@ -13012,7 +13271,7 @@ function workOrderPartsAdminEditTable(wo) {
   const rows = [...(wo._parts || []), ...Array.from({ length: Math.max(3, 6 - (wo._parts || []).length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
   const heads = ["Part / SKU", "Description", "On Hand Qty", "Unit Cost", "Markup %", "Selling Price", "Qty Needed", "Qty Accepted by Mechanic", "Status", "Availability", "Notes", "Remove"];
   const hidden = new Set(userColumnPreferences()["repairs|work-order-parts"] || []);
-  return `${workOrderAdminProductDatalist()}<details class="column-settings-inline"><summary>Show / Hide Parts Columns</summary><div class="column-chooser">${heads.map((head) => `<label class="checkline"><input type="checkbox" data-work-order-part-column="${esc(head)}" ${hidden.has(head) ? "" : "checked"}> ${esc(head)}</label>`).join("")}</div></details><div class="table-wrap"><table class="line-table admin-parts-table" data-column-preference-key="repairs|work-order-parts"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody id="adminPartBody">${rows.map((row, index) => workOrderPartAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminPartRowBtn">Add part row</button></div><p class="notice">Select the Product Master SKU and enter Qty Needed. When enough stock is available, the web Work Order editor automatically sets Qty Accepted, deducts inventory, creates the stock movement and posts the work-order parts ledger entry when you Save. Out-of-stock quantities remain as a shortage.</p>`;
+  return `${workOrderAdminProductDatalist()}<details class="column-settings-inline"><summary>Show / Hide Parts Columns</summary><div class="column-chooser">${heads.map((head) => `<label class="checkline"><input type="checkbox" data-work-order-part-column="${esc(head)}" ${hidden.has(head) ? "" : "checked"}> ${esc(head)}</label>`).join("")}</div></details><div class="table-wrap"><table class="line-table admin-parts-table" data-column-preference-key="repairs|work-order-parts"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody id="adminPartBody">${rows.map((row, index) => workOrderPartAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminPartRowBtn">Add part row</button>${createPartButtonMarkup()}</div><p class="notice">Select the Product Master SKU and enter Qty Needed. When enough stock is available, the web Work Order editor automatically sets Qty Accepted, deducts inventory, creates the stock movement and posts the work-order parts ledger entry when you Save. Out-of-stock quantities remain as a shortage.</p>`;
 }
 
 function workOrderAdminProductDatalist() {
@@ -13144,7 +13403,7 @@ function repairDailySummaryTable(wo) {
     return grouped.get(key);
   };
   (wo._labor || []).filter((labor) => !isReversedLabor(labor)).forEach((labor) => {
-    const row = bucket(labor.clock_in || wo.wo_date, normalizedLaborIssue(labor));
+    const row = bucket(guamDateKey(labor.clock_in, wo.wo_date), normalizedLaborIssue(labor));
     const hours = laborHours(labor);
     if (isHelperLabor(labor)) row.helperHours += hours;
     else row.primaryHours += hours;
@@ -13320,13 +13579,22 @@ function dateTimeLocalValue(value) {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Pacific/Guam",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 
 function parseDateTimeLocalValue(value, label = "Date/time", { allowFuture = false } = {}) {
   if (!value) return null;
-  const d = new Date(value);
+  const text = String(value).trim();
+  const d = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) ? new Date(`${text.slice(0, 16)}:00+10:00`) : new Date(text);
   if (Number.isNaN(d.getTime())) throw new Error(`${label} is not a valid date/time.`);
   if (!allowFuture && d > new Date()) throw new Error(`${label} cannot be later than the current time.`);
   return d.toISOString();
@@ -13722,7 +13990,7 @@ async function renderInvoicesView() {
   currentCfg = tableMap.invoices;
   $("viewTitle").textContent = "Invoices";
   $("viewSub").textContent = "Issue customer invoices for sales, rentals, equipment sales, and work orders.";
-  const [invoices, lines, payments, customers, products, workOrders, woIssues, woParts, woLabor] = await Promise.all([getAll("invoices"), getAll("invoice_lines"), getAll("customer_payments"), getAll("customers"), getAll("products"), getAll("work_orders"), getAll("work_order_issues"), getAll("work_order_parts"), getAll("work_order_labor")]);
+  const [invoices, lines, payments, customers, products, workOrders, woIssues, woParts, woLabor, assets, outsideFleet] = await Promise.all([getAll("invoices"), getAll("invoice_lines"), getAll("customer_payments"), getAll("customers"), getAll("products"), getAll("work_orders"), getAll("work_order_issues"), getAll("work_order_parts"), getAll("work_order_labor"), getAll("assets").catch(() => []), getAll("outside_customer_fleet").catch(() => [])]);
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.customerRows = customers;
   productMeta.products = products;
@@ -13737,6 +14005,7 @@ async function renderInvoicesView() {
     inv._lines = lines.filter((line) => line.invoice_id === inv.id);
     inv._paid = payments.filter((p) => p.invoice_no === inv.invoice_no && !/void|reversed/i.test(p.status || "")).reduce((s, p) => s + Number(p.amount || 0), 0);
     inv._workOrder = workOrderRows.find((wo) => wo.wo_no === inv.source_ref || wo.wo_no === inv.invoice_no || wo.invoice_no === inv.invoice_no) || null;
+    if (inv._workOrder) inv._workOrderAsset = workOrderAssetDetailsFromLists(inv._workOrder, assets, outsideFleet);
   });
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="invoiceSearch" placeholder="Search invoices by invoice #, customer, source, status, item"></div>
@@ -13831,9 +14100,11 @@ function combinedInvoicesHtml(invoices) {
 function invoicePrintableSection(inv) {
   const customer = (productMeta.customerRows || []).find((c) => c.name === inv.customer) || {};
   const narrative = inv._workOrder ? workOrderInvoiceNarrativeHtml(inv) : "";
+  const asset = inv._workOrderAsset || {};
+  const workOrderAssetMeta = inv._workOrder ? `<br><strong>Asset #</strong> ${esc(inv._workOrder.asset_tag || "")}<br><strong>Equipment</strong> ${esc(asset.name || "")}<br><strong>Serial #</strong> ${esc(asset.serial || "")}<br><strong>Plate #</strong> ${esc(asset.plate || "")}` : "";
   return `<main class="sheet">
     <div class="top"><div><div class="logo">lms <small>imports</small></div><h1>Customer Invoice</h1></div><div class="doc-meta"><strong>${esc(inv.invoice_no || "")}</strong><br>Date ${esc(formatDisplayDate(inv.invoice_date))}</div></div>
-    <div class="boxes"><div class="box"><strong>Customer</strong><br>${esc(inv.customer || "")}${customer.address ? `<br>${esc(customer.address)}` : ""}<br><strong>Payment</strong> ${esc(inv.payment_mode || "PO")}${inv.customer_po ? `<br><strong>Customer PO</strong> ${esc(inv.customer_po)}` : ""}</div><div class="box"><strong>Due Date</strong> ${esc(formatDisplayDate(inv.due_date))}<br><strong>Type</strong> ${esc(inv.type || "")}<br><strong>Source</strong> ${esc(inv.source_ref || "")}<br><strong>Status</strong> ${esc(invoiceDisplayStatus(inv))}</div></div>
+    <div class="boxes"><div class="box"><strong>Customer</strong><br>${esc(inv.customer || "")}${customer.address ? `<br>${esc(customer.address)}` : ""}<br><strong>Payment</strong> ${esc(inv.payment_mode || "PO")}${inv.customer_po ? `<br><strong>Customer PO</strong> ${esc(inv.customer_po)}` : ""}</div><div class="box"><strong>Due Date</strong> ${esc(formatDisplayDate(inv.due_date))}<br><strong>Type</strong> ${esc(inv.type || "")}<br><strong>Source</strong> ${esc(inv.source_ref || "")}<br><strong>Status</strong> ${esc(invoiceDisplayStatus(inv))}${workOrderAssetMeta}</div></div>
     <table><thead><tr><th>Description</th><th>UOM</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${(inv._lines || []).map((line) => `<tr><td class="description">${esc(line.description || "")}</td><td>${esc(line.unit || "")}</td><td class="num">${esc(line.qty || "")}</td><td class="num">${money(line.rate)}</td><td class="num">${money(Number(line.qty || 0) * Number(line.rate || 0))}</td></tr>`).join("")}<tr class="total-row"><td colspan="4" class="num total">Total</td><td class="num total">${money(invoiceTotal(inv))}</td></tr></tbody></table>
     ${narrative}${inv.notes ? `<div class="notes"><strong>Notes</strong><br>${esc(inv.notes)}</div>` : ""}
   </main>`;
@@ -13914,7 +14185,7 @@ async function openInvoiceModal(inv = null) {
 
 function invoiceLineRows(lines) {
   const rows = [...lines, ...Array.from({ length: Math.max(0, 5 - lines.length) }, () => ({ description: "", unit: "", qty: "", rate: "" }))];
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product / SKU</th><th>Description</th><th>On Hand</th><th>UOM</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody id="invoiceLineBody">${rows.map((line, i) => invoiceLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><td colspan="6"><strong>Invoice Total</strong></td><td id="invoiceLinesTotal"><strong>${money(rows.reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.rate || 0), 0))}</strong></td></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addInvoiceLineBtn">Add row</button></div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product / SKU</th><th>Description</th><th>On Hand</th><th>UOM</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody id="invoiceLineBody">${rows.map((line, i) => invoiceLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><td colspan="6"><strong>Invoice Total</strong></td><td id="invoiceLinesTotal"><strong>${money(rows.reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.rate || 0), 0))}</strong></td></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addInvoiceLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function invoiceLineRowHtml(line = {}, index = 0) {
@@ -14188,7 +14459,7 @@ async function postInvoiceLedger(invoice, lines) {
 }
 
 async function loadCustomerInvoiceDocument(invoiceNo) {
-  const [invoices, lines, customers, workOrders, woIssues, woParts, woLabor] = await Promise.all([
+  const [invoices, lines, customers, workOrders, woIssues, woParts, woLabor, assets, outsideFleet] = await Promise.all([
     getAll("invoices"),
     getAll("invoice_lines"),
     getAll("customers"),
@@ -14196,6 +14467,8 @@ async function loadCustomerInvoiceDocument(invoiceNo) {
     getAll("work_order_issues").catch(() => []),
     getAll("work_order_parts").catch(() => []),
     getAll("work_order_labor").catch(() => []),
+    getAll("assets").catch(() => []),
+    getAll("outside_customer_fleet").catch(() => []),
   ]);
   const inv = invoices.find((row) => String(row.invoice_no || "") === String(invoiceNo || ""));
   if (!inv) return null;
@@ -14206,6 +14479,7 @@ async function loadCustomerInvoiceDocument(invoiceNo) {
     wo._parts = woParts.filter((row) => row.wo_id === wo.id);
     wo._labor = woLabor.filter((row) => row.wo_id === wo.id);
     inv._workOrder = wo;
+    inv._workOrderAsset = workOrderAssetDetailsFromLists(wo, assets, outsideFleet);
   }
   const customer = customers.find((row) => String(row.name || "").trim().toLowerCase() === String(inv.customer || "").trim().toLowerCase()) || {};
   return { inv, customer };
@@ -14215,6 +14489,9 @@ async function printCustomerInvoice(invoiceNo) {
   const documentData = await loadCustomerInvoiceDocument(invoiceNo);
   if (!documentData) return alert(`Invoice ${invoiceNo} could not be loaded.`);
   const { inv, customer } = documentData;
+  const workOrderAsset = inv._workOrderAsset || {};
+  const invoiceMeta = [["Due Date", inv.due_date], ["Payment Mode", inv.payment_mode || "PO"], ["Customer PO", inv.customer_po || ""], ["Type", inv.type], ["Source", inv.source_ref || ""], ["Status", invoiceDisplayStatus(inv)]];
+  if (inv._workOrder) invoiceMeta.push(["Asset #", inv._workOrder.asset_tag || ""], ["Equipment", workOrderAsset.name || ""], ["Serial #", workOrderAsset.serial || ""], ["Plate #", workOrderAsset.plate || ""]);
   const html = printableDocumentHtml({
     title: "Customer Invoice",
     number: inv.invoice_no,
@@ -14222,7 +14499,7 @@ async function printCustomerInvoice(invoiceNo) {
     partyLabel: "Customer",
     partyName: inv.customer,
     partyAddress: customer.address || "",
-    meta: [["Due Date", inv.due_date], ["Payment Mode", inv.payment_mode || "PO"], ["Customer PO", inv.customer_po || ""], ["Type", inv.type], ["Source", inv.source_ref || ""], ["Status", invoiceDisplayStatus(inv)]],
+    meta: invoiceMeta,
     heads: ["SKU", "Product Name / Description", "UOM", "Qty", "Rate", "Amount"],
     lines: (inv._lines || []).map((line) => printableInvoiceLine(line, /work order/i.test(inv.type || ""))),
     total: invoiceTotal(inv),
@@ -14882,7 +15159,7 @@ async function openSupplyIssueModal() {
       <div class="field" id="supplyMechanicField" hidden><label>Mechanic</label><select data-product-field="issued_to"><option value="">Select mechanic</option>${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("")}</select></div>
       <div class="field"><label>Work order (optional)</label><input class="suggest-input" data-suggest-source="work_orders" data-product-field="wo_lookup" placeholder="Type WO, asset, customer, or status" autocomplete="off"><small>Results appear only after you start typing.</small></div>
       ${productInput("WO issue / use", "issue", "Supplies issuance")}
-      <div class="field wide"><label>Parts / supplies</label><div class="table-wrap supply-lines-wrap"><table class="line-table supply-line-table"><thead><tr><th>SKU / Product</th><th>Product Name</th><th>Qty</th><th>Unit Cost</th><th>Warehouse / Bin</th><th></th></tr></thead><tbody id="supplyLineRows">${supplyIssueLineRow(0)}</tbody></table></div><button class="rowbtn" type="button" id="addSupplyLineBtn">Add more parts</button>${productOptionsDatalist()}</div>
+      <div class="field wide"><label>Parts / supplies</label><div class="table-wrap supply-lines-wrap"><table class="line-table supply-line-table"><thead><tr><th>SKU / Product</th><th>Product Name</th><th>Qty</th><th>Unit Cost</th><th>Warehouse / Bin</th><th></th></tr></thead><tbody id="supplyLineRows">${supplyIssueLineRow(0)}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSupplyLineBtn">Add more parts</button>${createPartButtonMarkup()}</div>${productOptionsDatalist()}</div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes"></textarea></div>
     </div>
     <p class="notice"><strong>Accounting when saved:</strong> Debit Job Supplies and Credit Parts Inventory for the total issued cost. The mechanic and optional work order remain attached as tracking details. Reversing posts the exact opposite entry and returns every quantity to inventory.</p>`;
@@ -15285,6 +15562,7 @@ async function quickCreateCustomerInOpenModal() {
     if (!await approveMasterNameCreation("customers", name)) return;
     await upsertOne("customers", { reference: await nextRefPreview("customer", "C-", "customers", "reference"), name: name.trim(), terms: "Net 30" }, "name");
     await incrementSequence("customer");
+    await ensurePartyMasterSuggestRows(true);
     productMeta.customers = [...new Set([...(productMeta.customers || []), name.trim()])].sort();
     const customerField = document.querySelector('[data-product-field="customer"], [data-product-field="bill_to_customer"], [data-product-field="linked_customer"]');
     if (customerField) customerField.value = name.trim();
@@ -15632,9 +15910,10 @@ function assetStats(assets, workOrders) {
 }
 
 async function renderEquipmentRepairQueueView() {
+  if (isDualRequestPortalUser()) return await renderEquipmentRepairRequestMobile();
   currentCfg = { heads: ["asset_tag", "name", "location", "gps_location", "assigned_operator", "requested_by", "approved_by", "repair_po_no", "status", "_openWoIssue", "wo_no"], labels: ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Status", "Issue / Request", "Assigned WO"] };
-  $("viewTitle").textContent = "Equipment Subject to Repair";
-  $("viewSub").textContent = "Assets scanned or flagged for repair before a work order is assigned.";
+  $("viewTitle").textContent = "Equipment Repair Requests";
+  $("viewSub").textContent = "Repair requests submitted from mobile login, QR scan, or Fleet & Equipment before work-order assignment.";
   const [assets, workOrders, locations, types, customers] = await Promise.all([
     getAll("assets"),
     getAll("work_orders"),
@@ -15652,12 +15931,119 @@ async function renderEquipmentRepairQueueView() {
       <input class="searchbox" id="repairAssetSearch" placeholder="Search asset, issue, location, assigned WO">
     </div>
     <section class="panel">
-      <div class="panel-head"><div class="panel-title"><strong>Equipment Subject to Repair</strong><span>Create or review work orders from scanned repair requests.</span></div><div class="actions"><button id="repairAssetCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button></div></div>
+      <div class="panel-head"><div class="panel-title"><strong>Equipment Repair Requests</strong><span>Create or review work orders from mobile and QR repair requests.</span></div><div class="actions"><button id="repairAssetCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button></div></div>
       <div id="repairAssetHost">${equipmentRepairQueueTable(currentRows)}</div>
     </section>`;
   $("repairAssetSearch").oninput = renderFilteredEquipmentRepairQueue;
   $("repairAssetCsvBtn").onclick = exportCurrentCsv;
   bindEquipmentRepairQueue();
+}
+
+async function renderEquipmentRepairRequestMobile() {
+  $("viewTitle").textContent = "";
+  $("viewSub").textContent = "";
+  productMeta.assets = await getAll("assets").catch(() => []);
+  $("content").innerHTML = `
+    <section class="request-portal request-form-only">
+      ${dualRequestPortalTabs("equipmentrepairqueue")}
+      <div class="request-choice-intro compact">
+        <span class="eyebrow">Fleet &amp; Equipment</span>
+        <h2>Equipment Repair Request</h2>
+        <p>Select equipment from Fleet &amp; Equipment. Its asset details will fill automatically. A PO number and repair issue are required.</p>
+      </div>
+      <button class="primary" id="mobileNewEquipmentRepairRequestBtn">New equipment repair request</button>
+    </section>`;
+  bindDualRequestPortalTabs($("content"));
+  $("mobileNewEquipmentRepairRequestBtn").onclick = openEquipmentRepairRequestModal;
+}
+
+function selectedRepairRequestAsset(value) {
+  const exact = String(value || "").trim().toLowerCase();
+  const assetTag = exact.split("|")[0].trim();
+  return (productMeta.assets || []).find((asset) => {
+    const tag = String(asset.asset_tag || "").trim().toLowerCase();
+    const label = [asset.asset_tag, asset.name || asset.description].filter(Boolean).join(" | ").toLowerCase();
+    return tag === assetTag || label === exact;
+  }) || null;
+}
+
+function fillEquipmentRepairRequestAsset(input) {
+  const asset = selectedRepairRequestAsset(input?.value);
+  const detail = $("equipmentRepairRequestAssetDetail");
+  if (!detail) return;
+  detail.innerHTML = asset ? `
+    <div><span>Asset #</span><strong>${esc(asset.asset_tag || "-")}</strong></div>
+    <div><span>Equipment</span><strong>${esc(asset.name || asset.description || "-")}</strong></div>
+    <div><span>Current location</span><strong>${esc(asset.location || "-")}</strong></div>
+    <div><span>Current operator</span><strong>${esc(asset.assigned_operator || "-")}</strong></div>
+    <div><span>Plate #</span><strong>${esc(asset.plate || asset.license_plate || "-")}</strong></div>
+    <div><span>Serial / VIN</span><strong>${esc(asset.vin_serial || asset.vin || asset.serial_no || "-")}</strong></div>`
+    : `<p>Select a valid Fleet &amp; Equipment record to show its details.</p>`;
+}
+
+function openEquipmentRepairRequestModal() {
+  editing = null;
+  $("modalTitle").textContent = "New equipment repair request";
+  $("modalBody").innerHTML = `
+    <div class="form-grid">
+      <div class="field wide"><label>Equipment *</label><input class="suggest-input" data-suggest-source="equipment" data-equipment-source="master" data-repair-request-field="asset_lookup" placeholder="Type asset #, equipment, plate, serial, VIN, type, or location" autocomplete="off" inputmode="search" required><small>Results appear in separate columns after you start typing.</small></div>
+      <div class="field wide repair-request-asset-detail" id="equipmentRepairRequestAssetDetail"><p>Select equipment to show its Fleet &amp; Equipment details.</p></div>
+      <div class="field"><label>Request date</label><input type="date" data-repair-request-field="request_date" value="${esc(today())}" readonly></div>
+      <div class="field"><label>Requested by *</label><input data-repair-request-field="requested_by" value="${esc(profile?.full_name || "")}" required></div>
+      <div class="field"><label>Email *</label><input type="email" data-repair-request-field="email" value="${esc(profile?.email || session?.user?.email || "")}" required></div>
+      <div class="field"><label>PO # *</label><input data-repair-request-field="po_no" placeholder="Customer or internal PO number" required></div>
+      <div class="field"><label>Priority</label><select data-repair-request-field="priority"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
+      <div class="field"><label>Operator</label><input data-repair-request-field="operator" placeholder="Operator using the equipment"></div>
+      <div class="field"><label>Equipment location</label><input data-repair-request-field="location" placeholder="Defaults to current Fleet location"></div>
+      <div class="field wide"><label>Repair issue / work requested *</label><textarea data-repair-request-field="issue" required placeholder="Describe the problem, symptoms, damage, or repair needed"></textarea></div>
+      <div class="field wide"><label>Additional notes</label><textarea data-repair-request-field="notes" placeholder="Add timing, safety, access, or contact instructions"></textarea></div>
+    </div>
+    <p class="notice">This request goes to Fleet &amp; Repairs → Equipment Repair Requests. It does not create a work order automatically; Fleet staff review it first and assign the work order.</p>`;
+  const assetInput = document.querySelector('[data-repair-request-field="asset_lookup"]');
+  assetInput.addEventListener("change", () => {
+    const asset = selectedRepairRequestAsset(assetInput.value);
+    fillEquipmentRepairRequestAsset(assetInput);
+    if (asset) {
+      document.querySelector('[data-repair-request-field="operator"]').value = asset.assigned_operator || "";
+      document.querySelector('[data-repair-request-field="location"]').value = asset.location || "";
+    }
+  });
+  $("modalSave").textContent = "Submit repair request";
+  $("modalSave").onclick = saveEquipmentRepairRequestModal;
+  $("modalCancel").textContent = "Cancel";
+  $("modal").style.display = "flex";
+}
+
+async function saveEquipmentRepairRequestModal() {
+  const values = {};
+  document.querySelectorAll("[data-repair-request-field]").forEach((field) => { values[field.dataset.repairRequestField] = String(field.value || "").trim(); });
+  const asset = selectedRepairRequestAsset(values.asset_lookup);
+  if (!asset) throw new Error("Select a valid equipment record from Fleet & Equipment.");
+  if (!values.requested_by) throw new Error("Requested by is required.");
+  if (!values.email || !/^\S+@\S+\.\S+$/.test(values.email)) throw new Error("Enter a valid requestor email address.");
+  if (!values.po_no) throw new Error("PO # is required for an equipment repair request.");
+  if (!values.issue) throw new Error("Repair issue / work requested is required.");
+  const stamp = new Date().toLocaleString();
+  const requestNote = [
+    `Repair requested ${stamp}: ${values.issue}`,
+    `Requestor email: ${values.email}`,
+    `Priority: ${values.priority || "Medium"}`,
+    values.notes ? `Request notes: ${values.notes}` : "",
+  ].filter(Boolean).join(" | ");
+  const record = {
+    status: "Equipment Repair Request",
+    requested_by: values.requested_by,
+    repair_po_no: values.po_no,
+    assigned_operator: values.operator || asset.assigned_operator || null,
+    location: values.location || asset.location || null,
+    last_update_date: localToday(),
+    notes: [asset.notes || "", requestNote].filter(Boolean).join("\n"),
+  };
+  const { error } = await supabase.from("assets").update(record).eq("id", asset.id);
+  if (error) throw error;
+  closeModal(true);
+  alert("Equipment repair request submitted successfully.");
+  await renderEquipmentRepairRequestMobile();
 }
 
 function equipmentRepairQuoteEffectiveStatus(row) {
@@ -15853,7 +16239,7 @@ function repairQuotePartRow(line = {}, index = 0) {
 
 function repairQuotePartsTable(lines = []) {
   const rows = lines.length ? lines : [{}, {}, {}];
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Part / SKU</th><th>Description</th><th>Qty</th><th>Unit Cost</th><th>Markup %</th><th>Selling Price</th><th>Line Total</th></tr></thead><tbody id="repairQuotePartsBody">${rows.map(repairQuotePartRow).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addRepairQuotePartRowBtn">Add part row</button></div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Part / SKU</th><th>Description</th><th>Qty</th><th>Unit Cost</th><th>Markup %</th><th>Selling Price</th><th>Line Total</th></tr></thead><tbody id="repairQuotePartsBody">${rows.map(repairQuotePartRow).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addRepairQuotePartRowBtn">Add part row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function repairQuoteLaborRow(line = {}, index = 0) {
@@ -16956,7 +17342,7 @@ async function openTruckingRequestForm(requestNo = "", copyMode = false) {
     <div class="form-grid">
       <label>Request #<input value="${esc(number)}" disabled><input type="hidden" name="request_no" value="${esc(number)}"><small>Generated automatically by the system.</small></label>
       <label>Entry date<input type="date" value="${esc(entryDate)}" disabled><input type="hidden" name="request_date" value="${esc(entryDate)}"><small>Fixed to the date this request was created.</small></label>
-      <label>Customer<select name="customer" required><option value="">Select Customer Master</option>${truckingCustomerSelectOptions(existing?.customer || "")}</select></label>
+      <label>Customer<input class="suggest-input" name="customer" data-suggest-source="customers" value="${esc(existing?.customer || "")}" placeholder="Type customer name, reference, email, or phone" autocomplete="off" inputmode="search" required><small>Results appear from Customer Master only after typing.</small></label>
       <label>Project / Jobsite<input class="suggest-input" name="project_jobsite" list="truckJobsiteOptions" value="${esc(projectJobsite)}" placeholder="Search Fleet & Equipment locations" autocomplete="off" required><small>Select an available Fleet & Equipment jobsite/location.</small></label>
       <label>Contact #<input type="tel" name="contact_no" value="${esc(existing?.contact_no || "")}" placeholder="Contact phone number"></label>
       <label>Requested delivery date<input type="date" name="needed_date" value="${esc(existing?.needed_date || "")}" required></label>
@@ -18319,7 +18705,7 @@ async function openTruckingMoveForm(ticketNo = "") {
     <div class="form-grid">
       <label>Ticket #<input name="ticket_no" value="${esc(number)}" readonly></label>
       <label>Date<input type="date" name="move_date" value="${esc(existing?.move_date || truckingToday())}"></label>
-      <label>Customer<input name="customer" list="truckCustomerOptions" value="${esc(existing?.customer || "")}"></label>
+      <label>Customer<input class="suggest-input" name="customer" data-suggest-source="customers" value="${esc(existing?.customer || "")}" placeholder="Type customer name, reference, email, or phone" autocomplete="off" inputmode="search"></label>
       <label>Project<input name="project" value="${esc(existing?.project || "")}"></label>
       <label>Jobsite<input name="jobsite" list="truckJobsiteOptions" value="${esc(existing?.jobsite || "")}"></label>
       <label>PO #<input name="po_no" value="${esc(existing?.po_no || "")}"></label>
@@ -18980,7 +19366,29 @@ function renderEquipmentRequestMobile() {
   bindDualRequestPortalTabs($("content"));
   $("mobileEquipmentTutorialBtn").onclick = async () => { await handleOpenEquipmentRequestModal(); startMobileRequestTutorial("equipment"); };
   $("mobileNewEquipmentRequestBtn").onclick = () => handleOpenEquipmentRequestModal();
-  setTimeout(() => handleOpenEquipmentRequestModal(), 50);
+}
+
+async function renderRequestPortalHome() {
+  $("viewTitle").textContent = "";
+  $("viewSub").textContent = "";
+  $("content").innerHTML = `
+    <section class="request-portal request-choice-home">
+      ${dualRequestPortalTabs("requestportal")}
+      <div class="request-choice-intro">
+        <span class="eyebrow">Mobile requests</span>
+        <h2>What would you like to request?</h2>
+        <p>Choose a request type below. A form opens only after you make a selection.</p>
+      </div>
+      <div class="request-choice-grid">
+        <button type="button" class="request-choice-card" data-request-choice="equipmentrequests"><strong>Equipment Request</strong><span>Request one or more available fleet assets.</span></button>
+        <button type="button" class="request-choice-card" data-request-choice="truckingrequests"><strong>Trucking Move Request</strong><span>Request equipment moves, hauling, containers, roll-off, pump, or other trucking service.</span></button>
+        <button type="button" class="request-choice-card" data-request-choice="equipmentrepairqueue"><strong>Equipment Repair Request</strong><span>Report an issue for equipment already listed in Fleet & Equipment.</span></button>
+      </div>
+    </section>`;
+  bindDualRequestPortalTabs($("content"));
+  document.querySelectorAll("[data-request-choice]").forEach((button) => {
+    button.onclick = () => loadView(button.dataset.requestChoice);
+  });
 }
 
 function equipmentRequestTable(rows) {
@@ -19710,7 +20118,7 @@ function equipmentRepairQueueTable(rows) {
     <td>${esc(asset._openWo?.description || repairRequestText(asset) || "")}</td>
     <td>${asset._openWo ? badge(asset._openWo.wo_no || "") : ""}</td>
     <td><div class="rowactions">${asset._openWo ? `<button class="rowbtn" type="button" data-open-wo="${esc(asset._openWo.wo_no)}">Open WO</button>` : `<button class="rowbtn primary" type="button" data-create-wo-asset="${esc(asset.asset_tag)}">Assign WO</button><button class="rowbtn" type="button" data-asset-operational="${esc(asset.asset_tag)}">Make operational</button>`}</div></td>
-  </tr>`).join("") : `<tr><td colspan="${heads.length}" class="empty">No equipment is currently subject to repair.</td></tr>`}</tbody></table></div>`;
+  </tr>`).join("") : `<tr><td colspan="${heads.length}" class="empty">No equipment repair requests are waiting for review.</td></tr>`}</tbody></table></div>`;
 }
 
 function repairRequestText(asset) {
@@ -19741,7 +20149,7 @@ function bindEquipmentRepairQueue() {
 async function markAssetOperational(assetTag) {
   const asset = currentRows.find((row) => row.asset_tag === assetTag) || (productMeta.assets || []).find((row) => row.asset_tag === assetTag);
   if (!asset) return;
-  if (!confirm(`Mark ${asset.asset_tag} as operational?\n\nThis clears it from Equipment Subject to Repair without creating a work order.`)) return;
+  if (!confirm(`Mark ${asset.asset_tag} as operational?\n\nThis clears it from Equipment Repair Requests without creating a work order.`)) return;
   try {
     const stamp = new Date().toLocaleString();
     const notes = [asset.notes || "", `Marked operational ${stamp}`].filter(Boolean).join("\n");
@@ -20486,7 +20894,7 @@ async function saveAssetLocationModal() {
   const repairIssue = String(record.repair_issue || "").trim();
   if (!String(record.assigned_operator || "").trim()) return alert("Operator is required before submitting the scan.");
   if (!String(record.requested_by || "").trim()) return alert("Requested by is required before submitting the scan.");
-  if (!String(record.approved_by || "").trim()) return alert("Approved by is required before submitting the scan.");
+  if (!/repair/i.test(action) && !String(record.approved_by || "").trim()) return alert("Approved by is required before submitting the scan.");
   delete record.scan_action;
   delete record.repair_issue;
   const file = document.querySelector("[data-asset-scan-photo]")?.files?.[0];
@@ -20496,11 +20904,15 @@ async function saveAssetLocationModal() {
   }
   if (/repair/i.test(action)) {
     if (!repairIssue) {
-      alert("Please enter the repair issue so it can appear in Equipment Subject to Repair.");
+      alert("Please enter the repair issue so it can appear in Equipment Repair Requests.");
+      return;
+    }
+    if (!String(record.repair_po_no || "").trim()) {
+      alert("PO # is required before submitting an equipment repair request.");
       return;
     }
     const stamp = new Date().toLocaleString();
-    record.status = "Subject to Repair";
+    record.status = "Equipment Repair Request";
     record.notes = [record.notes || asset.notes || "", `Repair requested ${stamp}: ${repairIssue}`].filter(Boolean).join("\n");
   } else {
     record.repair_po_no = null;
@@ -20927,14 +21339,117 @@ async function openProductModal(row = null) {
   setupImageDropzones($("modalBody"));
 }
 
+async function openQuickPartOverlay() {
+  if (document.getElementById("quickPartOverlay")) return;
+  try {
+    const [categories, units, warehouses] = await Promise.all([
+      getAll("categories"),
+      getAll("units"),
+      getAll("warehouses"),
+    ]);
+    productMeta.categories = categories.map((row) => row.name).filter(Boolean).sort();
+    productMeta.units = units.map((row) => row.name).filter(Boolean).sort();
+    productMeta.warehouses = warehouses.map((row) => row.name).filter(Boolean).sort();
+    const sku = await nextRefPreview("product", "SKU-", "products", "sku");
+    const overlay = document.createElement("div");
+    overlay.id = "quickPartOverlay";
+    overlay.className = "quick-part-overlay";
+    overlay.innerHTML = `<div class="quick-part-dialog" role="dialog" aria-modal="true" aria-labelledby="quickPartTitle">
+      <header><div><h2 id="quickPartTitle">Create new part</h2><p>Create it in Product Master without closing the current transaction.</p></div><button class="rowbtn" type="button" data-close-quick-part>x</button></header>
+      <div class="quick-part-body"><div class="form-grid">
+        ${quickPartInput("SKU", "sku", sku, "text", true)}
+        ${quickPartInput("Product name", "name", "", "text", true)}
+        ${quickPartSelect("Category", "category", productMeta.categories || [], true)}
+        ${quickPartSelect("Unit", "unit", productMeta.units || [], true)}
+        ${quickPartSelect("Warehouse", "warehouse", productMeta.warehouses || [], true)}
+        ${quickPartInput("Bin / shelf", "bin_shelf", "", "text", true)}
+        ${quickPartInput("Reorder point", "reorder_point", 0, "number", true)}
+        ${quickPartInput("Unit cost", "cost", "", "number")}
+        ${quickPartInput("Markup %", "markup_percent", "", "number")}
+        ${quickPartInput("Selling price", "selling_price", "", "number")}
+        ${quickPartInput("Barcode", "barcode", "")}
+        ${quickPartInput("Compatible with", "compatible_with", "")}
+      </div><p class="notice">Quantity starts at zero and is updated through Goods Receipt or an approved inventory adjustment. Enter Selling Price or Markup %.</p></div>
+      <footer><button type="button" data-close-quick-part>Cancel</button><button class="primary" type="button" id="saveQuickPartBtn">Save part</button></footer>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll("[data-close-quick-part]").forEach((button) => button.onclick = closeQuickPartOverlay);
+    $("saveQuickPartBtn").onclick = saveQuickPartOverlay;
+    overlay.querySelector('[data-quick-part="name"]')?.focus();
+  } catch (error) {
+    alert(error.message || error);
+  }
+}
+
+function quickPartInput(label, field, value = "", type = "text", required = false) {
+  return `<div class="field"><label>${esc(label)}${required ? " *" : ""}</label><input type="${esc(type)}" ${type === "number" ? 'min="0" step="0.01"' : ""} data-quick-part="${esc(field)}" value="${esc(value)}" ${required ? "required" : ""}></div>`;
+}
+
+function quickPartSelect(label, field, values = [], required = false) {
+  return `<div class="field"><label>${esc(label)}${required ? " *" : ""}</label><select data-quick-part="${esc(field)}" ${required ? "required" : ""}><option value="">Select ${esc(label.toLowerCase())}</option>${values.map((value) => `<option value="${esc(value)}">${esc(value)}</option>`).join("")}</select></div>`;
+}
+
+function closeQuickPartOverlay() {
+  document.getElementById("quickPartOverlay")?.remove();
+}
+
+async function saveQuickPartOverlay() {
+  const overlay = document.getElementById("quickPartOverlay");
+  if (!overlay) return;
+  const record = {};
+  overlay.querySelectorAll("[data-quick-part]").forEach((input) => record[input.dataset.quickPart] = input.value);
+  record.status = "Active";
+  record.qty = 0;
+  record.expiry_date = null;
+  ["qty", "reorder_point", "cost", "selling_price", "markup_percent"].forEach((key) => {
+    record[key] = record[key] === "" || record[key] == null ? null : Number(record[key]);
+  });
+  const validation = validateProductRecord(record);
+  if (validation) return alert(validation);
+  const existing = (productMeta.products || []).find((product) => String(product.sku || "").trim().toLowerCase() === String(record.sku || "").trim().toLowerCase());
+  if (existing) return alert(`SKU ${record.sku} already exists as ${existing.name || "a Product Master item"}. Select the existing part instead.`);
+  const saveButton = overlay.querySelector("#saveQuickPartBtn");
+  try {
+    saveButton.disabled = true;
+    saveButton.textContent = "Saving...";
+    if (record.cost && record.markup_percent && !record.selling_price) {
+      record.selling_price = Number((record.cost * (1 + record.markup_percent / 100)).toFixed(2));
+      record.markup_percent = null;
+    }
+    const saved = await upsertOne("products", record, "sku");
+    await incrementSequence("product");
+    productMeta.products = [...(productMeta.products || []).filter((product) => product.id !== saved.id && String(product.sku || "").toLowerCase() !== String(saved.sku || "").toLowerCase()), saved]
+      .sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || ""), undefined, { numeric: true, sensitivity: "base" }));
+    await writeAuditLog({ tableName: "products", action: "Created from transaction", beforeData: null, afterData: saved });
+    closeQuickPartOverlay();
+    alert(`${saved.sku} - ${saved.name} was created and is now available in the parts search.`);
+  } catch (error) {
+    alert(error.message || error);
+    saveButton.disabled = false;
+    saveButton.textContent = "Save part";
+  }
+}
+
 function productInput(label, field, value, type = "text") {
-  return `<div class="field"><label>${esc(label)}</label><input ${type === "number" ? 'step="0.01"' : ""} type="${type}" data-product-field="${field}" value="${esc(value)}"></div>`;
+  const masterSource = type === "text" ? partyMasterSuggestSource(field) : "";
+  const pickerAttributes = masterSource ? `class="suggest-input" data-suggest-source="${masterSource}" autocomplete="off" inputmode="search" placeholder="Type name, reference, email, or phone"` : "";
+  return `<div class="field"><label>${esc(label)}</label><input ${type === "number" ? 'step="0.01"' : ""} ${pickerAttributes} type="${type}" data-product-field="${field}" value="${esc(value)}">${masterSource ? `<small>Start typing to search ${masterSource === "customers" ? "Customer Master" : "Vendor Master"}.</small>` : ""}</div>`;
+}
+
+function partyMasterSuggestSource(field) {
+  if (["customer", "customer_name", "bill_to_customer", "linked_customer"].includes(String(field || ""))) return "customers";
+  if (["vendor", "source_vendor"].includes(String(field || ""))) return "vendors";
+  return "";
 }
 
 function productSelect(label, field, values, value, quickLabel = "") {
   const listId = `${field}-${label}`.replace(/[^a-z0-9_-]/gi, "-");
   const unique = [...new Set((values || []).map((v) => String(v ?? "").trim()).filter(Boolean))];
-  return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" list="${esc(listId)}" data-product-field="${field}" value="${esc(value || "")}" placeholder="Type to search ${esc(label.toLowerCase())}" autocomplete="off"><datalist id="${esc(listId)}">${unique.map((v) => `<option value="${esc(v)}"></option>`).join("")}</datalist>${quickLabel ? `<button class="rowbtn" type="button" data-product-quick="${esc(field)}">${esc(quickLabel)}</button>` : ""}</div>`;
+  const masterSource = partyMasterSuggestSource(field);
+  const pickerAttributes = masterSource ? `data-suggest-source="${masterSource}" inputmode="search"` : `list="${esc(listId)}"`;
+  const datalist = masterSource ? "" : `<datalist id="${esc(listId)}">${unique.map((v) => `<option value="${esc(v)}"></option>`).join("")}</datalist>`;
+  const helper = masterSource ? `<small>Start typing to search ${masterSource === "customers" ? "Customer Master" : "Vendor Master"} by reference, name, email, or phone.</small>` : "";
+  return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" ${pickerAttributes} data-product-field="${field}" value="${esc(value || "")}" placeholder="Type to search ${esc(label.toLowerCase())}" autocomplete="off">${datalist}${quickLabel ? `<button class="rowbtn" type="button" data-product-quick="${esc(field)}">${esc(quickLabel)}</button>` : ""}${helper}</div>`;
 }
 
 function alternateSkuRows(values) {
@@ -21046,6 +21561,7 @@ async function quickCreateProductMaster(field) {
     if (table === "vendors") {
       if (!await approveMasterNameCreation("vendors", name)) return;
       await upsertOne("vendors", { reference: await nextRefPreview("vendor", "V-", "vendors", "reference"), name }, "name");
+      await ensurePartyMasterSuggestRows(true);
     } else {
       await upsertOne(table, { name }, "name");
     }
@@ -21956,6 +22472,7 @@ async function openPartRequestReviewModal(row = null) {
         <small class="muted" id="partRequestPhotoStatus">Photos are compressed before saving.</small>
       </section>
       <section class="form-grid part-request-fields">
+        <div class="field wide"><div class="actions">${createPartButtonMarkup()}</div></div>
         <div class="field"><label>Work order</label><input value="${esc(wo?.wo_no || row?.wo_no || row?.wo_id || "")}" disabled></div>
         <div class="field"><label>Product lookup</label><input class="suggest-input" list="poProductOptions" data-part-request-lookup value="${esc(partDisplayName(row))}" placeholder="Search SKU, name, vendor" autocomplete="off"></div>
         <div class="field"><label>SKU</label><input class="suggest-input" data-suggest-source="products" data-part-request-review="sku" list="partRequestSkuOptions" value="${esc(row?.sku || "")}" placeholder="Type SKU, product name, or vendor" autocomplete="off"><datalist id="partRequestSkuOptions"></datalist></div>
@@ -22295,6 +22812,7 @@ async function saveModal() {
     beforeData,
     afterData: editing ? { ...beforeData, ...record } : record,
   });
+  if (["customers", "vendors"].includes(currentView)) await ensurePartyMasterSuggestRows(true);
   closeModal();
   loadView(currentView);
 }
