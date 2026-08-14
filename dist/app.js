@@ -1770,7 +1770,7 @@ const moduleTrainingExtraDetails = {
   purchasing: ["Confirm Vendor Master, payment terms, product SKU, warehouse/bin and jobsite/project are correct before creating the PO.", "Use product lookup rather than free typing so receipt and inventory records retain the Product Master link.", "Check ordered quantity, unit cost and extension on every line before issuing.", "For special-order/backorder demand, confirm the source sales order and customer requirement remain traceable.", "Use separate POs when different preferred vendors supply the requested parts.", "For landed cost, enter freight/duty/other amounts and verify allocation before closing.", "Monitor Open, Received/Matched and Closed status rather than creating replacement POs.", "After receipt and invoice match, verify AP vendor, invoice number, amount, due date and payment readiness.", "If a PO is wrong before receipt, edit/void it; after receipt, correct the receipt and matching transactions instead of deleting history.", "Use PO PDF/email only after all lines, terms, address, notes and totals are reviewed."],
   receipts: ["Do not create a receipt until physical items have arrived and can be counted.", "Choose the PO first so vendor, SKU, ordered quantity and remaining quantity are inherited.", "For partial delivery, enter only quantity physically received; leave the remaining quantity open.", "Select the warehouse and bin where stock was actually placed.", "Enter vendor invoice only when available; Goods Receipt and AP invoice matching remain separate controls.", "Verify received quantity does not exceed the remaining ordered quantity.", "After posting, search Product Master and Stock Movement to confirm on-hand quantity and FIFO cost increased.", "Review the PO to confirm its received/match status and remaining open lines.", "For mistakes, reverse the receipt and repost correctly; do not enter a negative duplicate receipt manually.", "Retain packing slip/invoice references in notes or attachments for audit."],
   quotes: ["Confirm Customer Master contact/email and current payment terms before preparing the quote.", "Choose each product from Product Master so description, unit and selling price populate.", "Review availability but remember a quotation does not issue inventory.", "Set quantity, rate, validity date, notes and any customer-specific scope clearly.", "Save as active/draft while reviewing, then provide the PDF to the customer.", "When the customer accepts, convert the existing quotation rather than manually re-entering the Sales Order.", "Confirm the conversion links the quotation number and carries every line/price correctly.", "Use the reorder prompt if converted demand is below stock or reorder point.", "Expired quotations remain in the Expired tab for history and may be reviewed instead of automatically deleted.", "If pricing changes after expiry, create/revise according to company policy and preserve the original history."],
-  orders: ["Confirm customer, order date, payment mode and requested items before saving.", "For PO sales, enter the mandatory customer PO; for Cash/Credit Card, verify the correct payment classification.", "Select products from Product Master and verify price, quantity, available stock and warehouse.", "Choose normal fulfillment or Special Order/Backorder based on actual availability and customer agreement.", "When collecting a deposit for a special order, verify it posts to Customer Deposits rather than revenue before fulfillment.", "Review the Current/Unfulfilled and Delivered/Issued tabs to find the correct order stage.", "Saving reserves available quantities as ISS without reducing physical Qty; Reserved stock cannot be committed to another order.", "SHP records the physical release to the customer and is the point when Product Master Qty decreases.", "Invoice Cash/Credit Card to FHB Checking and Parts Sales; invoice PO terms to AR and Parts Sales, with COGS/Inventory entry.", "Confirm generated invoice number, accounting entries and stock movements after shipment.", "Use Reverse or Void for mistakes; never use Delete for a transactional sales order."],
+  orders: ["Confirm customer, order date, payment mode and requested items before saving.", "For PO sales, enter the mandatory customer PO; for Cash/Credit Card, verify the correct payment classification.", "Select products from Product Master and verify price, quantity, available stock and warehouse.", "Choose normal fulfillment or Special Order/Backorder based on actual availability and customer agreement.", "When collecting a deposit for a special order, verify it posts to Customer Deposits rather than revenue before fulfillment.", "Review the Current/Unfulfilled and Delivered/Issued tabs to find the correct order stage.", "Saving reserves available quantities as ISS without reducing physical Qty; Reserved stock cannot be committed to another order.", "Record the physical customer release in fulfillment, then create the invoice. SHP means the quantity already invoiced to the customer.", "Invoice Cash/Credit Card to FHB Checking and Parts Sales; invoice PO terms to AR and Parts Sales, with COGS/Inventory entry.", "Confirm generated invoice number, accounting entries and stock movements after shipment.", "Use Reverse or Void for mistakes; never use Delete for a transactional sales order."],
   salestopurchase: ["Confirm each demand line still belongs to an open customer order before purchasing.", "Compare required quantity, available stock, on-order quantity and reorder point.", "Review preferred vendor and change only when purchasing has approved an alternate source.", "Select individual parts or group compatible lines by vendor to create efficient POs.", "Verify generated PO quantities do not duplicate quantities already ordered.", "Track the linked PO through receipt so reserved customer demand becomes fulfillable.", "After receiving, confirm the shortage line clears or updates and return to the original Sales Order.", "Do not invoice the inventory sale until fulfillment rules and accounting timing are satisfied."],
   rentals: ["Confirm the customer, asset/item and rental availability for the requested dates.", "Record customer PO or documented manager override before checkout when billable on account.", "Inspect and record starting condition, meter/odometer and location before release.", "Choose hourly/daily/weekly/monthly rate and verify the correct billing schedule.", "Record deposit separately and ensure it is not treated as rental revenue until earned/applied.", "Monitor active rentals for upcoming return dates and overdue units.", "At return, record final date, condition, readings, damage/extra charges and location.", "Generate the invoice according to invoice timing and review the customer PDF.", "Verify returned equipment becomes available in Fleet & Equipment.", "Reverse incorrect billing instead of deleting the rental record."],
   invoices: ["Use the source reference to confirm whether the invoice came from Sales, Rental, Equipment Sale or Work Order.", "Review customer, invoice/due dates, description, quantity, unit/rate, tax/fees if applicable and total.", "For repair invoices, verify accepted parts and completed labor are represented once.", "Open PDF/Print and confirm letter-size layout, company header and customer details.", "Use Email only after verifying the registered customer email or intended recipient.", "Confirm the invoice created the correct AR or cash/revenue entry and any related COGS/inventory entry.", "Use Open/Paid/Void status to monitor collection without changing the original amount.", "Apply payments through Customer Payments and confirm remaining balance.", "If wrong, reverse/void and regenerate from the corrected source document.", "Never duplicate an invoice because the PDF was not visible—check the existing incomplete invoice/source reference first."],
@@ -10229,7 +10229,7 @@ function salesOrderRowHtml(order) {
     <td>${badge(order.status || "Open")}</td>
     <td>${esc(quantities.ordered)}</td>
     <td>${esc(quantities.issued)}</td>
-    <td>${esc(quantities.shipped)}</td>
+    <td title="Quantity already invoiced to the customer">${esc(quantities.invoiced)}</td>
     <td>${toOrderQty ? badge(`${toOrderQty} to order`) : ""}</td>
     <td>${Number(order.deposit_amount || 0) ? `${money(order.deposit_amount)}<br><small>${esc(order.deposit_invoice_no || "")}</small>` : ""}</td>
     <td>${money(salesOrderTotal(order))}</td>
@@ -10512,26 +10512,26 @@ function setupSalesOrderModalFooter(order = null) {
 }
 
 function salesLineRows(lines, linkedPoMap = {}, savedOrder = false) {
-  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th class="sales-po-select-col">PO</th><th>SKU</th><th>Product Name / Description</th><th>UOM</th><th>On Hand</th><th>Inventory / FIFO Cost</th><th title="Quantity ordered by the customer">ORD</th><th title="Quantity automatically reserved when the Sales Order is saved">ISS</th><th title="Quantity issued to the customer and available for invoicing">SHP</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th><th>Vendor PO Ref.</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i, linkedPoMap)).join("")}</tbody><tfoot><tr><th colspan="10">Parts subtotal</th><th id="salesOrderPartsSubtotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Customer-billed freight</th><th id="salesOrderFreightTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Sales order total</th><th id="salesOrderGrandTotal">$0.00</th><th colspan="2"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}<button class="rowbtn primary" type="button" id="createSelectedSalesPoBtn" ${savedOrder ? "" : "disabled"}>Create Vendor PO from Selected</button></div>`;
+  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th class="sales-po-select-col">PO</th><th>SKU</th><th>Product Name / Description</th><th>UOM</th><th>On Hand</th><th>Inventory / FIFO Cost</th><th title="Quantity ordered by the customer">ORD</th><th title="Quantity automatically reserved when the Sales Order is saved">ISS</th><th title="Quantity already invoiced to the customer">SHP</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th><th>Vendor PO Ref.</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i, linkedPoMap)).join("")}</tbody><tfoot><tr><th colspan="10">Parts subtotal</th><th id="salesOrderPartsSubtotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Customer-billed freight</th><th id="salesOrderFreightTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Sales order total</th><th id="salesOrderGrandTotal">$0.00</th><th colspan="2"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}<button class="rowbtn primary" type="button" id="createSelectedSalesPoBtn" ${savedOrder ? "" : "disabled"}>Create Vendor PO from Selected</button></div>`;
 }
 
 function salesLineRowHtml(line = {}, index = 0, linkedPoMap = {}) {
   const sku = line.sku || "";
   const product = productMeta.products?.find((p) => p.sku === sku) || {};
   const label = sku ? `${sku} - ${line.product_name || product.name || ""}` : "";
-  const shortage = product.id && Number(line.qty || 0) > Number(product.available_qty ?? product.qty ?? 0);
+  const canCreateVendorPo = Boolean(product.id);
   const linkedPos = linkedPoMap[String(sku).trim().toLowerCase()] || [];
   const linkedPoHtml = linkedPos.length ? linkedPos.map((po) => `<button type="button" class="rowbtn sales-line-po-link" data-linked-sales-po="${esc(po.po_no)}" title="Open ${esc(po.po_no)} (${esc(po.status)})">${esc(po.po_no)}</button>`).join(" ") : `<span class="muted">None</span>`;
   return `<tr data-issued-qty="${esc(line.issued_qty || 0)}" data-shipped-qty="${esc(line.shipped_qty || 0)}" data-invoiced-qty="${esc(line.invoiced_qty || 0)}">
-    <td data-label="Select for vendor PO" class="sales-po-select-col"><input type="checkbox" data-sales-po-select ${shortage ? "" : "disabled"} title="${shortage ? "Include this out-of-stock line in a vendor PO" : "This line currently has enough stock"}"></td>
+    <td data-label="Select for vendor PO" class="sales-po-select-col"><input type="checkbox" data-sales-po-select ${canCreateVendorPo ? "" : "disabled"} title="${canCreateVendorPo ? "Include this line in a linked vendor PO" : "Select a Product Master item first"}"></td>
     <td data-label="SKU"><input class="suggest-input compact-line-text" list="poProductOptions" data-suggest-source="products" data-sales-line="sku" data-line-index="${index}" value="${esc(label)}" placeholder="Search SKU" autocomplete="off" inputmode="search">${productOptionsDatalist()}</td>
     <td data-label="Product Name / Description"><textarea class="line-description compact-line-text" data-sales-line="description" data-line-index="${index}" rows="2" placeholder="Product name or description">${esc(line.description || line.product_name || product.name || "")}</textarea></td>
     <td data-label="UOM"><input class="line-uom compact-line-text" data-sales-line="unit" data-line-index="${index}" value="${esc(line.unit || product.unit || "")}" placeholder="EA"></td>
     <td data-label="On Hand" data-sales-onhand>${esc(product.qty ?? "")}</td>
     <td data-label="Inventory / FIFO Cost" data-sales-cost title="Current inventory unit cost from Product Master">${product.id ? money(salesInventoryUnitCost(product)) : ""}</td>
     <td data-label="ORD"><input type="number" min="0" step="0.01" data-sales-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}" ${Number(line.issued_qty || 0) > 0 ? `min="${esc(line.issued_qty)}"` : ""}></td>
-    <td data-label="ISS" class="num">${esc(Number(line.issued_qty || 0))}</td>
-    <td data-label="SHP" class="num">${esc(Number(line.shipped_qty || 0))}</td>
+    <td data-label="ISS" class="num" data-sales-issued>${esc(Number(line.issued_qty || 0))}</td>
+    <td data-label="SHP - Invoiced" class="num" title="Quantity already invoiced to the customer">${esc(Number(line.invoiced_qty || 0))}</td>
     <td data-label="Adjustable Selling Price"><input type="number" min="0" step="0.01" data-sales-line="price" data-line-index="${index}" value="${esc(line.price ?? product.selling_price ?? "")}"></td>
     <td data-label="Amount" data-sales-amount>${money(Number(line.qty || 0) * Number(line.price ?? product.selling_price ?? 0))}</td>
     <td data-label="Alternate Part" data-sales-availability>${salesAlternateAvailabilityHtml(product)}</td>
@@ -10623,10 +10623,27 @@ function wireSalesOrderLinePricing() {
     const refreshPoSelection = (product = resolveProductLookup(skuInput?.value)) => {
       const checkbox = tr.querySelector("[data-sales-po-select]");
       if (!checkbox) return;
-      const shortage = Boolean(product?.id) && Number(qtyInput?.value || 0) > Number(product.available_qty ?? product.qty ?? 0);
-      checkbox.disabled = !shortage;
-      if (!shortage) checkbox.checked = false;
-      checkbox.title = shortage ? "Include this out-of-stock line in a vendor PO" : "This line currently has enough stock";
+      const selectable = Boolean(product?.id);
+      checkbox.disabled = !selectable;
+      if (!selectable) checkbox.checked = false;
+      checkbox.title = selectable ? "Include this line in a linked vendor PO" : "Select a Product Master item first";
+    };
+    const refreshReservedPreview = (product = resolveProductLookup(skuInput?.value)) => {
+      const issuedCell = tr.querySelector("[data-sales-issued]");
+      if (!issuedCell) return;
+      if (!product?.id) {
+        issuedCell.textContent = "0";
+        tr.dataset.issuedQty = "0";
+        return;
+      }
+      const ordered = Math.max(0, Number(qtyInput?.value || 0));
+      const shipped = Math.max(0, Number(tr.dataset.shippedQty || 0));
+      const existingIssued = Math.max(shipped, Number(tr.dataset.issuedQty || 0));
+      const existingOutstanding = Math.max(0, existingIssued - shipped);
+      const availableForThisOrder = Math.max(0, Number(product.available_qty ?? product.qty ?? 0) + existingOutstanding);
+      const previewIssued = shipped + Math.min(Math.max(0, ordered - shipped), availableForThisOrder);
+      issuedCell.textContent = String(previewIssued);
+      tr.dataset.issuedQty = String(previewIssued);
     };
     const refreshAmount = () => {
       const amountCell = tr.querySelector("[data-sales-amount]");
@@ -10655,6 +10672,7 @@ function wireSalesOrderLinePricing() {
       requireTransactionSellingPrice(product, priceInput, "sales order");
       bindAlternateButton(product);
       refreshPoSelection(product);
+      refreshReservedPreview(product);
       fitTransactionLineText(tr);
       refreshAmount();
     };
@@ -10673,6 +10691,7 @@ function wireSalesOrderLinePricing() {
           if (costCell) costCell.textContent = "";
           if (availabilityCell) availabilityCell.textContent = "";
           refreshPoSelection(null);
+          refreshReservedPreview(null);
           refreshAmount();
           return;
         }
@@ -10681,6 +10700,7 @@ function wireSalesOrderLinePricing() {
     }
     if (qtyInput) qtyInput.oninput = () => {
       refreshPoSelection();
+      refreshReservedPreview();
       refreshAmount();
     };
     if (priceInput) priceInput.oninput = refreshAmount;
@@ -10688,6 +10708,7 @@ function wireSalesOrderLinePricing() {
     if (unitInput) unitInput.oninput = () => fitTransactionLineText(tr);
     bindAlternateButton(resolveProductLookup(skuInput?.value));
     refreshPoSelection();
+    refreshReservedPreview();
     fitTransactionLineText(tr);
   });
   const freightInput = document.querySelector('[data-product-field="freight_amount"]');
@@ -11523,7 +11544,7 @@ async function issueSalesOrder(orderNo) {
     return `<tr data-partial-line="${index}" data-free-available="${esc(freeAvailable)}"><td>${esc(line.sku)}</td><td>${esc(line.product_name || line.description || "")}</td><td class="num">${ordered}</td><td class="num">${issued}</td><td class="num">${shipped}</td><td class="num">${Number(product.qty || 0)}</td><td class="num">${freeAvailable}</td><td><input type="number" min="0" max="${reserveNow}" step="0.01" data-issue-now value="${reserveNow}"></td><td><input type="number" min="0" max="${shipAvailable + reserveNow}" step="0.01" data-ship-now value="0"></td></tr>`;
   }).join("");
   $("modalTitle").textContent = `Reserve / Issue to Customer ${order.order_no}`;
-  $("modalBody").innerHTML = `<p class="notice"><strong>ORD</strong> = quantity ordered by the customer. <strong>ISS</strong> = quantity reserved automatically from available stock when the Sales Order is saved; it remains physically on hand but cannot be used by another order. <strong>SHP</strong> = quantity issued to the customer and available for invoicing; physical inventory decreases only when SHP is recorded. Use Invoice to bill only the unbilled SHP quantity.</p><div class="table-wrap"><table class="line-table"><thead><tr><th>SKU</th><th>Product</th><th>ORD</th><th>ISS</th><th>SHP</th><th>On Hand</th><th>Available</th><th>Additional Reserve</th><th>Issue to Customer</th></tr></thead><tbody id="partialSalesIssueBody">${rows}</tbody></table></div>`;
+  $("modalBody").innerHTML = `<p class="notice"><strong>ORD</strong> = quantity ordered by the customer. <strong>ISS</strong> = quantity reserved automatically from available stock when the Sales Order is saved; it remains physically on hand but cannot be used by another order. <strong>SHP</strong> is reserved for the quantity already invoiced to the customer and is therefore not used for the physical-release column below. Use Invoice after recording the customer issue; SHP updates when that invoice is created.</p><div class="table-wrap"><table class="line-table"><thead><tr><th>SKU</th><th>Product</th><th>ORD</th><th>ISS</th><th>Released</th><th>On Hand</th><th>Available</th><th>Additional Reserve</th><th>Issue to Customer</th></tr></thead><tbody id="partialSalesIssueBody">${rows}</tbody></table></div>`;
   $("modalSave").textContent = "Save Reservation / Customer Issue";
   $("modalSave").onclick = () => savePartialSalesOrderIssue(order, products);
   $("modal").style.display = "flex";
@@ -11548,7 +11569,7 @@ async function savePartialSalesOrderIssue(order, products = []) {
     if (action.shipNow < 0 || action.shipNow > issued + action.issueNow - shipped) return alert(`Issue to Customer for ${action.line.sku} cannot exceed cumulative ISS less cumulative SHP.`);
     if (action.shipNow > Number(action.product.qty || 0)) return alert(`${action.line.sku} has only ${Number(action.product.qty || 0)} units physically on hand to ship.`);
   }
-  if (!confirm(`Save this reservation/customer issue for ${order.order_no}?\n\nISS reserves stock without reducing physical inventory. SHP records stock issued to the customer, reduces inventory, and becomes available for invoicing.`)) return;
+  if (!confirm(`Save this reservation/customer issue for ${order.order_no}?\n\nISS reserves stock without reducing physical inventory. The customer issue reduces physical inventory and waits for invoicing. SHP updates only after that invoice is created.`)) return;
   try {
     for (const action of actions) {
       const nextIssued = Number(action.line.issued_qty || 0) + action.issueNow;
@@ -11581,7 +11602,7 @@ async function savePartialSalesOrderIssue(order, products = []) {
     const nextStage = allShipped ? "Delivered" : anyShipped ? "Partially Delivered" : allIssued ? "Ready for Delivery" : "Awaiting Stock";
     await updateOneWithOptionalColumns("sales_orders", { status: nextStatus, special_order_status: nextStage, delivered_at: allShipped ? new Date().toISOString() : null }, "id", order.id, ["special_order_status", "delivered_at"]);
     closeModal();
-    alert(`${order.order_no} updated.\n\nUse Invoice to bill the current unbilled SHP quantity. More invoices can be created after later partial customer issues.`);
+    alert(`${order.order_no} updated.\n\nUse Invoice to bill the newly issued customer quantity. SHP will update only after the invoice is created.`);
     await renderSalesOrdersView();
   } catch (error) {
     alert(error.message || error);
@@ -11592,8 +11613,8 @@ async function invoiceSalesOrder(orderNo, silent = false) {
   const order = currentRows.find((row) => row.order_no === orderNo);
   if (!order) return;
   const billableLines = (order._lines || []).map((line) => ({ ...line, billQty: Math.max(0, Number(line.shipped_qty || 0) - Number(line.invoiced_qty || 0)) })).filter((line) => line.billQty > 0);
-  if (!billableLines.length) return alert(`There is no unbilled SHP quantity on ${orderNo}. Issue and ship received stock first.`);
-  if (!silent && !confirm(`Create a new invoice for the currently unbilled quantities issued to the customer (SHP) on ${orderNo}?\n\n${billableLines.map((line) => `${line.sku}: ${line.billQty}`).join("\n")}`)) return;
+  if (!billableLines.length) return alert(`There is no released customer quantity waiting to be invoiced on ${orderNo}. Issue the received stock to the customer first.`);
+  if (!silent && !confirm(`Create a new invoice for the currently released customer quantities on ${orderNo}? SHP will increase by these invoiced quantities.\n\n${billableLines.map((line) => `${line.sku}: ${line.billQty}`).join("\n")}`)) return;
   try {
     const invoiceNo = await nextInvoiceNoByType("Parts Sales");
     const invoice = await upsertOne("invoices", {
@@ -11717,7 +11738,7 @@ async function printSalesOrder(orderNo) {
   const order = currentRows.find((row) => row.order_no === orderNo);
   if (!order) return;
   const title = String(order.status || "").toLowerCase() === "quotation" ? "Sales Quote" : "Sales Order";
-  const printLines = (order._lines || []).map((line) => [line.sku, line.description || line.product_name || "", line.unit || "Each", line.qty, line.issued_qty || 0, line.shipped_qty || 0, money(line.price), money(Number(line.qty || 0) * Number(line.price || 0))]);
+  const printLines = (order._lines || []).map((line) => [line.sku, line.description || line.product_name || "", line.unit || "Each", line.qty, line.issued_qty || 0, line.invoiced_qty || 0, money(line.price), money(Number(line.qty || 0) * Number(line.price || 0))]);
   if (Number(order.freight_amount || 0) > 0) printLines.push(["", "Freight", "Each", 1, 0, 0, money(order.freight_amount), money(order.freight_amount)]);
   let html = printableDocumentHtml({
     title,
@@ -11726,7 +11747,7 @@ async function printSalesOrder(orderNo) {
     partyLabel: "Customer",
     partyName: order.customer,
     meta: [["Customer PO #", order.customer_po || ""], ["Payment Mode", order.payment_mode || "PO"], ["Pricing Rate", order.pricing_rate_name ? `${order.pricing_rate_name} (${Number(order.pricing_markup_percent || 0).toFixed(2)}%)` : "Product Master / Manual"], ["Manager Override", order.manager_override ? "Yes" : "No"], ["Override By", order.override_by || ""], ["Status", order.status || ""]],
-    heads: ["SKU", "Product Name / Description", "UOM", "ORD", "ISS", "SHP", "Unit Price", "Amount"],
+    heads: ["SKU", "Product Name / Description", "UOM", "ORD", "ISS", "SHP (Invoiced)", "Unit Price", "Amount"],
     lines: printLines,
     total: salesOrderTotal(order),
     notes: order.notes || "",
@@ -11751,7 +11772,7 @@ function salesOrderLinkedInvoicePrintableSection(invoice = {}) {
 
 function exportSalesOrdersCsv() {
   const heads = ["Order", "Customer", "Customer PO", "Payment Mode", "Pricing Rate", "Markup %", "Date", "Status", "ORD", "ISS", "SHP", "Freight", "Total", "Invoices"];
-  const rows = [heads, ...currentRows.map((order) => { const q = salesOrderQuantitySummary(order); return [order.order_no, order.customer, order.customer_po || "", order.payment_mode || "PO", order.pricing_rate_name || "", order.pricing_markup_percent ?? "", order.order_date, order.status, q.ordered, q.issued, q.shipped, Number(order.freight_amount || 0), salesOrderTotal(order), order.invoice_no || ""]; })];
+  const rows = [heads, ...currentRows.map((order) => { const q = salesOrderQuantitySummary(order); return [order.order_no, order.customer, order.customer_po || "", order.payment_mode || "PO", order.pricing_rate_name || "", order.pricing_markup_percent ?? "", order.order_date, order.status, q.ordered, q.issued, q.invoiced, Number(order.freight_amount || 0), salesOrderTotal(order), order.invoice_no || ""]; })];
   downloadCsv(rows, "sales-orders.csv");
 }
 
@@ -15509,7 +15530,7 @@ function invoicePrintableSection(inv) {
   return `<main class="sheet">
     <div class="top"><div><div class="logo">lms <small>imports</small></div><h1>Customer Invoice</h1></div><div class="doc-meta"><strong>${esc(inv.invoice_no || "")}</strong><br>Date ${esc(formatDisplayDate(inv.invoice_date))}</div></div>
     <div class="boxes"><div class="box"><strong>Customer</strong><br>${esc(inv.customer || "")}${customer.address ? `<br>${esc(customer.address)}` : ""}<br><strong>Payment</strong> ${esc(inv.payment_mode || "PO")}${inv.customer_po ? `<br><strong>Customer PO</strong> ${esc(inv.customer_po)}` : ""}</div><div class="box"><strong>Due Date</strong> ${esc(formatDisplayDate(inv.due_date))}<br><strong>Type</strong> ${esc(inv.type || "")}<br><strong>Source</strong> ${esc(inv.source_ref || "")}<br><strong>Status</strong> ${esc(invoiceDisplayStatus(inv))}${workOrderAssetMeta}</div></div>
-    <table><thead><tr><th>Description</th><th>UOM</th><th class="num" title="Quantity Ordered">ORD</th><th class="num" title="Quantity Issued">ISS</th><th class="num" title="Quantity Shipped on this invoice">SHP</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${(inv._lines || []).map((line) => `<tr><td class="description">${esc(line.description || "")}</td><td>${esc(line.unit || "")}</td><td class="num">${esc(line.ordered_qty ?? line.qty ?? "")}</td><td class="num">${esc(line.issued_qty ?? line.qty ?? "")}</td><td class="num">${esc(line.shipped_qty ?? line.qty ?? "")}</td><td class="num">${money(line.rate)}</td><td class="num">${money(Number(line.qty || 0) * Number(line.rate || 0))}</td></tr>`).join("")}<tr class="total-row"><td colspan="6" class="num total">Total</td><td class="num total">${money(invoiceTotal(inv))}</td></tr></tbody></table>
+    <table><thead><tr><th>Description</th><th>UOM</th><th class="num" title="Quantity Ordered">ORD</th><th class="num" title="Quantity Reserved">ISS</th><th class="num" title="Quantity Invoiced to Customer">SHP</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${(inv._lines || []).map((line) => `<tr><td class="description">${esc(line.description || "")}</td><td>${esc(line.unit || "")}</td><td class="num">${esc(line.ordered_qty ?? line.qty ?? "")}</td><td class="num">${esc(line.issued_qty ?? line.qty ?? "")}</td><td class="num">${esc(line.shipped_qty ?? line.qty ?? "")}</td><td class="num">${money(line.rate)}</td><td class="num">${money(Number(line.qty || 0) * Number(line.rate || 0))}</td></tr>`).join("")}<tr class="total-row"><td colspan="6" class="num total">Total</td><td class="num total">${money(invoiceTotal(inv))}</td></tr></tbody></table>
     ${narrative}${inv.notes ? `<div class="notes"><strong>Notes</strong><br>${esc(inv.notes)}</div>` : ""}
   </main>`;
 }
@@ -21844,7 +21865,7 @@ function assetCellHtml(asset, key) {
   const lastUpdateDate = assetLastUpdateDate(asset);
   const photoTitle = asset.asset_tag || asset.name || "Asset photo";
   const cells = {
-    photo: asset.photo_url ? `<button class="thumb-btn asset-photo-btn" type="button" data-asset-photo="${esc(asset.asset_tag || "")}" title="Enlarge ${esc(photoTitle)} photo"><img class="thumb" src="${esc(asset.photo_url)}" alt="Photo"><span class="photo-zoom" aria-hidden="true">&#128269;</span></button>` : `<span class="badge">No photo</span>`,
+    photo: `<div class="asset-photo-cell">${asset.photo_url ? `<button class="thumb-btn asset-photo-btn" type="button" data-asset-photo="${esc(asset.asset_tag || "")}" title="Enlarge ${esc(photoTitle)} photo"><img class="thumb" src="${esc(asset.photo_url)}" alt="Photo"><span class="photo-zoom" aria-hidden="true">&#128269;</span></button>` : `<span class="badge">No photo</span>`}<button class="asset-folder-icon" type="button" data-asset-gallery="${esc(asset.asset_tag || "")}" title="Open equipment photo and layout folder" aria-label="Open photo folder">&#128193;</button></div>`,
     new_qr: `<button class="qr-button qr-tag" type="button" data-asset-qr="${esc(asset.asset_tag)}" title="Open QR code"><img class="qr" src="${qrCodeUrl(qrText)}" alt="QR"><span>${esc(asset.asset_tag || "")}</span></button>`,
     old_qr_code: esc(oldQrCode),
     needs_qr_code_printed: badge(assetNeedsQrPrinted(asset) ? "Yes" : "No"),
@@ -21906,6 +21927,7 @@ function saveAssetColumnChoice() {
 }
 
 function bindAssetRows() {
+  document.querySelectorAll("[data-asset-gallery]").forEach((b) => b.onclick = () => openAssetGalleryModal(currentRows.find((asset) => asset.asset_tag === b.dataset.assetGallery)));
   document.querySelectorAll("[data-asset-edit]").forEach((b) => b.onclick = () => openAssetModal(currentRows.find((asset) => asset.asset_tag === b.dataset.assetEdit)));
   document.querySelectorAll("[data-asset-copy]").forEach((b) => b.onclick = () => openAssetCopyModal(currentRows.find((asset) => asset.asset_tag === b.dataset.assetCopy)));
   document.querySelectorAll("[data-asset-deactivate]").forEach((b) => b.onclick = () => deactivateAsset(b.dataset.assetDeactivate));
@@ -21917,6 +21939,91 @@ function bindAssetRows() {
   document.querySelectorAll("[data-asset-qr]").forEach((b) => b.onclick = () => openAssetQrModal(currentRows.find((asset) => asset.asset_tag === b.dataset.assetQr)));
   document.querySelectorAll("[data-asset-photo]").forEach((b) => b.onclick = () => openAssetPhotoModal(currentRows.find((asset) => asset.asset_tag === b.dataset.assetPhoto)));
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
+}
+
+function assetGalleryPrefix(assetTag) {
+  return `asset-galleries/${safeStorageName(assetTag || "asset")}`;
+}
+
+async function getAssetGalleryFiles(asset) {
+  if (!asset?.asset_tag) return [];
+  const prefix = assetGalleryPrefix(asset.asset_tag);
+  const { data, error } = await supabase.storage.from("asset-photos").list(prefix, {
+    limit: 200,
+    sortBy: { column: "created_at", order: "desc" },
+  });
+  if (error) throw error;
+  return (data || []).filter((item) => item?.name && item.name !== ".emptyFolderPlaceholder").map((item) => {
+    const path = `${prefix}/${item.name}`;
+    const { data: publicData } = supabase.storage.from("asset-photos").getPublicUrl(path);
+    const category = /^layout-/i.test(item.name) ? "Layout" : "Equipment Photo";
+    return { ...item, path, publicUrl: publicData.publicUrl, category };
+  });
+}
+
+async function openAssetGalleryModal(asset) {
+  if (!asset?.asset_tag) return;
+  editing = asset;
+  $("modalTitle").textContent = `Photo folder - ${asset.asset_tag}`;
+  $("modalBody").innerHTML = `<div class="empty">Loading compressed equipment photos and layouts...</div>`;
+  $("modalSave").textContent = "Upload selected";
+  $("modalSave").onclick = () => uploadAssetGallerySelection(asset);
+  $("modal").style.display = "flex";
+  try {
+    await renderAssetGalleryModal(asset);
+  } catch (error) {
+    $("modalBody").innerHTML = `<p class="notice warning">${esc(error.message || error)}<br><br>The asset-photos bucket must allow authenticated users to list and upload their assigned fleet photos.</p>`;
+  }
+}
+
+async function renderAssetGalleryModal(asset) {
+  const files = await getAssetGalleryFiles(asset);
+  const cards = files.length ? files.map((file) => `<article class="asset-gallery-card">
+    <button type="button" class="asset-gallery-preview" data-gallery-open="${esc(file.publicUrl)}" title="Open full-size image"><img src="${esc(file.publicUrl)}" alt="${esc(file.category)} for ${esc(asset.asset_tag)}"></button>
+    <div class="asset-gallery-card-body"><strong>${esc(file.category)}</strong><small>${esc(formatDisplayDate(file.created_at || file.updated_at || ""))}</small><div class="actions"><button type="button" class="rowbtn" data-gallery-cover="${esc(file.publicUrl)}">Set as main photo</button><a class="rowbtn" href="${esc(file.publicUrl)}" target="_blank" rel="noopener" download>Open / Download</a></div></div>
+  </article>`).join("") : `<div class="empty">No stored layouts or equipment photos yet.</div>`;
+  $("modalBody").innerHTML = `<div class="asset-gallery-upload">
+      <div class="field"><label>Photo category</label><select id="assetGalleryCategory"><option value="equipment">Equipment Photo</option><option value="layout">Layout</option></select></div>
+      <div class="field"><label>Select one or more photos</label><input id="assetGalleryFiles" type="file" accept="image/*" multiple><small class="upload-compression-status">Images are compressed to a maximum of 1,400 px before upload to save storage.</small></div>
+    </div><div class="asset-gallery-grid">${cards}</div>`;
+  setupImageDropzones($("modalBody"));
+  document.querySelectorAll("[data-gallery-open]").forEach((button) => button.onclick = () => window.open(button.dataset.galleryOpen, "_blank", "noopener"));
+  document.querySelectorAll("[data-gallery-cover]").forEach((button) => button.onclick = async () => {
+    try {
+      await supabase.from("assets").update({ photo_url: button.dataset.galleryCover }).eq("id", asset.id);
+      asset.photo_url = button.dataset.galleryCover;
+      alert(`${asset.asset_tag} main fleet photo updated.`);
+      await renderAssetsView();
+      await openAssetGalleryModal((productMeta.assets || currentRows || []).find((row) => row.asset_tag === asset.asset_tag) || asset);
+    } catch (error) {
+      alert(error.message || error);
+    }
+  });
+}
+
+async function uploadAssetGallerySelection(asset) {
+  const input = document.getElementById("assetGalleryFiles");
+  const files = [...(input?.files || [])];
+  if (!files.length) return alert("Choose at least one equipment photo or layout first.");
+  const category = document.getElementById("assetGalleryCategory")?.value === "layout" ? "layout" : "equipment";
+  $("modalSave").disabled = true;
+  $("modalSave").textContent = "Compressing / Uploading...";
+  try {
+    const prefix = assetGalleryPrefix(asset.asset_tag);
+    for (let index = 0; index < files.length; index += 1) {
+      const resized = await resizeImageForUpload(files[index], { maxSide: 1400, quality: 0.72 });
+      const path = `${prefix}/${category}-${Date.now()}-${index + 1}-${safeStorageName(files[index].name.replace(/\.[^.]+$/, ""))}.jpg`;
+      const { error } = await supabase.storage.from("asset-photos").upload(path, resized, { upsert: false, contentType: "image/jpeg" });
+      if (error) throw error;
+    }
+    await renderAssetGalleryModal(asset);
+    alert(`${files.length} compressed ${files.length === 1 ? "image" : "images"} saved in ${asset.asset_tag}'s photo folder.`);
+  } catch (error) {
+    alert(error.message || error);
+  } finally {
+    $("modalSave").disabled = false;
+    $("modalSave").textContent = "Upload selected";
+  }
 }
 
 function openAssetPhotoModal(asset) {
