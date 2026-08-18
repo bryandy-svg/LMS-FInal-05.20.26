@@ -1,0 +1,31 @@
+62:  "check_runs",
+107:  checkrun: { table: "check_runs", key: "check_run_no", title: "Check Run", sub: "Select approved payables, issue checks, and post payments.", heads: ["check_run_no", "payment_date", "payment_mode", "payment_account", "bank_account", "check_no", "vendor", "reference", "invoice_no", "invoice_date", "due_date", "amount", "status"], labels: ["Check Run", "Date", "Mode", "Payment Account", "Bank", "Check #", "Vendor", "Reference", "Invoice", "Invoice Date", "Due Date", "Amount", "Status"] },
+1965:  checkrun: ["Review For Printing items from approved AP and filter by vendor/date.", "Select invoices, payment account, bank, payment date and check/reference number.", "Print and verify before marking Printed.", "Use Void for spoiled or cancelled payments; do not delete check history."],
+1996:  checkrun: ["Confirm AP invoices are approved and Ready for Check before selecting them.", "Use For Printing to select the vendor invoices being paid in this batch.", "Verify vendor, invoice number/date, due date and amount against AP support.", "Choose payment mode and the correct bank or credit-card payable account.", "Enter payment date and unique check/reference number.", "Preview/print the check and review payee and amount before marking Printed.", "Confirm the posting debits AP and credits the chosen payment account.", "Use Printed tab for completed payments and Void for spoiled/cancelled checks.", "When voiding, verify AP and bank/accounting effects reverse correctly.", "Never reuse a check number without documented accounting approval."],
+2479:  { view: "checkrun", table: "check_runs", columns: "id,check_run_no,check_no,vendor,invoice_no,reference,status", fields: ["check_run_no", "check_no", "vendor", "invoice_no", "reference"], ref: "check_run_no", name: "Check Run", detail: (r) => [r.vendor, r.check_no, r.status] },
+5000:    getAll("check_runs").catch(() => []),
+6099:  const checkRunNo = await nextRefPreview("check", "CHK-", "check_runs", "check_run_no");
+6159:      await upsertOne("check_runs", run, "check_run_no");
+6285:    getAll("check_runs"),
+6321:        <button class="tabbtn ${checkRunTab === "forprinting" ? "active" : ""}" data-check-run-tab="forprinting">For Printing ${checkRunsForTab(history, "forprinting").length}</button>
+6348:  $("newCheckRunBtn").onclick = () => openCheckRunModal(data, vendorFilter);
+6406:  return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td>${esc(r.check_run_no)}</td><td>${esc(formatDisplayDate(r.payment_date))}</td><td>${esc(r.payment_account)}</td><td>${esc(r.check_no || "")}</td><td>${esc(r.vendor)}</td><td>${esc(r.invoice_no || "")}</td><td>${money(r.amount)}</td><td>${esc(r.wo_no || "N/A")}</td><td>${esc(r.po_no || r.reference || "")}</td><td>${esc(r.jobsite || "N/A")}</td><td>${esc(r.equipment || "N/A")}</td><td>${esc(r.parts_description || "N/A")}</td><td>${badge(r.status)}</td><td><div class="rowactions">${!/printed|cleared|void/i.test(r.status || "") ? `<button class="rowbtn" data-check-add="${esc(r.check_run_no)}">Add Payables</button>` : ""}<button class="rowbtn" data-check-print="${esc(r.check_run_no)}">Print</button>${!/void/i.test(r.status || "") ? `<button class="rowbtn danger" data-check-void="${esc(r.check_run_no)}">Void</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="${heads.length}" class="empty">No check runs yet.</td></tr>`}</tbody></table></div>`;
+6421:  document.querySelectorAll("[data-check-print]").forEach((btn) => {
+6455:  const { data: current, error } = await supabase.from("check_runs").select("*").eq("check_run_no", run.check_run_no).maybeSingle();
+6465:  const { error: updateError } = await supabase.from("check_runs").update(patch).eq("check_run_no", current.check_run_no);
+6475:    const result = await supabase.from("check_runs").select("*").eq("check_run_no", checkRunNo).maybeSingle();
+6501:    const { error } = await supabase.from("check_runs").update(payload).eq("check_run_no", checkRunNo);
+6509:async function openCheckRunModal(data, vendorFilter = "") {
+6511:  const number = await nextRefPreview("check", "CHK-", "check_runs", "check_run_no");
+6568:      const currentRuns = await getAll("check_runs");
+6586:      await upsertOne("check_runs", {
+6604:        status: "For Printing",
+6714:  const rows = await getAll("check_runs");
+6721:  await supabase.from("check_runs").update({ status: "For Printing" }).eq("check_run_no", checkRunNo);
+6750:  const rows = await getAll("check_runs");
+6780:    await supabase.from("check_runs").update({ status: "Void", notes }).eq("check_run_no", checkRunNo);
+6791:async function printCheckRun(checkRunNo, draftOnly = false) {
+6792:  const { data: row, error: rowError } = await supabase.from("check_runs").select("*").eq("check_run_no", checkRunNo).maybeSingle();
+6825:    const { error } = await supabase.from("check_runs").update({ status: "Printed" }).eq("check_run_no", row.check_run_no);
+9131:    supabase.from("check_runs").select("id,status,reference").eq("reference", poNo).limit(1),
+27579:  await deleteWhereIn("check_runs", "reference", invoiceNos.concat(poNos));
