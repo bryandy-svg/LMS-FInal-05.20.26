@@ -2468,6 +2468,11 @@ body.trucking-requestor-mode #fullTourBtn {
   padding: 12px;
 }
 
+.management-report-order-row { display: flex !important; align-items: center; gap: 6px; }
+.management-report-drag-handle { color: #6b7b8b; font-weight: 800; cursor: ns-resize; }
+.management-report-order-actions { display: inline-flex; gap: 3px; margin-left: auto; }
+.management-report-order-actions button { min-width: 26px; min-height: 24px; padding: 1px 6px; line-height: 1; }
+
 .trucking-driver-performance-heading {
   display: flex;
   align-items: baseline;

@@ -23976,7 +23976,7 @@ function focusInAppDocumentPreview(preview) {
 function openInAppDocumentWindow(title = "Document Preview") {
   const root = document.createElement("div");
   root.className = "in-app-document-preview";
-  root.innerHTML = `<div class="in-app-document-shell"><div class="in-app-document-head"><div><strong data-document-preview-title>${esc(title || "Document Preview")}</strong><span>Drag this title bar to move the window. You can continue working behind it.</span></div><div class="actions"><button type="button" data-document-preview-maximize>Maximize</button><button type="button" class="primary" data-document-preview-print disabled>Print / Save PDF</button><button type="button" data-document-preview-close>Close</button></div></div><div class="in-app-document-loading">Preparing document preview…</div><iframe class="in-app-document-frame" title="${esc(title || "Document Preview")}"></iframe></div>`;
+  root.innerHTML = `<div class="in-app-document-shell"><div class="in-app-document-head"><div><strong data-document-preview-title>${esc(title || "Document Preview")}</strong><span>Drag within this screen, or use Pop out to move the report to another monitor.</span></div><div class="actions"><button type="button" data-document-preview-maximize>Maximize</button><button type="button" data-document-preview-popout>Pop out</button><button type="button" class="primary" data-document-preview-print disabled>Print / Save PDF</button><button type="button" data-document-preview-close>Close</button></div></div><div class="in-app-document-loading">Preparing document preview…</div><iframe class="in-app-document-frame" title="${esc(title || "Document Preview")}"></iframe></div>`;
   document.body.appendChild(root);
   const frame = root.querySelector("iframe");
   const shell = root.querySelector(".in-app-document-shell");
@@ -24062,6 +24062,16 @@ function openInAppDocumentWindow(title = "Document Preview") {
   root.querySelector("[data-document-preview-print]").onclick = () => {
     frame.contentWindow.focus();
     try { frame.contentWindow.print(); } catch { nativePrint(); }
+  };
+  root.querySelector("[data-document-preview-popout]").onclick = () => {
+    const externalWindow = window.open("", "_blank", "popup=yes,width=1280,height=900,resizable=yes,scrollbars=yes");
+    if (!externalWindow) return alert("Allow pop-ups for this site, then click Pop out again.");
+    externalWindow.document.open();
+    externalWindow.document.write(partNumberWording(htmlBuffer || "<!doctype html><html><body></body></html>"));
+    externalWindow.document.close();
+    externalWindow.document.title = documentTitle;
+    externalWindow.focus();
+    closeInAppDocumentPreview(preview);
   };
   makePopupMovable(root.querySelector(".in-app-document-shell"), root.querySelector(".in-app-document-head"));
   return previewWindow;
@@ -26297,7 +26307,7 @@ async function openFuelVarianceReportModal() {
   const selectedFuelReportViews = () => [...document.querySelectorAll('[data-fuel-variance-view]:checked:not([value="all"])')].map((input) => input.value);
   const saveFuelReportSetup = (showConfirmation = false) => {
     const setup = {
-      version: 9,
+      version: 10,
       period: $("fuelVariancePeriod").value,
       from: $("fuelVarianceFrom").value,
       to: $("fuelVarianceTo").value,
@@ -26310,6 +26320,7 @@ async function openFuelVarianceReportModal() {
       throughRun: $("fuelVarianceThroughRun").value,
       excludedRuns: [...document.querySelectorAll("[data-fuel-variance-run]:not(:checked)")].map((input) => input.value),
       views: selectedFuelReportViews(),
+      viewOrder: managementReportSectionOrder($("fuelVarianceViews")),
       consolidateJobsites: $("fuelVarianceConsolidateJobsites").checked,
       consolidatedName: $("fuelVarianceJobsiteGroupName").value,
     };
@@ -26344,6 +26355,7 @@ async function openFuelVarianceReportModal() {
       individual.forEach((input) => { input.checked = savedViews.has(input.value); });
       document.querySelector('[data-fuel-variance-view][value="all"]').checked = individual.every((input) => input.checked);
     }
+    restoreManagementReportSectionOrder($("fuelVarianceViews"), savedReportSetup.viewOrder);
     $("fuelVarianceConsolidateJobsites").checked = savedReportSetup.consolidateJobsites !== false;
     $("fuelVarianceJobsiteGroupName").value = savedReportSetup.consolidatedName || "";
     return true;
@@ -26509,12 +26521,18 @@ async function openFuelVarianceReportModal() {
     $("fuelVarianceHost").innerHTML = fuelVarianceReportHtml(ledger, runs, from, to, tankTag, "multiple", fuelPricingRows, currentRows);
     const selectedTankIds = new Set((productMeta.fuelTanks || []).filter((tank) => !tankTag.length || tankTag.some((tag) => isSameFuelTankAsset(tag, tank.asset_tag))).map((tank) => String(tank.id)));
     const dailyBalances = (productMeta.fuelDriverDailyBalances || []).filter((row) => (!from || row.balance_date >= from) && (!to || row.balance_date <= to) && selectedTankIds.has(String(row.fuel_tank_id)));
-    $("fuelVarianceHost").insertAdjacentHTML("beforeend", `<section data-fuel-report-section="driver_balance"><h3>Driver Daily Ending Balances</h3><div class="hint">Variance equals the driver-reported physical ending balance minus the calculated system balance at the selected final fuel report.</div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Driver</th><th>Fuel Truck</th><th>Through Fuel Report</th><th>System Balance</th><th>Reported Ending Balance</th><th>Variance</th><th>Notes</th></tr></thead><tbody>${dailyBalances.map((row) => { const tank = (productMeta.fuelTanks || []).find((item) => String(item.id) === String(row.fuel_tank_id)); return `<tr><td>${esc(formatDisplayDate(row.balance_date))}</td><td><strong>${esc(row.driver_name)}</strong></td><td>${esc(tank?.asset_tag || "")}</td><td>${esc(row.through_report_no || "")}</td><td>${Number(row.system_balance || 0).toFixed(2)}</td><td>${Number(row.reported_balance || 0).toFixed(2)}</td><td><strong>${Number(row.variance_gallons || 0).toFixed(2)}</strong></td><td>${esc(row.notes || "")}</td></tr>`; }).join("") || `<tr><td colspan="8" class="empty">No driver ending balance was entered for this period.</td></tr>`}</tbody></table></div></section>`);
+    const documentSheet = $("fuelVarianceHost").querySelector(".document-sheet") || $("fuelVarianceHost");
+    documentSheet.insertAdjacentHTML("beforeend", `<section data-fuel-report-section="driver_balance"><h3>Driver Daily Ending Balances</h3><div class="hint">Variance equals the driver-reported physical ending balance minus the calculated system balance at the selected final fuel report.</div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Driver</th><th>Fuel Truck</th><th>Through Fuel Report</th><th>System Balance</th><th>Reported Ending Balance</th><th>Variance</th><th>Notes</th></tr></thead><tbody>${dailyBalances.map((row) => { const tank = (productMeta.fuelTanks || []).find((item) => String(item.id) === String(row.fuel_tank_id)); return `<tr><td>${esc(formatDisplayDate(row.balance_date))}</td><td><strong>${esc(row.driver_name)}</strong></td><td>${esc(tank?.asset_tag || "")}</td><td>${esc(row.through_report_no || "")}</td><td>${Number(row.system_balance || 0).toFixed(2)}</td><td>${Number(row.reported_balance || 0).toFixed(2)}</td><td><strong>${Number(row.variance_gallons || 0).toFixed(2)}</strong></td><td>${esc(row.notes || "")}</td></tr>`; }).join("") || `<tr><td colspan="8" class="empty">No driver ending balance was entered for this period.</td></tr>`}</tbody></table></div></section>`);
     const views = selectedFuelReportViews();
     const selected = new Set(views);
     $("fuelVarianceHost").querySelectorAll("[data-fuel-report-section]").forEach((section) => { section.hidden = !selected.has(section.dataset.fuelReportSection); });
     const usageGroup = $("fuelVarianceHost").querySelector('[data-fuel-report-group="usage"]');
     if (usageGroup) usageGroup.hidden = !selected.has("jobsite") && !selected.has("equipment");
+    if (documentSheet) {
+      const sectionByName = new Map([...documentSheet.querySelectorAll("[data-fuel-report-section]")].map((section) => [section.dataset.fuelReportSection, section]));
+      managementReportSectionOrder($("fuelVarianceViews")).forEach((name) => { const section = sectionByName.get(name); if (section) documentSheet.appendChild(section); });
+      if (usageGroup && !usageGroup.querySelector("[data-fuel-report-section]")) usageGroup.remove();
+    }
     bindFuelReportSectionColumnPickers($("fuelVarianceHost"));
     bindFuelDetailColumnPickers($("fuelVarianceHost"));
     $("fuelVarianceHost").querySelectorAll("[data-edit-fuel-jobsite]").forEach((button) => {
@@ -26565,6 +26583,7 @@ async function openFuelVarianceReportModal() {
       draw();
     };
   });
+  enhanceManagementReportSectionOrder($("fuelVarianceViews"), () => { updateFuelReportViewSummary(); saveFuelReportSetup(false); draw(); });
   $("fuelVarianceConsolidateJobsites").onchange = () => { updateFuelJobsiteSummary(); draw(); };
   $("fuelVarianceJobsiteGroupName").onchange = draw;
   $("fuelVarianceApply").onclick = () => { updateFuelRunSummary(); saveFuelReportSetup(false); draw(); };
@@ -26617,6 +26636,7 @@ async function openFuelVarianceReportModal() {
     document.querySelectorAll("[data-fuel-variance-run]").forEach((checkbox) => { checkbox.checked = true; });
     $("fuelVarianceConsolidateJobsites").checked = true;
     document.querySelectorAll("[data-fuel-variance-view]").forEach((checkbox) => { checkbox.checked = true; });
+    restoreManagementReportSectionOrder($("fuelVarianceViews"), JSON.parse($("fuelVarianceViews").querySelector(".fuel-multi-menu")?.dataset.defaultOrder || "[]"));
     updateFuelReportViewSummary();
     $("fuelVariancePeriod").value = "Since last refill";
     $("fuelVarianceTo").value = today;
@@ -29376,7 +29396,6 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   const fuelOverageGallons = fuelRows.reduce((sum, row) => sum + Number(row.overage_gallons || 0), 0);
   const fuelUsage = `<div class="trucking-driver-performance-heading"><strong>Fuel Usage & Pricing</strong><span>${fuelRows.length} service line${fuelRows.length === 1 ? "" : "s"} · ${fuelGallons.toFixed(2)} dispensed gal · ${fuelAllocatedGallons.toFixed(2)} cost gal · cost ${money(fuelCost)} · selling value ${money(fuelSellingValue)} · margin ${money(fuelMargin)}${unpricedFuelRows ? ` · ${unpricedFuelRows} unpriced` : ""} · monitoring only</span></div>${truckingSimpleTable(fuelUsageRows, ["fuel_date", "report_no", "driver_name", "fuel_truck", "equipment_name", "jobsite", "gallons", "shortage_gallons", "overage_gallons", "allocated_gallons", "cost_per_gallon", "fuel_cost", "selling_price_per_gallon", "fuel_selling_value", "fuel_margin", "pricing_period"], { wrapClass: "trucking-report-table trucking-report-detail-table trucking-fuel-usage-table", labels: ["Date", "Fuel Report #", "Driver", "Fuel Truck", "Equipment Refilled", "Jobsite", "Dispensed Gal", "Shortage", "Overage", "Cost Gal", "Cost / Gal", "Fuel Cost", "Selling / Gal", "Selling Value", "Fuel Margin", "Pricing Period"], format: { fuel_date: (value) => esc(formatDisplayDate(value)), gallons: (value) => Number(value || 0).toFixed(2), shortage_gallons: (value) => Number(value || 0).toFixed(2), overage_gallons: (value) => Number(value || 0).toFixed(2), allocated_gallons: (value) => Number(value || 0).toFixed(2), cost_per_gallon: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_cost: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", selling_price_per_gallon: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_selling_value: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_margin: (value, row) => row.has_fuel_rate ? `<strong>${money(value || 0)}</strong>` : "Not set" }, empty: "No fuel usage was recorded for the selected period." })}`;
   const selectedSections = new Set((Array.isArray(reportSection) ? reportSection : [reportSection]).filter(Boolean));
-  const section = (name, html) => selectedSections.has("all") || selectedSections.has(name) ? html : "";
   const daySummaryRows = summarize((row) => row.labor_date, "Day");
   const customerSummaryRows = summarize(summarizedCustomer, "Customer");
   const jobsiteSummaryRows = summarize(summarizedJobsite, "Jobsite");
@@ -29391,10 +29410,17 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   const allReportsBalanced = reconciliationResults.every((result) => result.balanced);
   const fuelReconciliationStatus = unpricedFuelRows ? "Review unpriced lines" : "Balanced";
   const reconciliationHtml = `<div class="trucking-driver-performance-heading"><strong>Report Reconciliation</strong><span>Same finalized-ticket, payroll, and fuel allocation reference period across every summary</span></div><div class="notice ${allReportsBalanced && !unpricedFuelRows ? "success" : "warning"}"><strong>${allReportsBalanced && !unpricedFuelRows ? "All report totals balance." : "Review required: one or more report totals do not balance."}</strong> Expected: ${moves} moves · ${runHours.toFixed(2)} hours · ${money(income)} income · ${money(totalLabor)} labor · ${money(profit)} profit.</div>${truckingSimpleTable(reconciliationResults, ["name", "moves", "run_hours", "income", "labor", "profit", "status"], { filters: false, wrapClass: "trucking-report-table trucking-report-summary-table trucking-report-reconciliation-table", labels: ["Report", "Moves", "Run Hours", "Income", "Total Labor", "Profit", "Status"], format: { moves: (_value, row) => row.totals.moves, run_hours: (_value, row) => row.totals.runHours.toFixed(2), income: (_value, row) => money(row.totals.income), labor: (_value, row) => money(row.totals.labor), profit: (_value, row) => money(row.totals.profit), status: (_value, row) => row.balanced ? "Balanced" : "Mismatch" } })}<div class="notice ${unpricedFuelRows ? "warning" : "success"}"><strong>Fuel Report reconciliation: ${fuelReconciliationStatus}.</strong> ${fuelRows.length} service lines · ${fuelGallons.toFixed(2)} dispensed gal + ${fuelShortageGallons.toFixed(2)} shortage − ${fuelOverageGallons.toFixed(2)} overage = ${fuelAllocatedGallons.toFixed(2)} allocated cost gal · ${money(fuelCost)} allocated fuel cost. Trucking and Fuel reports now use this same refill-cycle basis.</div>`;
-  return `<div class="report-document-heading"><strong>LMS IMPORTS</strong><span>Trucking Performance Report</span><small>${esc(periodLabel || "Selected period")} · ${dailyMode ? "Daily breakdown" : "Covered-period summary"}</small></div>
-    ${section("dashboard", `<div class="stats trucking-income-stats">${stat("Moves", String(moves), `${runHours.toFixed(2)} run hours`)}${stat("Fuel Used", `${fuelGallons.toFixed(2)} gal`, `${money(fuelCost)} cost · ${money(fuelSellingValue)} selling value`)}${stat("Income", money(income), "Monitoring income only")}${stat("Total Labor", money(totalLabor), `${money(driverLabor)} driver/trainee + ${money(adminLabor)} admin`)}${stat("Income Less Labor & Fuel", money(profitAfterFuelCost), "Fuel selling value shown separately")}</div>`)}
-    ${section("reconciliation", reconciliationHtml)}${section("top_level", topLevelSummary)}${section("fuel_pricing", fuelPricingBasis)}
-    ${section("day", table(daySummaryRows, "Summary by Day"))}${section("driver", table(driverSummaryForChronology, "Summary by Driver"))}${section("driver_moves", driverMoves)}${section("customer", table(customerSummaryRows, "Summary by Customer"))}${section("equipment", equipmentSummary())}${section("jobsite", table(jobsiteSummaryRows, "Summary by Jobsite"))}${section("fuel", fuelUsage)}${section("detail", detail)}`;
+  const sectionBlocks = {
+    dashboard: `<div class="stats trucking-income-stats">${stat("Moves", String(moves), `${runHours.toFixed(2)} run hours`)}${stat("Income", money(income), "Monitoring income only")}${stat("Total Labor", money(totalLabor), `${money(driverLabor)} driver/trainee + ${money(adminLabor)} admin`)}${stat("Income Less Labor & Fuel", money(profitAfterFuelCost), "Fuel selling value shown separately")}</div>`,
+    reconciliation: reconciliationHtml, top_level: topLevelSummary, fuel_pricing: fuelPricingBasis,
+    day: table(daySummaryRows, "Summary by Day"), driver: table(driverSummaryForChronology, "Summary by Driver"), driver_moves: driverMoves,
+    customer: table(customerSummaryRows, "Summary by Customer"), equipment: equipmentSummary(), jobsite: table(jobsiteSummaryRows, "Summary by Jobsite"), fuel: fuelUsage, detail,
+  };
+  const defaultSectionOrder = Object.keys(sectionBlocks);
+  const requestedOrder = Array.isArray(period.sectionOrder) ? period.sectionOrder : [];
+  const sectionOrder = [...requestedOrder.filter((name) => defaultSectionOrder.includes(name)), ...defaultSectionOrder.filter((name) => !requestedOrder.includes(name))];
+  const renderedSections = sectionOrder.filter((name) => selectedSections.has("all") || selectedSections.has(name)).map((name) => `<div data-management-report-section="${esc(name)}">${sectionBlocks[name]}</div>`).join("");
+  return `<div class="report-document-heading"><strong>LMS IMPORTS</strong><span>Trucking Performance Report</span><small>${esc(periodLabel || "Selected period")} · ${dailyMode ? "Daily breakdown" : "Covered-period summary"}</small></div>${renderedSections}`;
 }
 
 function printTruckingManagementReport() {
@@ -29459,8 +29485,9 @@ async function renderTruckingReportView() {
     const periodLabel = !from && !to ? "All Dates" : from === to ? formatDisplayDate(from) : `${from ? formatDisplayDate(from) : "Beginning"} – ${to ? formatDisplayDate(to) : "Today"}`;
     const reportSections = [...document.querySelectorAll('#truckingReportSection input[type="checkbox"]:checked')].map((input) => input.value);
     const laborColumns = $("truckingReportLaborColumns")?.value || "total";
-    saveManagementReportPreferences(preferenceKey, { period: mode, from, to, reportType: $("truckingReportType").value, laborColumns, sections: reportSections });
-    $("truckingManagementReportHost").innerHTML = truckingManagementReportHtml(filtered, $("truckingReportType").value, periodLabel, reportSections.length ? reportSections : ["all"], { from, to, fuelRows: filteredFuelRows, allFuelRows: fuelRows, fuelRates, laborColumns });
+    const sectionOrder = managementReportSectionOrder($("truckingReportSection"));
+    saveManagementReportPreferences(preferenceKey, { period: mode, from, to, reportType: $("truckingReportType").value, laborColumns, sections: reportSections, sectionOrder });
+    $("truckingManagementReportHost").innerHTML = truckingManagementReportHtml(filtered, $("truckingReportType").value, periodLabel, reportSections.length ? reportSections : ["all"], { from, to, fuelRows: filteredFuelRows, allFuelRows: fuelRows, fuelRates, laborColumns, sectionOrder });
     [...$("truckingManagementReportHost").querySelectorAll(".trucking-driver-performance-heading")].find((heading) => heading.querySelector("strong")?.textContent.trim() === "Summary by Jobsite")?.nextElementSibling?.classList.add("trucking-report-jobsite-table");
     const serviceHeading = [...$("truckingManagementReportHost").querySelectorAll(".trucking-driver-performance-heading")].find((heading) => heading.querySelector("strong")?.textContent.trim() === "Summary by Equipment Type");
     if (serviceHeading) {
@@ -29489,7 +29516,7 @@ async function renderTruckingReportView() {
   const sectionSummary = $("truckingReportSectionSummary");
   const updateSectionSummary = () => {
     const checked = [...sectionControl.querySelectorAll('input[type="checkbox"]:checked')];
-    sectionSummary.textContent = checked.some((input) => input.value === "all") ? "All Sections" : checked.length === 1 ? checked[0].parentElement.textContent.trim() : `${checked.length} Sections Selected`;
+    sectionSummary.textContent = checked.some((input) => input.value === "all") ? "All Sections" : checked.length === 1 ? managementReportSectionLabel(checked[0]) : `${checked.length} Sections Selected`;
   };
   sectionControl.onchange = (event) => {
     const changed = event.target;
@@ -29502,6 +29529,7 @@ async function renderTruckingReportView() {
   $("saveTruckingReportSetupBtn").onclick = () => { apply(); alert("Trucking report setup saved. It will be restored when you return."); };
   $("resetTruckingReportBtn").onclick = () => {
     localStorage.removeItem(preferenceKey);
+    restoreManagementReportSectionOrder(sectionControl, JSON.parse(sectionControl.querySelector(".trucking-report-section-menu")?.dataset.defaultOrder || "[]"));
     $("truckingReportPeriod").value = "week";
     $("truckingReportFrom").value = iso(monday);
     $("truckingReportTo").value = iso(sunday);
@@ -29518,6 +29546,8 @@ async function renderTruckingReportView() {
   if (savedPreferences.to) $("truckingReportTo").value = savedPreferences.to;
   if (savedPreferences.reportType && [...$("truckingReportType").options].some((option) => option.value === savedPreferences.reportType)) $("truckingReportType").value = savedPreferences.reportType;
   if (["total", "detailed"].includes(savedPreferences.laborColumns)) $("truckingReportLaborColumns").value = savedPreferences.laborColumns;
+  enhanceManagementReportSectionOrder(sectionControl, apply);
+  restoreManagementReportSectionOrder(sectionControl, savedPreferences.sectionOrder);
   restoreManagementReportSections(sectionControl, sectionSummary, savedPreferences.sections);
   $("truckingReportTo").disabled = $("truckingReportPeriod").value === "day";
   apply();
@@ -29544,6 +29574,63 @@ function saveManagementReportPreferences(key, value) {
   }
 }
 
+function managementReportSectionOrder(control) {
+  return [...(control?.querySelectorAll('.trucking-report-section-menu input[type="checkbox"], .fuel-multi-menu input[type="checkbox"]') || [])].map((input) => input.value).filter((value) => value !== "all");
+}
+
+function managementReportSectionLabel(input) {
+  return input?.dataset.reportSectionLabel || input?.parentElement?.textContent?.trim() || "Report Section";
+}
+
+function restoreManagementReportSectionOrder(control, savedOrder) {
+  const menu = control?.querySelector(".trucking-report-section-menu, .fuel-multi-menu");
+  if (!menu || !Array.isArray(savedOrder)) return;
+  const labels = [...menu.querySelectorAll("label")];
+  const byValue = new Map(labels.map((label) => [label.querySelector('input[type="checkbox"]')?.value, label]));
+  savedOrder.forEach((value) => { const label = byValue.get(value); if (label) menu.appendChild(label); });
+  labels.filter((label) => label.querySelector('input[type="checkbox"]')?.value !== "all" && !savedOrder.includes(label.querySelector('input[type="checkbox"]')?.value)).forEach((label) => menu.appendChild(label));
+}
+
+function reorderRenderedManagementReportSections(host, selector, control) {
+  const menu = control?.querySelector(".trucking-report-section-menu");
+  if (!host || !menu) return;
+  const defaultOrder = JSON.parse(menu.dataset.defaultOrder || "[]");
+  const currentOrder = managementReportSectionOrder(control);
+  const selected = new Set([...control.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value));
+  const visibleDefaultOrder = defaultOrder.filter((value) => selected.has("all") || selected.has(value));
+  const sections = [...host.querySelectorAll(selector)];
+  if (sections.length !== visibleDefaultOrder.length) return;
+  sections.forEach((section, index) => { section.dataset.managementReportSection = visibleDefaultOrder[index]; });
+  currentOrder.forEach((value) => { const section = sections.find((item) => item.dataset.managementReportSection === value); if (section) host.appendChild(section); });
+}
+
+function enhanceManagementReportSectionOrder(control, onReorder) {
+  const menu = control?.querySelector(".trucking-report-section-menu, .fuel-multi-menu");
+  if (!menu || menu.dataset.reorderBound === "1") return;
+  menu.dataset.reorderBound = "1";
+  menu.dataset.defaultOrder = JSON.stringify(managementReportSectionOrder(control));
+  [...menu.querySelectorAll("label")].forEach((label) => {
+    const input = label.querySelector('input[type="checkbox"]');
+    if (!input || input.value === "all") return;
+    input.dataset.reportSectionLabel = label.textContent.trim();
+    label.classList.add("management-report-order-row");
+    label.insertAdjacentHTML("afterbegin", '<span class="management-report-drag-handle" title="Reorder report section">↕</span>');
+    label.insertAdjacentHTML("beforeend", '<span class="management-report-order-actions"><button type="button" data-section-move="up" title="Move section up">↑</button><button type="button" data-section-move="down" title="Move section down">↓</button></span>');
+  });
+  menu.onclick = (event) => {
+    const button = event.target.closest("[data-section-move]");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const row = button.closest("label");
+    const direction = button.dataset.sectionMove;
+    const sibling = direction === "up" ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling || sibling.querySelector('input[type="checkbox"]')?.value === "all") return;
+    if (direction === "up") menu.insertBefore(row, sibling); else menu.insertBefore(sibling, row);
+    if (typeof onReorder === "function") onReorder();
+  };
+}
+
 function restoreManagementReportSections(control, summary, savedSections) {
   const boxes = [...control.querySelectorAll('input[type="checkbox"]')];
   if (Array.isArray(savedSections) && savedSections.length) {
@@ -29552,7 +29639,7 @@ function restoreManagementReportSections(control, summary, savedSections) {
   }
   if (!boxes.some((box) => box.checked)) boxes.find((box) => box.value === "all").checked = true;
   const checked = boxes.filter((box) => box.checked);
-  summary.textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? checked[0].parentElement.textContent.trim() : `${checked.length} Sections Selected`;
+  summary.textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? managementReportSectionLabel(checked[0]) : `${checked.length} Sections Selected`;
 }
 
 function partsReportAggregate(rows, keyField, labelField = keyField) {
@@ -29713,7 +29800,7 @@ async function renderPartsReportView() {
     const customerFilter = String($("partsReportCustomer").value || "").trim();
     const vendorFilter = String($("partsReportVendor").value || "").trim();
     const selected = new Set([...document.querySelectorAll('#partsReportSections input[type="checkbox"]:checked')].map((input) => input.value));
-    saveManagementReportPreferences(preferenceKey, { period: $("partsReportPeriod").value, from, to, customer: customerFilter, vendor: vendorFilter, search: $("partsReportSearch").value, sections: [...selected] });
+    saveManagementReportPreferences(preferenceKey, { period: $("partsReportPeriod").value, from, to, customer: customerFilter, vendor: vendorFilter, search: $("partsReportSearch").value, sections: [...selected], sectionOrder: managementReportSectionOrder($("partsReportSections")) });
     const show = (name) => selected.has("all") || selected.has(name);
     const workUsage = workOrderParts.map((row) => {
       const wo = workOrderById.get(String(row.wo_id || "")) || {};
@@ -29901,6 +29988,7 @@ async function renderPartsReportView() {
     if (show("inventory")) report.push(table("Inventory Value & Stock Status", inventory, ["part_no", "product_name", "category", "warehouse", "bin", "on_hand", "reorder_point", "unit_cost", "inventory_value", "status"], ["Part #", "Description", "Category", "Warehouse", "Bin / Shelf", "On Hand", "Reorder Point", "Unit Cost", "Inventory Value", "Status"], moneyFormat));
     if (show("movements")) report.push(table("Stock Movement Detail", movementRows, ["date", "reference", "type", "document", "part_no", "product_name", "units", "unit_cost", "amount", "customer_vendor", "warehouse"], ["Date", "Reference", "Movement", "Document", "Part #", "Description", "Qty", "FIFO Unit Cost", "FIFO Total Cost", "Customer / Vendor", "Warehouse Movement"], moneyFormat));
     $("partsReportHost").innerHTML = report.join("");
+    reorderRenderedManagementReportSections($("partsReportHost"), "[data-parts-report-section]", $("partsReportSections"));
   };
   $("partsReportPeriod").onchange = () => {
     const mode = $("partsReportPeriod").value;
@@ -29916,12 +30004,13 @@ async function renderPartsReportView() {
     else if (event.target.value !== "all" && event.target.checked) boxes.find((box) => box.value === "all").checked = false;
     if (!boxes.some((box) => box.checked)) boxes.find((box) => box.value === "all").checked = true;
     const checked = boxes.filter((box) => box.checked);
-    $("partsReportSectionsSummary").textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? checked[0].parentElement.textContent.trim() : `${checked.length} Sections Selected`;
+    $("partsReportSectionsSummary").textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? managementReportSectionLabel(checked[0]) : `${checked.length} Sections Selected`;
   };
   $("applyPartsReportBtn").onclick = apply;
   $("savePartsReportSetupBtn").onclick = () => { apply(); alert("Parts report setup saved. It will be restored when you return."); };
   $("resetPartsReportBtn").onclick = () => {
     localStorage.removeItem(preferenceKey);
+    restoreManagementReportSectionOrder(sectionControl, JSON.parse(sectionControl.querySelector(".trucking-report-section-menu")?.dataset.defaultOrder || "[]"));
     $("partsReportPeriod").value = "month"; $("partsReportFrom").value = iso(start); $("partsReportTo").value = today;
     $("partsReportCustomer").value = ""; $("partsReportVendor").value = ""; $("partsReportSearch").value = "";
     [...sectionControl.querySelectorAll('input[type="checkbox"]')].forEach((box) => { box.checked = box.value === "all"; });
@@ -29938,6 +30027,8 @@ async function renderPartsReportView() {
   if (savedPreferences.customer && [...$("partsReportCustomer").options].some((option) => option.value === savedPreferences.customer)) $("partsReportCustomer").value = savedPreferences.customer;
   if (savedPreferences.vendor && [...$("partsReportVendor").options].some((option) => option.value === savedPreferences.vendor)) $("partsReportVendor").value = savedPreferences.vendor;
   if (typeof savedPreferences.search === "string") $("partsReportSearch").value = savedPreferences.search;
+  enhanceManagementReportSectionOrder(sectionControl, apply);
+  restoreManagementReportSectionOrder(sectionControl, savedPreferences.sectionOrder);
   restoreManagementReportSections(sectionControl, $("partsReportSectionsSummary"), savedPreferences.sections);
   apply();
 }
@@ -30020,7 +30111,7 @@ async function renderRepairReportView() {
     const customerFilter = String($("repairReportCustomer").value || "").trim();
     const search = String($("repairReportSearch").value || "").trim().toLowerCase();
     const selected = new Set([...document.querySelectorAll('#repairReportSections input[type="checkbox"]:checked')].map((input) => input.value));
-    saveManagementReportPreferences(preferenceKey, { period: $("repairReportPeriod").value, from, to, customer: customerFilter, status: $("repairReportStatus").value, search: $("repairReportSearch").value, sections: [...selected] });
+    saveManagementReportPreferences(preferenceKey, { period: $("repairReportPeriod").value, from, to, customer: customerFilter, status: $("repairReportStatus").value, search: $("repairReportSearch").value, sections: [...selected], sectionOrder: managementReportSectionOrder($("repairReportSections")) });
     const show = (name) => selected.has("all") || selected.has(name);
     const mappedRepairRows = workOrders.map((wo) => {
       const asset = assetById.get(String(wo.asset_id || "")) || assetByTag.get(String(wo.asset_tag || "").trim().toLowerCase()) || {};
@@ -30086,14 +30177,16 @@ async function renderRepairReportView() {
     if (show("priority")) report.push(table("Summary by Priority", prioritySummary, ["label", "work_orders", "open", "closed", "labor_hours", "operational_cost", "income", "profit", "avg_turnaround"], ["Priority", "Work Orders", "Open", "Closed", "Labor Hrs", "Total Cost", "Income", "Gross Profit", "Avg Turnaround"], formats));
     if (show("aging")) report.push(customerGroupedTable("Open Repair Aging", openReportRows, ["date", "wo_no", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "operational_cost", "status"], ["Opened", "WO #", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Cost to Date", "Status"], { ...formats, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, "No open repairs match this report selection.", "open-repair-aging-table"));
     $("repairReportHost").innerHTML = report.join("");
+    reorderRenderedManagementReportSections($("repairReportHost"), "[data-repair-report-section]", $("repairReportSections"));
   };
   $("repairReportPeriod").onchange = () => { const mode = $("repairReportPeriod").value; const end = new Date(`${today}T00:00:00`); if (mode === "month") { const start = new Date(end); start.setDate(1); $("repairReportFrom").value = iso(start); $("repairReportTo").value = today; } if (mode === "year") { const start = new Date(end); start.setMonth(0, 1); $("repairReportFrom").value = iso(start); $("repairReportTo").value = today; } if (mode === "all") { $("repairReportFrom").value = ""; $("repairReportTo").value = ""; } apply(); };
   const sections = $("repairReportSections");
-  sections.onchange = (event) => { const boxes = [...sections.querySelectorAll('input[type="checkbox"]')]; if (event.target.value === "all" && event.target.checked) boxes.forEach((box) => { if (box !== event.target) box.checked = false; }); else if (event.target.value !== "all" && event.target.checked) boxes.find((box) => box.value === "all").checked = false; if (!boxes.some((box) => box.checked)) boxes.find((box) => box.value === "all").checked = true; const checked = boxes.filter((box) => box.checked); $("repairReportSectionsSummary").textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? checked[0].parentElement.textContent.trim() : `${checked.length} Sections Selected`; };
+  sections.onchange = (event) => { const boxes = [...sections.querySelectorAll('input[type="checkbox"]')]; if (event.target.value === "all" && event.target.checked) boxes.forEach((box) => { if (box !== event.target) box.checked = false; }); else if (event.target.value !== "all" && event.target.checked) boxes.find((box) => box.value === "all").checked = false; if (!boxes.some((box) => box.checked)) boxes.find((box) => box.value === "all").checked = true; const checked = boxes.filter((box) => box.checked); $("repairReportSectionsSummary").textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? managementReportSectionLabel(checked[0]) : `${checked.length} Sections Selected`; };
   $("applyRepairReportBtn").onclick = apply; $("repairReportExcelBtn").onclick = exportRepairReport; $("repairReportPrintBtn").onclick = () => printReportOnly("repairReportHost", "Repair Performance Report"); $("repairReportStatus").onchange = apply; $("repairReportSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") apply(); });
   $("saveRepairReportSetupBtn").onclick = () => { apply(); alert("Repair report setup saved. It will be restored when you return."); };
   $("resetRepairReportBtn").onclick = () => {
     localStorage.removeItem(preferenceKey);
+    restoreManagementReportSectionOrder(sections, JSON.parse(sections.querySelector(".trucking-report-section-menu")?.dataset.defaultOrder || "[]"));
     $("repairReportPeriod").value = "month"; $("repairReportFrom").value = iso(first); $("repairReportTo").value = today;
     $("repairReportCustomer").value = ""; $("repairReportStatus").value = ""; $("repairReportSearch").value = "";
     [...sections.querySelectorAll('input[type="checkbox"]')].forEach((box) => { box.checked = box.value === "all"; });
@@ -30107,6 +30200,8 @@ async function renderRepairReportView() {
   if (savedPreferences.customer && [...$("repairReportCustomer").options].some((option) => option.value === savedPreferences.customer)) $("repairReportCustomer").value = savedPreferences.customer;
   if (typeof savedPreferences.status === "string") $("repairReportStatus").value = savedPreferences.status;
   if (typeof savedPreferences.search === "string") $("repairReportSearch").value = savedPreferences.search;
+  enhanceManagementReportSectionOrder(sections, apply);
+  restoreManagementReportSectionOrder(sections, savedPreferences.sectionOrder);
   restoreManagementReportSections(sections, $("repairReportSectionsSummary"), savedPreferences.sections);
   apply();
 }
