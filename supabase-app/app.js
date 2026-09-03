@@ -11896,6 +11896,16 @@ function buildLinkedStockMovements({ movements = [], products = [], receipts = [
   };
   const seen = new Set();
   const rows = [];
+  const hasDocumentSkuMovement = (documents = [], sku = "", typePattern = /./) => {
+    const documentKeys = documents.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+    const skuKey = String(sku || "").trim().toLowerCase();
+    if (!documentKeys.length || !skuKey) return false;
+    return rows.some((row) => {
+      if (String(row.sku || "").trim().toLowerCase() !== skuKey || !typePattern.test(row.type || "")) return false;
+      const searchable = `${row.reference_no || ""} ${row.document_no || ""} ${row.reason || ""}`.toLowerCase();
+      return documentKeys.some((document) => searchable.includes(document));
+    });
+  };
   const push = (row) => {
     if (!row.reference_no || seen.has(row.reference_no)) return;
     seen.add(row.reference_no);
@@ -11941,6 +11951,7 @@ function buildLinkedStockMovements({ movements = [], products = [], receipts = [
     const order = orderById.get(line.order_id);
     if (!order || !/fulfilled|posted|paid/i.test(order.status || "")) return;
     const p = productById.get(line.product_id) || productBySku.get(line.sku) || {};
+    if (hasDocumentSkuMovement([order.order_no, order.invoice_no], line.sku, /sale issue|invoice issue/i)) return;
     push({
       reference_no: `SM-${order.order_no}-${line.sku}`,
       movement_date: order.order_date,
@@ -11969,6 +11980,7 @@ function buildLinkedStockMovements({ movements = [], products = [], receipts = [
     if (!acceptedQty || !/accepted|used|issued|complete/i.test(effectivePartStatus(part))) return;
     const wo = woById.get(part.wo_id) || {};
     const p = productById.get(part.product_id) || productBySku.get(part.sku) || {};
+    if (hasDocumentSkuMovement([wo.wo_no], part.sku, /repair|work order/i)) return;
     push({
       reference_no: `SM-${wo.wo_no || "WO"}-${part.sku}-${index + 1}`,
       movement_date: wo.wo_date || today(),
