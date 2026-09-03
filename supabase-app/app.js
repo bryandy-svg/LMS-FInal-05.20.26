@@ -3950,7 +3950,7 @@ async function renderDashboard() {
   $("viewTitle").textContent = "Dashboard";
   $("viewSub").textContent = "A clear view of stock, value, alerts, and movement.";
   $("content").innerHTML = `<section class="panel"><div class="empty">Loading live dashboard summary...</div></section>`;
-  const [products, sales, po, assets, repairs, rentals, invoices, gl] = await Promise.all([
+  const [products, sales, po, assets, repairs, rentals, invoices, gl, stockMovements] = await Promise.all([
     // Product Master commonly exceeds Supabase's 1,000-row response limit.
     // Use the paginated loader so Dashboard value/quantity exactly matches
     // the complete live Product Master instead of only its first page.
@@ -3961,9 +3961,11 @@ async function renderDashboard() {
     getDashboardRows("work_orders", "status"),
     getDashboardRows("rentals", "status"),
     getDashboardRows("invoices", "status"),
-    getDashboardRows("general_ledger", "debit,credit")
+    getDashboardRows("general_ledger", "debit,credit"),
+    getAll("stock_movements")
   ]);
-  const inventoryValue = products.reduce((s, p) => s + Number(p.qty || 0) * Number(p.cost || 0), 0);
+  const inventoryValue = stockMovementLedgerValue(stockMovements, today());
+  const inventoryQty = stockMovementLedgerQty(stockMovements, today());
   const low = products.filter((p) => Number(p.qty || 0) <= Number(p.reorder_point || 0)).length;
   const openSales = sales.filter((s) => !["Fulfilled", "Paid", "Cancelled"].includes(s.status)).length;
   const apControl = po.filter((p) => p.payment_status !== "Paid").length;
@@ -3974,7 +3976,7 @@ async function renderDashboard() {
 
   $("content").innerHTML = `
     <div class="stats fleet-stats">
-      ${stat("Inventory Value", money(inventoryValue), `${products.reduce((s, p) => s + Number(p.qty || 0), 0)} units on hand, ${low} low stock`)}
+      ${stat("Inventory Value", money(inventoryValue), `${inventoryQty} units on hand, ${low} low stock`)}
       ${stat("Open Sales / AR", openSales, `${invoices.filter((i) => i.status !== "Paid").length} open invoices`)}
       ${stat("AP To Control", apControl, "POs and payable exposure")}
       ${stat("Fleet & Repairs", assets.length, `${fleetRepair} open repair jobs`)}
