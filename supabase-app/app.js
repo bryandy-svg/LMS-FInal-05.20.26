@@ -10708,6 +10708,11 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
     row._inTransit = bankReconciliationMarked(bank, to, row, "bank-only", true);
     return row._inTransit;
   });
+  const clearedItems = throughDate ? throughDate.clearedItems : [
+    ...outstandingPaymentCandidates.filter((row) => !row._outstanding).map((row) => ({...row, clearedCategory:'Check / payment'})),
+    ...[...collections, ...otherPositiveBookRows].filter((row) => !row._inTransit && !reversedRefs.has(row.num)).map((row) => ({...row, clearedCategory:'Deposit'})),
+    ...newTransactions.filter((row) => row._inTransit === false).map((row) => ({...row, clearedCategory:'Bank-only item'})),
+  ];
   const outstandingChecksTotal = outstandingChecks.reduce((sum, row) => sum + Math.abs(row.amount), 0);
   const depositsInTransitTotal = depositsInTransit.reduce((sum, row) => sum + row.amount, 0);
   const otherBankItemsTotal = otherBankItems.reduce((sum, row) => sum + row.amount, 0);
@@ -10727,6 +10732,7 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
     outstandingChecks,
     depositsInTransit,
     otherBankItems,
+    clearedItems,
     checksReleasedTotal: checksReleased.reduce((sum, row) => sum + Math.abs(row.amount), 0),
     collectionsTotal: collections.reduce((sum, row) => sum + row.amount, 0),
     otherPaymentsTotal: otherPayments.reduce((sum, row) => sum + Math.abs(row.amount), 0),
@@ -10972,12 +10978,16 @@ function parseMoneyAmount(value) {
   return negative ? -amount : amount;
 }
 
+function bankClearedItemsPanel(rows = []) {
+  return `<aside class="bank-cleared-panel no-print" aria-label="Cleared or removed reconciliation items"><h3>Cleared / Removed Items (${rows.length})</h3><p>Tick an item to return it to reconciling items for this period. Unticked items stay excluded from later periods.</p>${rows.length ? rows.map((row) => `<label><input type="checkbox" data-bank-reconciliation-mark="${esc(row._reconciliationKey)}" aria-label="Restore ${esc(row.displayNum || row.num || 'item')}"><span><strong>${esc(row.displayNum || row.num || '')}</strong><small>${esc(formatDisplayDate(row.date))} · ${esc(row.clearedCategory)}</small><small>${esc(row.vendor || row.description || '')}</small><strong>${bankAmount(row.amount)}</strong></span></label>`).join('') : '<p>No cleared or removed items for this account as of this period.</p>'}</aside>`;
+}
+
 function bankStatementHtml(statement, bank, from, to, accountKind = "Bank Statement") {
   const isCreditCard = accountKind === "Credit Card Statement";
   const isIntercompany = accountKind === "Intercompany Statement";
   const increaseRows = [...(statement.collections || []), ...(statement.otherReceipts || [])];
   const decreaseRows = [...(statement.checksReleased || []), ...(statement.otherPayments || [])];
-  return `<div class="bank-statement bank-reconciliation-report">
+  return `<div class="bank-reconciliation-layout"><style>.bank-reconciliation-layout{display:flex;align-items:flex-start;gap:20px}.bank-reconciliation-layout>.bank-reconciliation-report{flex:1;min-width:0}.bank-cleared-panel{order:2;flex:0 0 300px;padding:16px;border:1px solid #cfd9e3;border-radius:10px;background:#f6f9fb;max-height:75vh;overflow:auto}.bank-cleared-panel label{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #d8e0e8}.bank-cleared-panel small{display:block}.bank-cleared-panel input{flex:0 0 auto}@media(max-width:1000px){.bank-reconciliation-layout{flex-direction:column}.bank-cleared-panel{flex:auto;width:100%;box-sizing:border-box}}@media print{.bank-reconciliation-layout{display:block}.bank-cleared-panel{display:none!important}}</style>${bankClearedItemsPanel(statement.clearedItems || [])}<div class="bank-statement bank-reconciliation-report">
     <div class="bank-title">
       <strong>LMS IMPORTS</strong>
       <span>${isCreditCard ? "Credit Card Reconciliation Statement" : isIntercompany ? "Intercompany Reconciliation Statement" : "Bank Reconciliation Statement"}</span>
@@ -11002,7 +11012,7 @@ function bankStatementHtml(statement, bank, from, to, accountKind = "Bank Statem
         <tr class="bank-difference ${statement.difference !== null && Math.abs(statement.difference) <= 0.005 ? "balanced" : "out-of-balance"}"><td>Unreconciled Difference</td><td class="num">${statement.difference === null ? "Save statement balance" : bankAmount(statement.difference)}</td></tr>
       </tbody>
     </table>
-  </div>`;
+  </div></div>`;
 }
 
 function bankReportCategory(label, rows = [], total = 0, options = {}) {
