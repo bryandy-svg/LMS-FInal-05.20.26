@@ -10708,7 +10708,14 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
     row._inTransit = bankReconciliationMarked(bank, to, row, "bank-only", true);
     return row._inTransit;
   });
-  const clearedItems = throughDate ? throughDate.clearedItems.filter((row) => beforePeriod(row.date)) : [
+  const priorCutoff = from ? new Date(`${from}T00:00:00Z`) : null;
+  if (priorCutoff) priorCutoff.setUTCDate(priorCutoff.getUTCDate() - 1);
+  const priorStatement = throughDate && priorCutoff
+    ? buildBankStatement(gl, bankRows, bank, '', priorCutoff.toISOString().slice(0, 10), 0, null, true) : null;
+  const carryIdentity = (row) => String(row._reconciliationKey || '').split('|').filter((value, index) => index !== 2).join('|');
+  const priorOutstanding = new Set(priorStatement
+    ? [...priorStatement.outstandingChecks, ...priorStatement.depositsInTransit, ...priorStatement.otherBankItems].map(carryIdentity) : []);
+  const clearedItems = throughDate ? throughDate.clearedItems.filter((row) => priorOutstanding.has(carryIdentity(row))) : [
     ...outstandingPaymentCandidates.filter((row) => !row._outstanding).map((row) => ({...row, clearedCategory:'Check / payment'})),
     ...[...collections, ...otherPositiveBookRows].filter((row) => !row._inTransit && !reversedRefs.has(row.num)).map((row) => ({...row, clearedCategory:'Deposit'})),
     ...newTransactions.filter((row) => row._inTransit === false).map((row) => ({...row, clearedCategory:'Bank-only item'})),
