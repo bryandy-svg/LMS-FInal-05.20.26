@@ -10708,7 +10708,7 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
     row._inTransit = bankReconciliationMarked(bank, to, row, "bank-only", true);
     return row._inTransit;
   });
-  const clearedItems = throughDate ? throughDate.clearedItems : [
+  const clearedItems = throughDate ? throughDate.clearedItems.filter((row) => beforePeriod(row.date)) : [
     ...outstandingPaymentCandidates.filter((row) => !row._outstanding).map((row) => ({...row, clearedCategory:'Check / payment'})),
     ...[...collections, ...otherPositiveBookRows].filter((row) => !row._inTransit && !reversedRefs.has(row.num)).map((row) => ({...row, clearedCategory:'Deposit'})),
     ...newTransactions.filter((row) => row._inTransit === false).map((row) => ({...row, clearedCategory:'Bank-only item'})),
