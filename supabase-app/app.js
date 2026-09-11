@@ -10547,7 +10547,13 @@ function bankReconciliationMarkKey(bank, periodTo, row, kind) {
 function bankReconciliationMarked(bank, periodTo, row, kind, fallback) {
   const marks = bankReconciliationMarks();
   const key = bankReconciliationMarkKey(bank, periodTo, row, kind);
-  return Object.prototype.hasOwnProperty.call(marks, key) ? Boolean(marks[key]) : Boolean(fallback);
+  if (Object.prototype.hasOwnProperty.call(marks, key)) return Boolean(marks[key]);
+  const prefix = `${kind}|${bank}|`;
+  const identity = key.slice(prefix.length + 8);
+  const prior = Object.keys(marks).filter((candidate) => candidate.startsWith(prefix)
+    && candidate.slice(prefix.length, prefix.length + 7) < String(periodTo).slice(0, 7)
+    && candidate.slice(prefix.length + 8) === identity).sort().pop();
+  return prior ? Boolean(marks[prior]) : Boolean(fallback);
 }
 
 function setBankReconciliationMark(key, checked) {
@@ -10580,7 +10586,7 @@ function monthStart(dateText) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
-function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, statementEndingBalance = null) {
+function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, statementEndingBalance = null, cumulative = false) {
   const inPeriod = (date) => String(date || "") >= from && String(date || "") <= to;
   const beforePeriod = (date) => String(date || "") < from;
   const bankName = String(bank || "").toLowerCase();
@@ -10661,7 +10667,16 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
   );
   const otherReceipts = bookPeriod.filter((row) => row.amount >= 0 && !isCollection(row) && !collectionDuplicate(row));
   const bookIsUnmatched = (row) => !row.num || !bankRefs.has(String(row.num).toLowerCase());
-  const outstandingPaymentCandidates = accountSign < 0 ? [...checksReleased, ...otherPayments] : checksReleased;
+  const reversedRefs = new Set();
+  bookPeriod.filter((row) => /-REV$/i.test(row.num || "")).forEach((reversal) => {
+    const base = reversal.num.slice(0, -4);
+    const originals = bookPeriod.filter((row) => row.num === base);
+    const reversals = bookPeriod.filter((row) => row.num === reversal.num);
+    if (originals.length && Math.abs([...originals, ...reversals].reduce((sum, row) => sum + row.amount, 0)) < 0.005) {
+      reversedRefs.add(base); reversedRefs.add(reversal.num);
+    }
+  });
+  const outstandingPaymentCandidates = [...checksReleased, ...otherPayments].filter((row) => !reversedRefs.has(row.num));
   outstandingPaymentCandidates.forEach((row) => {
     row._reconciliationKey = bankReconciliationMarkKey(bank, to, row, "outstanding-check");
     row._outstanding = bankReconciliationMarked(bank, to, row, "outstanding-check", bookIsUnmatched(row));
@@ -10675,9 +10690,16 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
     row._reconciliationKey = bankReconciliationMarkKey(bank, to, row, "deposit-in-transit");
     row._inTransit = bankReconciliationMarked(bank, to, row, "deposit-in-transit", bookIsUnmatched(row));
   });
-  const outstandingChecks = outstandingPaymentCandidates.filter((row) => row._outstanding);
-  const depositsInTransit = [...collections, ...otherPositiveBookRows].filter((row) => row._inTransit);
-  const otherBankItems = newTransactions;
+  // Calculate carryover independently of monthly book activity. Prior entries
+  // are already in bookPrior and must never be posted or counted there twice.
+  const throughDate = cumulative ? null : buildBankStatement(gl, bankRows, bank, "", to, 0, null, true);
+  const outstandingChecks = throughDate ? throughDate.outstandingChecks : outstandingPaymentCandidates.filter((row) => row._outstanding);
+  const depositsInTransit = throughDate ? throughDate.depositsInTransit : [...collections, ...otherPositiveBookRows].filter((row) => row._inTransit && !reversedRefs.has(row.num));
+  const otherBankItems = throughDate ? throughDate.otherBankItems : newTransactions.filter((row) => {
+    row._reconciliationKey = bankReconciliationMarkKey(bank, to, row, "bank-only");
+    row._inTransit = bankReconciliationMarked(bank, to, row, "bank-only", true);
+    return row._inTransit;
+  });
   const outstandingChecksTotal = outstandingChecks.reduce((sum, row) => sum + Math.abs(row.amount), 0);
   const depositsInTransitTotal = depositsInTransit.reduce((sum, row) => sum + row.amount, 0);
   const otherBankItemsTotal = otherBankItems.reduce((sum, row) => sum + row.amount, 0);
@@ -10964,9 +10986,9 @@ function bankStatementHtml(statement, bank, from, to, accountKind = "Bank Statem
         ${isCreditCard ? bankReportCategory("Less: Credit Card Payments / Credits", decreaseRows, -(statement.checksReleasedTotal + statement.otherPaymentsTotal), { mark: "payment" }) : `${bankReportCategory("Less: Checks Prepared for the Month", statement.checksReleased, -statement.checksReleasedTotal, { mark: "check" })}${bankReportCategory("Less: Other Payments (Credit Card, Bank Transfer, Charges, etc.)", statement.otherPayments, -statement.otherPaymentsTotal)}`}
         <tr class="grand-total"><td>Book Balance — End of Month</td><td class="num">${bankAmount(statement.bookEnding)}</td></tr>
         <tr class="section"><td colspan="2">Reconciling Items</td></tr>
-        ${bankReportCategory(isCreditCard ? "Add: Payments / Credits Not Yet on Statement" : "Add: Outstanding Checks", statement.outstandingChecks, statement.outstandingChecksTotal, isCreditCard ? { hideDetails: true } : {})}
-        ${bankReportCategory(isCreditCard ? "Less: Charges Not Yet on Statement" : "Less: Deposits in Transit", statement.depositsInTransit, -statement.depositsInTransitTotal, isCreditCard ? { hideDetails: true } : {})}
-        ${bankReportCategory(isCreditCard ? "Add / (Less): Other Statement-Only Items" : "Add / (Less): Other Bank-Only Items", statement.otherBankItems, statement.otherBankItemsTotal)}
+        ${bankReportCategory(isCreditCard ? "Add: Payments / Credits Not Yet on Statement" : "Add: Outstanding Checks / Payments", statement.outstandingChecks, statement.outstandingChecksTotal, { mark: "payment" })}
+        ${bankReportCategory(isCreditCard ? "Less: Charges Not Yet on Statement" : "Less: Deposits in Transit", statement.depositsInTransit, -statement.depositsInTransitTotal, { mark: "deposit" })}
+        ${bankReportCategory(isCreditCard ? "Add / (Less): Other Statement-Only Items" : "Add / (Less): Other Bank-Only Items", statement.otherBankItems, statement.otherBankItemsTotal, { mark: "deposit" })}
         <tr class="section-total"><td>Adjusted Balance per Books</td><td class="num">${bankAmount(statement.adjustedBankFromBook)}</td></tr>
         <tr class="grand-total"><td>${isCreditCard ? "Credit Card Statement Balance" : isIntercompany ? "Intercompany Balance" : "Bank Balance"} as of ${formatDisplayDate(to)}</td><td class="num">${statement.bankEnding === null ? "Not entered" : bankAmount(statement.bankEnding)}</td></tr>
         <tr class="bank-difference ${statement.difference !== null && Math.abs(statement.difference) <= 0.005 ? "balanced" : "out-of-balance"}"><td>Unreconciled Difference</td><td class="num">${statement.difference === null ? "Save statement balance" : bankAmount(statement.difference)}</td></tr>
