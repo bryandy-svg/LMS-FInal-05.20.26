@@ -15044,6 +15044,55 @@ function goodsReceiptInvoiceTotalHtml() {
   return `<div class="gr-invoice-total"><span>Total Invoice Amount</span><strong id="goodsReceiptInvoiceTotal">${money(0)}</strong></div>`;
 }
 
+function refreshGoodsReceiptCostBreakdown() {
+  const table = document.querySelector('#modal .gr-line-table');
+  if (!table) return;
+  const labels = ['Allocated Inland / Other Cost', 'Allocated Landed Cost', 'Total Inventory Chargeable', 'Landed Cost PO Reference'];
+  const head = table.querySelector('thead tr');
+  if (!head.querySelector('[data-gr-cost-heading]')) {
+    labels.forEach(label => {
+      const th = document.createElement('th');
+      th.dataset.grCostHeading = 'true';
+      th.textContent = label;
+      head.appendChild(th);
+    });
+  }
+  const refs = (currentRows || []).filter(row => isLandedCostPayable(row)
+    && linkedLandedSourcePoNos(row).includes(editing?.po_no)
+    && !/cancel|void|revers/i.test(row.status || '')).map(row => row.po_no);
+  const allRows = [...table.querySelectorAll('[data-gr-line]')];
+  const selected = allRows.filter(tr => tr.querySelector('[data-gr-field="include"]')?.checked
+    && Number(tr.querySelector('[data-gr-field="received_qty"]')?.value || 0) > 0);
+  const costs = selected.map(tr => {
+    const get = field => tr.querySelector(`[data-gr-field="${field}"]`)?.value || '';
+    return { received_qty: Number(get('received_qty')), unit_cost: Number(get('unit_cost')),
+      base_unit_cost: Number(get('base_unit_cost') || get('unit_cost') || 0),
+      vendor_invoice_amount: Number(get('vendor_invoice_amount')) };
+  });
+  const originals = costs.map(row => ({ ...row }));
+  // Reuse the save calculation on copies only; this never changes receipt inputs or posts entries.
+  allocateGoodsReceiptHeaderCosts(costs,
+    Number(document.querySelector('[data-product-field="receipt_inland_freight"]')?.value || 0),
+    Number(document.querySelector('[data-product-field="receipt_other_cost"]')?.value || 0));
+  allRows.forEach(tr => {
+    let cells = [...tr.querySelectorAll('[data-gr-cost-cell]')];
+    if (!cells.length) cells = labels.map(label => {
+      const td = document.createElement('td');
+      td.dataset.grCostCell = 'true';
+      td.dataset.label = label;
+      tr.appendChild(td);
+      return td;
+    });
+    const index = selected.indexOf(tr);
+    const row = costs[index];
+    const original = originals[index];
+    const inland = row ? row.vendor_invoice_amount - original.vendor_invoice_amount : 0;
+    const landed = row ? Math.max(0, original.received_qty * (original.unit_cost - original.base_unit_cost)) : 0;
+    const values = [money(inland), money(landed), money(row ? row.received_qty * row.unit_cost : 0), refs.join(', ') || 'Not linked (estimate only)'];
+    cells.forEach((cell, i) => { cell.textContent = values[i]; });
+  });
+}
+
 function bindGoodsReceiptFormControls() {
   const modal = $("modal");
   if (!modal) return;
@@ -15064,8 +15113,9 @@ function bindGoodsReceiptFormControls() {
     const total = lineTotal + headerCosts;
     const target = $("goodsReceiptInvoiceTotal");
     if (target) target.textContent = money(total);
+    refreshGoodsReceiptCostBreakdown();
   };
-  modal.querySelectorAll('[data-gr-field="vendor_invoice_amount"], [data-gr-field="include"], [data-gr-header-cost]').forEach((input) => {
+  modal.querySelectorAll('[data-gr-field="vendor_invoice_amount"], [data-gr-field="received_qty"], [data-gr-field="unit_cost"], [data-gr-field="include"], [data-gr-header-cost]').forEach((input) => {
     if (input.dataset.totalBound === "true") return;
     input.dataset.totalBound = "true";
     input.addEventListener("input", updateTotal);
