@@ -10676,6 +10676,14 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
       reversedRefs.add(base); reversedRefs.add(reversal.num);
     }
   });
+  // Hide fully offset pairs from monthly supporting details as well as
+  // outstanding items. Only pairs within this period qualify here, so
+  // cross-period activity and the historical book balance remain intact.
+  for (const category of [checksReleased, otherPayments, collections, otherReceipts]) {
+    for (let index = category.length - 1; index >= 0; index--) {
+      if (reversedRefs.has(category[index].num)) category.splice(index, 1);
+    }
+  }
   const outstandingPaymentCandidates = [...checksReleased, ...otherPayments].filter((row) => !reversedRefs.has(row.num));
   outstandingPaymentCandidates.forEach((row) => {
     row._reconciliationKey = bankReconciliationMarkKey(bank, to, row, "outstanding-check");
