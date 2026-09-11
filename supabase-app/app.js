@@ -10539,6 +10539,8 @@ function groupAccountingToolbarControls() {
   const tabs = document.querySelector('.accounting-module-tabs');
   group(tabs, `Accounting: ${tabs?.querySelector('button.active')?.textContent || 'Views'}`, tabs ? [...tabs.children] : []);
   const actions = document.querySelector('.accounting-action-groups');
+  // Navigation belongs in Accounting views, not duplicated in Actions.
+  actions?.querySelectorAll('[data-accounting-switch]').forEach((button) => button.remove());
   group(actions, 'Accounting actions', actions ? [...actions.children] : []);
   const bankToolbar = document.getElementById('bankRecSaveBtn')?.parentElement;
   group(bankToolbar, 'Reconciliation actions', bankToolbar ? [...bankToolbar.children].filter((node) => node.tagName === 'BUTTON') : []);
