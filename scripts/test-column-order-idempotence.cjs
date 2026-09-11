@@ -1,0 +1,26 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('supabase-app/app.js', 'utf8');
+let mutations = 0;
+const cell = label => ({ label, colSpan: 1, rowSpan: 1, querySelectorAll: () => [] });
+const row = labels => ({ cells: labels.map(cell), appendChild(item) {
+  this.cells.splice(this.cells.indexOf(item), 1);
+  this.cells.push(item);
+  mutations++;
+} });
+const table = { dataset: {}, rows: [row(['Actions', 'Order', 'Customer']), row(['Actions', 'Order', 'Customer'])] };
+const context = vm.createContext({ tableColumnLabels: table => table.rows[0].cells.map(cell => cell.label) });
+vm.runInContext(source.slice(source.indexOf('function applyTableColumnOrder('), source.indexOf('function applyTableHiddenColumns(')), context);
+const apply = context.applyTableColumnOrder;
+apply(table, ['Customer', 'Order', 'Actions']);
+assert.deepEqual(table.rows[0].cells.map(cell => cell.label), ['Customer', 'Order', 'Actions']);
+assert.equal(mutations, 6);
+for (let i = 0; i < 100; i++) apply(table, ['Customer', 'Order', 'Actions']);
+assert.equal(mutations, 6, 'Observer re-entry must not mutate an already ordered table');
+assert.equal(table.dataset.customColumnOrder, '1');
+apply(table, ['Actions', 'Order', 'Customer']);
+assert.equal(mutations, 12, 'A newly chosen layout must still work');
+apply(table, ['Actions', 'Order', 'Customer']);
+assert.equal(mutations, 12);
+console.log('PASS: saved layout applies once, observer re-entry is mutation-free, layout changes still work.');
