@@ -26831,8 +26831,18 @@ function openInAppDocumentWindow(title = "Document Preview") {
     event.currentTarget.textContent = maximize ? "Restore" : "Maximize";
   };
   root.querySelector("[data-document-preview-print]").onclick = () => {
+    // Chromium can use the parent tab title for an iframe's PDF filename.
+    // Keep both titles aligned for the native print dialog, then restore LMS.
+    const previousTitle = document.title;
+    const printTitle = frame.contentDocument?.querySelector('meta[name="lms-pdf-name"]')?.content || documentTitle;
+    document.title = printTitle;
+    if (frame.contentDocument) frame.contentDocument.title = printTitle;
     frame.contentWindow.focus();
-    try { frame.contentWindow.print(); } catch { nativePrint(); }
+    try {
+      try { frame.contentWindow.print(); } catch { nativePrint(); }
+    } finally {
+      document.title = previousTitle;
+    }
   };
   root.querySelector("[data-document-preview-popout]").onclick = () => {
     const externalWindow = window.open("", "_blank", "popup=yes,width=1280,height=900,resizable=yes,scrollbars=yes");
@@ -26911,7 +26921,9 @@ function printableDocumentHtml({ title, number, date, partyLabel, partyName, par
     if (!hasDetail) return chargeRow;
     return `${chargeRow}<tr class="detail-row"><td colspan="${heads.length}"><strong>${esc(line.detailLabel || "Details")}</strong><div>${esc(line.detail)}</div></td></tr>`;
   }).join("");
-  const pdfName = documentPdfName(number || title, partyName, /draft/i.test(title || '') || meta.some(([label, value]) => /^status$/i.test(label) && /draft/i.test(String(value || ''))));
+  const pdfEquipment = /^work order\b/i.test(title || '') ? String(meta.find(([label]) => /^equipment$/i.test(label))?.[1] || '').trim() : '';
+  const pdfParty = [partyName, pdfEquipment].filter(Boolean).join(' - ');
+  const pdfName = documentPdfName(number || title, pdfParty, /draft/i.test(title || '') || meta.some(([label, value]) => /^status$/i.test(label) && /draft/i.test(String(value || ''))));
   return `<!doctype html><html><head><meta name="lms-pdf-name" content="${esc(pdfName)}"><title>${esc(pdfName)}</title><style>
     @page{size:Letter;margin:.45in}
     *{box-sizing:border-box}
