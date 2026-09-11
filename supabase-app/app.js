@@ -5446,6 +5446,7 @@ async function renderAccountingView() {
       <div id="accountingTableHost">${accountingPanelHtml(data, accountingTab)}</div>
     </section>`;
   bindAccountingView(data);
+  groupAccountingToolbarControls();
 }
 
 async function syncPostedManualJournalSubledgers({ gl = [], invoices = [], invoiceLines = [], pos = [] } = {}) {
@@ -10511,6 +10512,36 @@ async function renderBankReconciliationView() {
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
   bindBankReconciliationMarks();
   bindBankMatchRows();
+  groupAccountingToolbarControls();
+}
+
+function groupAccountingToolbarControls() {
+  const group = (host, label, nodes) => {
+    if (!host || host.querySelector(':scope > [data-accounting-dropdown]') || !nodes.length) return;
+    const menu = document.createElement('details');
+    menu.className = 'action-menu';
+    menu.dataset.accountingDropdown = 'true';
+    menu.innerHTML = `<summary>${esc(label)}</summary><div class="action-menu-panel" style="max-height:65vh;overflow-y:auto;min-width:250px;z-index:1000"></div>`;
+    const panel = menu.querySelector('div');
+    for (const node of nodes) {
+      if (node.tagName === 'DETAILS') {
+        const heading = document.createElement('strong');
+        heading.textContent = node.querySelector('summary')?.textContent || '';
+        heading.style.cssText = 'display:block;padding:10px 8px 4px';
+        panel.appendChild(heading);
+        node.querySelectorAll('button').forEach((button) => panel.appendChild(button));
+        node.remove();
+      } else panel.appendChild(node);
+    }
+    menu.addEventListener('click', (event) => { if (event.target.closest('button')) menu.open = false; });
+    host.appendChild(menu);
+  };
+  const tabs = document.querySelector('.accounting-module-tabs');
+  group(tabs, `Accounting: ${tabs?.querySelector('button.active')?.textContent || 'Views'}`, tabs ? [...tabs.children] : []);
+  const actions = document.querySelector('.accounting-action-groups');
+  group(actions, 'Accounting actions', actions ? [...actions.children] : []);
+  const bankToolbar = document.getElementById('bankRecSaveBtn')?.parentElement;
+  group(bankToolbar, 'Reconciliation actions', bankToolbar ? [...bankToolbar.children].filter((node) => node.tagName === 'BUTTON') : []);
 }
 
 function reconciliationAccountOptions(coa = [], gl = []) {
