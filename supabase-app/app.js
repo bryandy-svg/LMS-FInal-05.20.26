@@ -14385,47 +14385,57 @@ function allocatePurchaseLandedCost(lines, po) {
   });
 }
 
+function planWorkOrderPoReservations(po, lines, parts, workOrders) {
+  const claimed = new Set();
+  const occurrences = new Map();
+  const poKey = String(po.po_no || '').trim().toUpperCase();
+  const rows = [];
+  for (const line of lines) {
+    const qty = purchaseOrderLineDestinationQty(po, line);
+    if (!line.wo_no || qty <= 0) continue;
+    const wo = workOrders.find((row) => String(row.wo_no).toLowerCase() === String(line.wo_no).toLowerCase());
+    if (!wo) throw new Error(`Work order ${line.wo_no} was not found.`);
+    const sku = String(line.sku || '').trim().toLowerCase();
+    const key = `${wo.id}|${sku}`;
+    const ordinal = (occurrences.get(key) || 0) + 1;
+    occurrences.set(key, ordinal);
+    const marker = `[PO reservation:${encodeURIComponent(poKey)}:${encodeURIComponent(key)}:${ordinal}]`;
+    const eligible = parts.filter((part) => !claimed.has(part.id) && part.wo_id === wo.id
+      && String(part.sku || '').trim().toLowerCase() === sku && !/void|cancel|returned/i.test(part.status || ''));
+    const existing = eligible.find((part) => String(part.notes || '').includes(marker))
+      || eligible.find((part) => workOrderPartOriginPo(part) === poKey && !String(part.notes || '').includes('[PO reservation:'))
+      || eligible.find((part) => !workOrderPartOriginPo(part) && Number(part.accepted_qty || 0) === 0
+        && !/accepted|issued|complete|released/i.test(part.status || '') && Number(part.qty_needed || 0) === qty);
+    if (existing) claimed.add(existing.id);
+    const accepted = Number(existing?.accepted_qty || 0);
+    rows.push({
+      id: existing?.id || crypto.randomUUID(), wo_id: wo.id,
+      issue: existing?.issue || `PO ${po.po_no}`, product_id: line.product_id || null,
+      sku: line.sku, product_name: line.product_name,
+      qty_needed: Math.max(qty, accepted), accepted_qty: accepted,
+      unit_cost: accepted > 0 ? Number(existing.unit_cost || 0) : Number(line.unit_cost || 0),
+      status: accepted > 0 ? (accepted < qty ? 'Partially Accepted' : existing.status) : 'Reserved',
+      availability: existing?.availability || 'Pending receipt / acceptance',
+      notes: [existing?.notes, workOrderPartOriginPo(existing || {}) ? '' : `Reserved from PO ${po.po_no} for ${line.wo_no}`,
+        String(existing?.notes || '').includes(marker) ? '' : marker].filter(Boolean).join('\n'),
+    });
+  }
+  // Preserve history: never delete reservations or reset accepted quantities.
+  for (const part of parts) {
+    if (workOrderPartOriginPo(part) === poKey && !claimed.has(part.id)
+      && Number(part.accepted_qty || 0) <= 0 && !/accepted|issued|complete|released|void|cancel/i.test(part.status || '')) {
+      rows.push({id:part.id, wo_id:part.wo_id, product_id:part.product_id, sku:part.sku, product_name:part.product_name,
+        qty_needed:part.qty_needed, accepted_qty:part.accepted_qty || 0, unit_cost:part.unit_cost,
+        status:'Cancelled', notes:[part.notes, 'PO line removed; reservation retained for history.'].filter(Boolean).join('\n')});
+    }
+  }
+  return rows;
+}
+
 async function syncPurchaseOrderWorkOrderReservations(po, lineRows) {
-  const taggedLines = lineRows.filter((line) => line.wo_no && purchaseOrderLineDestinationQty(po, line) > 0);
-  const notesNeedle = `Reserved from PO ${po.po_no}`;
-  const { data: oldReservations, error: oldError } = await supabase
-    .from("work_order_parts")
-    .select("id,status,notes")
-    .ilike("notes", `%${notesNeedle}%`);
-  if (oldError) throw oldError;
-  const removable = (oldReservations || []).filter((row) => !/accepted/i.test(row.status || ""));
-  if (removable.length) await supabase.from("work_order_parts").delete().in("id", removable.map((row) => row.id));
-  if (!taggedLines.length) return;
-  const openByNo = new Map((productMeta.openWorkOrders || []).map((wo) => [wo.wo_no, wo]));
-  const availableRequests = (await getAll("work_order_parts")).filter((part) =>
-    !/accepted|issued|complete|released|cancelled|void/i.test(effectivePartStatus(part))
-    && Number(part.accepted_qty || 0) <= 0
-    && !workOrderPartOriginPo(part));
-  const claimedRequestIds = new Set();
-  const rows = taggedLines.map((line) => {
-    const wo = openByNo.get(line.wo_no);
-    const available = Number((productMeta.products || []).find((p) => p.sku === line.sku)?.qty || 0);
-    const existingRequest = availableRequests.find((part) => !claimedRequestIds.has(part.id)
-      && String(part.wo_id || "") === String(wo?.id || "")
-      && ((line.product_id && String(part.product_id || "") === String(line.product_id))
-        || String(part.sku || "").trim().toLowerCase() === String(line.sku || "").trim().toLowerCase()));
-    if (existingRequest?.id) claimedRequestIds.add(existingRequest.id);
-    return {
-      ...(existingRequest?.id ? { id: existingRequest.id } : {}),
-      wo_id: wo?.id || null,
-      issue: existingRequest?.issue || `PO ${po.po_no}`,
-      product_id: line.product_id || null,
-      sku: line.sku,
-      product_name: line.product_name,
-      qty_needed: purchaseOrderLineDestinationQty(po, line),
-      unit_cost: Number(line.unit_cost || 0),
-      availability: available >= purchaseOrderLineDestinationQty(po, line) ? "OK" : `To order ${Math.max(0, purchaseOrderLineDestinationQty(po, line) - available)}`,
-      status: "Reserved",
-      accepted_qty: 0,
-      notes: [existingRequest?.notes, `${notesNeedle} for ${line.wo_no}`].filter(Boolean).join("\n"),
-    };
-  }).filter((row) => row.wo_id && row.sku && row.qty_needed > 0);
-  await upsertMany("work_order_parts", rows, "id");
+  const [parts, workOrders] = await Promise.all([getAll("work_order_parts"), getAll("work_orders")]);
+  const rows = planWorkOrderPoReservations(po, lineRows, parts, workOrders);
+  if (rows.length) await upsertMany("work_order_parts", rows, "id");
 }
 
 async function refreshOpenPartRequestAvailability(product, onHandQty = product?.qty || 0, requestRows = null) {
@@ -15558,45 +15568,14 @@ async function postAutomaticPurchaseShopIssuance(po, receiptRows = [], grNo = ""
 }
 
 async function ensureGoodsReceiptWorkOrderReservations(po, receiptRows = []) {
-  const workOrders = (productMeta.workOrders || []).length ? productMeta.workOrders : await getAll("work_orders");
+  const workOrders = await getAll("work_orders");
   const wo = workOrders.find((row) => String(row.wo_no || "").toLowerCase() === String(po.ap_support_wo_no || "").toLowerCase());
   if (!wo || !isOpenWorkOrder(wo)) throw new Error(`The linked work order ${po.ap_support_wo_no || ""} is not open. The Goods Receipt was posted, but its work-order reservation needs review.`);
-  const allParts = await getAll("work_order_parts");
-  const notesNeedle = `Reserved from PO ${po.po_no}`;
-  const touchedProducts = [];
-  for (const receipt of receiptRows) {
-    const product = (productMeta.products || []).find((row) => row.id === receipt.product_id || String(row.sku || "").toLowerCase() === String(receipt.sku || "").toLowerCase());
-    const poLine = (po._lines || []).find((line) => line.product_id === receipt.product_id || String(line.sku || "").toLowerCase() === String(receipt.sku || "").toLowerCase());
-    const qtyNeeded = purchaseOrderLineDestinationQty(po, poLine || receipt);
-    if (qtyNeeded <= 0) continue;
-    const existing = allParts.find((part) => String(part.wo_id || "") === String(wo.id || "")
-      && (part.product_id === receipt.product_id || String(part.sku || "").toLowerCase() === String(receipt.sku || "").toLowerCase())
-      && String(part.notes || "").includes(notesNeedle));
-    const sellingPrice = Number(product?.selling_price || existing?.selling_price || 0);
-    const row = {
-      wo_id: wo.id,
-      issue: `PO ${po.po_no}`,
-      product_id: product?.id || receipt.product_id || null,
-      sku: product?.sku || receipt.sku,
-      product_name: product?.name || receipt.product_name,
-      qty_needed: Math.max(qtyNeeded, Number(existing?.qty_needed || 0)),
-      unit_cost: Number(receipt.unit_cost || product?.cost || existing?.unit_cost || 0),
-      markup_percent: product?.markup_percent ?? existing?.markup_percent ?? null,
-      selling_price: sellingPrice || null,
-      availability: existing?.availability || "Pending mechanic acceptance",
-      status: /accepted/i.test(existing?.status || "") ? existing.status : "Reserved",
-      accepted_qty: Number(existing?.accepted_qty || 0),
-      notes: existing?.notes || `${notesNeedle} for ${wo.wo_no}`,
-    };
-    if (existing?.id) {
-      await updateOneWithOptionalColumns("work_order_parts", row, "id", existing.id, ["markup_percent", "selling_price"]);
-    } else {
-      const savedPart = await insertOneWithOptionalColumns("work_order_parts", row, ["markup_percent", "selling_price"], "Work-order reservation created. Run the work-order selling-price SQL update to store its selling price.");
-      allParts.push(savedPart);
-    }
-    if (product) touchedProducts.push(product);
-  }
-  for (const product of [...new Map(touchedProducts.map((row) => [row.id || row.sku, row])).values()]) {
+  // PO rows, not a SKU lookup against the first receipt, identify reservations.
+  // Repeated/partial receipts update the same requests without resetting issuance.
+  await syncPurchaseOrderWorkOrderReservations(po, (po._lines || []).map((line) => ({...line, wo_no: line.wo_no || wo.wo_no})));
+  const touched = new Set(receiptRows.map((row) => String(row.sku || "").toLowerCase()));
+  for (const product of (productMeta.products || []).filter((row) => touched.has(String(row.sku || "").toLowerCase()))) {
     await refreshOpenPartRequestAvailability(product, Number(product.qty || 0));
   }
 }
@@ -19650,7 +19629,7 @@ async function renderRepairsView() {
     getAll("purchase_orders").catch(() => []),
     getAll("purchase_order_lines").catch(() => []),
   ]);
-  await collapseDuplicatePendingWorkOrderPoReservations(parts);
+  // Repeated Part # rows are independent requests; never consolidate on load.
   productMeta.assets = assets;
   productMeta.outsideFleet = outsideFleet;
   productMeta.mechanicsRows = mechanics;
@@ -19666,6 +19645,9 @@ async function renderRepairsView() {
     const linkedPoLines = purchaseOrderLines.filter((line) => String(line.wo_no || "").trim().toLowerCase() === String(wo.wo_no || "").trim().toLowerCase());
     wo._parts.forEach((part) => {
       const issuedMovements = wo._stockMovements
+        .filter((movement) => String(movement.reason || '').includes('[WO part:')
+          ? String(movement.reason).includes(`[WO part:${part.id}]`)
+          : wo._parts.filter((row) => String(row.sku || '').toLowerCase() === String(part.sku || '').toLowerCase()).length === 1)
         .filter((movement) => Number(movement.qty || 0) < 0
           && String(movement.sku || "").trim().toLowerCase() === String(part.sku || "").trim().toLowerCase()
           && /repair/i.test(String(movement.type || "")))
@@ -19674,7 +19656,7 @@ async function renderRepairsView() {
       part._issued_by = [...new Set(issuedMovements.map((movement) => movement.entered_by).filter(Boolean))];
       const partSku = String(part.sku || "").trim().toLowerCase();
       const originPo = workOrderPartOriginPo(part);
-      const refs = originPo ? [originPo] : linkedPoLines
+      const refs = originPo ? [originPo] : (wo._parts.filter((row) => String(row.sku || '').trim().toLowerCase() === partSku).length === 1 ? linkedPoLines : [])
         .filter((line) => (part.product_id && String(line.product_id || "") === String(part.product_id))
           || (partSku && String(line.sku || "").trim().toLowerCase() === partSku))
         .map((line) => purchaseOrders.find((po) => String(po.id || "") === String(line.po_id || ""))?.po_no || line.po_no)
@@ -20882,7 +20864,7 @@ async function mechanicPortalAcceptPart(partId, mode) {
       total_fifo_cost: qty * unitCost,
       document_no: wo.wo_no,
       entered_by: currentMechanicName(),
-      reason: `${wo.wo_no} - ${part.issue || "Work order part"}`,
+      reason: `${wo.wo_no} - ${part.issue || "Work order part"} [WO part:${part.id}]`,
     }, "reference_no", ["from_bin_shelf"], "Part accepted. Run the multi-location SQL update so bin/shelf details can be stored.");
     await postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCost);
     await refreshWorkOrderWaitingPartsStatus(wo);
@@ -22017,7 +21999,8 @@ async function saveWorkOrderPartEdits(wo) {
   const availableByProduct = new Map((productMeta.products || []).map((product) => [String(product.id || product.sku || ""), Number(product.qty || 0)]));
   const acceptedBy = profile?.full_name || profile?.username || session?.user?.email || "Web work-order editor";
   for (const tr of rows) {
-    const id = tr.dataset.partId || "";
+    const id = tr.dataset.partId || crypto.randomUUID();
+    tr.dataset.partId = id;
     const get = (field) => tr.querySelector(`[data-admin-part="${field}"]`)?.value || "";
     const existing = (wo._parts || []).find((part) => String(part.id || "") === String(id));
     const product = resolveProductLookup(get("product_lookup"));
@@ -22031,6 +22014,9 @@ async function saveWorkOrderPartEdits(wo) {
     if (acceptedQty > qtyNeeded && qtyNeeded > 0) throw new Error(`Accepted quantity cannot exceed needed quantity for ${description || product?.name || "a part line"}.`);
     if (acceptedQty + 0.0001 < existingAcceptedQty) throw new Error(`Accepted quantity for ${description || product?.name || "a part line"} cannot be reduced in the Work Order editor. Use the controlled return/reversal process instead.`);
     const productId = product?.id || existing?.product_id || null;
+    if (existingAcceptedQty > 0 && String(productId || '') !== String(existing?.product_id || '')) {
+      throw new Error('An issued part row cannot change Part #. Add a new part row for the additional request.');
+    }
     const sku = product?.sku || (existing?.sku && !/^TBD$/i.test(existing.sku) ? existing.sku : "TBD");
     const productName = product?.name || description || existing?.product_name || "";
     const unitCost = Number(get("unit_cost") || existing?.unit_cost || product?.cost || 0);
@@ -22081,9 +22067,7 @@ async function saveWorkOrderPartEdits(wo) {
   }
   const savedRows = await upsertManyWithOptionalColumns("work_order_parts", upserts, "id", ["markup_percent", "selling_price"], "Work-order parts were saved. Run the work-order part selling-price SQL update so markup and selling price can be stored.");
   for (const job of acceptanceJobs) {
-    const savedPart = savedRows.find((row) => job.record.id && String(row.id) === String(job.record.id))
-      || savedRows.find((row) => String(row.product_id || "") === String(job.product.id || "") && Number(row.accepted_qty || 0) === Number(job.record.accepted_qty || 0))
-      || job.record;
+    const savedPart = savedRows.find((row) => String(row.id) === String(job.record.id)) || job.record;
     const deductions = await deductProductWithMotherComponents(job.product, job.qty);
     for (const deduction of deductions) {
       const deductedProduct = deduction.product;
@@ -22104,11 +22088,14 @@ async function saveWorkOrderPartEdits(wo) {
         total_fifo_cost: deductedQty * deductedCost,
         document_no: wo.wo_no,
         entered_by: acceptedBy,
-        reason: deduction.is_component ? `Automatically issued with mother part ${deduction.mother_sku} on ${wo.wo_no}` : `Issued and accepted from web Work Order editor on ${wo.wo_no}`,
+        reason: `${deduction.is_component ? `Automatically issued with mother part ${deduction.mother_sku} on ${wo.wo_no}` : `Issued and accepted from web Work Order editor on ${wo.wo_no}`} [WO part:${savedPart.id}]`,
       }, "reference_no", ["from_bin_shelf"], "Part accepted. Run the multi-location SQL update so bin/shelf details can be stored.");
       await postWorkOrderPartAcceptanceLedger(wo, savedPart, deductedProduct, deductedQty, deductedCost);
     }
   }
+  const savedById = new Map((wo._parts || []).map((part) => [part.id, part]));
+  for (const part of savedRows) savedById.set(part.id, {...savedById.get(part.id), ...part});
+  wo._parts = [...savedById.values()];
 }
 
 function workOrderSummaryText(wo) {
@@ -22867,9 +22854,11 @@ function workOrderPartIssuedBy(part) {
 function workOrderPartOriginPo(part = {}) {
   const normalizePo = (value) => String(value || "").toUpperCase().replace(/^PO[-\s]?(\d+)$/, "PO-$1");
   const source = [part.notes, part.issue].filter(Boolean).join(" | ");
-  const reservedMatch = source.match(/\breserved\s+from\s+PO\s+(PO[-\s]?\d+)\b/i);
+  const marker = source.match(/\[PO reservation:([^:]+):/);
+  if (marker) return decodeURIComponent(marker[1]);
+  const reservedMatch = source.match(/\breserved\s+from\s+PO\s+(\S+)/i);
   if (reservedMatch) return normalizePo(reservedMatch[1]);
-  const issueMatch = String(part.issue || "").match(/^PO\s+(PO[-\s]?\d+)$/i);
+  const issueMatch = String(part.issue || "").match(/^PO\s+(\S+)$/i);
   return issueMatch ? normalizePo(issueMatch[1]) : "";
 }
 
