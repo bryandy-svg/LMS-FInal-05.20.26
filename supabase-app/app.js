@@ -30202,7 +30202,7 @@ async function loadTruckingLookups() {
     getAll("outside_customer_fleet").catch(() => []),
     getAll("app_profiles").catch(() => []),
     getAll("customers").catch(() => []),
-    getAll("jobsites").catch(() => []),
+    getAll("asset_locations").catch(() => []),
     getAll("locations").catch(() => []),
     getAll("trucking_payroll_hours").catch(() => []),
   ]);
@@ -32654,6 +32654,31 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   return `<div class="report-document-heading"><strong>LMS IMPORTS</strong><span>Trucking Performance Report</span><small>${esc(periodLabel || "Selected period")} · ${dailyMode ? "Daily breakdown" : "Covered-period summary"}</small></div>${renderedSections}`;
 }
 
+async function mergeTruckingReportJobsite(oldName, newName, button) {
+  if (!isBryanOwner()) return alert("Only the system owner can merge jobsites across the system.");
+  const originalText = button?.textContent;
+  if (button) { button.disabled = true; button.textContent = "Checking merge..."; }
+  try {
+    const args = { p_old_name: oldName, p_new_name: newName, p_confirm: false };
+    const preview = await supabase.rpc("merge_jobsite", args);
+    if (preview.error) throw preview.error;
+    if (!preview.data || !Number(preview.data.records)) throw new Error("No records were found. Refresh the report and try again.");
+    const affected = Object.entries(preview.data.tables || {}).map(([table, count]) => `${table.replaceAll("_", " ")}: ${count}`).join("\n");
+    if (!confirm(`MERGE JOBSITE — SYSTEM-WIDE\n\nRemove old name: ${oldName}\nKeep name: ${newName}\n\n${preview.data.records} linked/master records across ALL customers and ALL dates:\n${affected}\n\nThe old name will be removed from active lists and searches. Original records are retained in the audit history. Financial amounts and dates stay unchanged.\n\nThis affects other modules too and reloads the page when complete. Proceed?`)) return;
+    if (button) button.textContent = "Merging...";
+    const merged = await supabase.rpc("merge_jobsite", { ...args, p_confirm: true });
+    if (merged.error) throw merged.error;
+    if (!merged.data?.merged) throw new Error("The database did not confirm the merge. Refresh before trying again.");
+    alert(`Merged ${oldName} into ${newName}. ${merged.data.records} records updated. The old master entries were retired; their originals remain in the audit history.`);
+    window.location.reload();
+  } catch (error) {
+    console.error(error);
+    alert(error?.message || "The jobsite merge could not be confirmed. Refresh before trying again.");
+  } finally {
+    if (button) { button.disabled = false; button.textContent = originalText; }
+  }
+}
+
 function printTruckingManagementReport() {
   const source = $("truckingManagementReportHost");
   if (!source) return alert("Apply the trucking report before printing.");
@@ -32705,14 +32730,22 @@ async function renderTruckingReportView() {
     dialog.innerHTML = `<form method="dialog"><h3>Edit trucking jobsite</h3><p class="hint">Start typing to search the Jobsite and Location lists in separate result columns, like the Part # search.</p><div class="field"><label>Jobsite / project #</label><input class="suggest-input" data-suggest-source="trucking_jobsites" id="truckingJobsiteLookupInput" value="${esc(currentName)}" placeholder="Type jobsite, project, or location" autocomplete="off" inputmode="search" required><small>Select a matching result, or finish typing a new jobsite name.</small></div><div class="actions"><button type="button" data-jobsite-cancel>Cancel</button><button class="primary" type="submit">Use jobsite</button></div></form>`;
     document.body.appendChild(dialog);
     const input = dialog.querySelector("#truckingJobsiteLookupInput");
+    dialog.querySelector(".actions").insertAdjacentHTML("beforeend", `<button type="button" data-jobsite-merge ${isBryanOwner() ? "" : "disabled"}>Merge jobsite system-wide</button>`);
+    dialog.querySelector(".actions").insertAdjacentHTML("beforebegin", '<p class="hint">Use jobsite corrects only this customer’s trucking moves. <strong>Merge jobsite system-wide</strong> removes the old name from all modules and dates after a separate confirmation (owner only).</p>');
     let completed = false;
     const finish = (value) => {
       if (completed) return;
       completed = true;
       dialog.remove();
-      resolve(String(value || "").trim());
+      resolve(value && typeof value === "object" ? value : String(value || "").trim());
     };
     dialog.querySelector("[data-jobsite-cancel]").onclick = () => { dialog.close(); finish(""); };
+    dialog.querySelector("[data-jobsite-merge]").onclick = () => {
+      const name = input.value.trim();
+      if (!name || name.toLowerCase() === currentName.trim().toLowerCase()) return alert("Choose a different jobsite name to retain.");
+      dialog.close();
+      finish({ name, merge: true });
+    };
     dialog.onsubmit = (event) => {
       event.preventDefault();
       const value = input.value.trim();
@@ -32726,7 +32759,9 @@ async function renderTruckingReportView() {
     input.select();
   });
   const editTruckingReportJobsite = async (oldKey, oldLabel, customer, button) => {
-    const newName = await chooseTruckingReportJobsite(oldLabel || "");
+    const selection = await chooseTruckingReportJobsite(oldLabel || "");
+    if (selection?.merge) return mergeTruckingReportJobsite(oldLabel, selection.name, button);
+    const newName = selection;
     if (!newName || newName === oldLabel) return;
     const matchingRows = rows.filter((row) => truckingComparableLocation(row.jobsite || row.project || row.destination) === oldKey && String(row.customer || "Unassigned Customer") === String(customer || "Unassigned Customer"));
     if (!matchingRows.length) return alert("No saved trucking moves were found for this jobsite.");
