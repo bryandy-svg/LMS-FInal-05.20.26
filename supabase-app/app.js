@@ -30500,6 +30500,7 @@ function truckingRowMatchesSearch(row, term = "") {
 }
 
 function truckingSimpleTable(rows, columns, options = {}) {
+  const jobsiteSubtotals = String(options.wrapClass || "").split(/\s+/).includes("trucking-jobsite-by-customer-table");
   const safeRows = Array.isArray(rows) ? rows : [];
   const filtersEnabled = options.filters !== false;
   const excelFilters = options.excelFilters === true;
@@ -30564,12 +30565,47 @@ function truckingSimpleTable(rows, columns, options = {}) {
             <tr class="${esc(typeof options.rowClass === "function" ? options.rowClass(row) : "")}">
               ${columns.map((col) => `<td class="${typeof row?.[col] === "number" ? "report-numeric-cell" : ""}" data-report-column="${safe(col)}" data-filter-value="${safe(filterValue(row?.[col]))}">${renderCell(row, col)}</td>`).join("")}
               ${options.actions ? `<td class="actions">${options.actions(row)}</td>` : ""}
-            </tr>`;
+            </tr>${jobsiteSubtotals && groupBy && (index === safeRows.length - 1 || groupBy(safeRows[index + 1]) !== groupValue)
+              ? `<tr class="subtotal-row trucking-jobsite-subtotal" data-trucking-subtotal="true" style="font-weight:700;background:#e8f0f5">${truckingJobsiteSubtotalCells(safeRows.filter((item) => groupBy(item) === groupValue), columns, `${groupValue} — Subtotal`)}</tr>` : ""}`;
           }).join("")}
         </tbody>
         ${Array.isArray(footerCells) && footerCells.length ? `<tfoot><tr class="subtotal-row report-total-row">${columns.map((col, index) => `<td data-report-column="${safe(col)}">${footerCells[index] || ""}</td>`).join("")}${options.actions ? `<td></td>` : ""}</tr></tfoot>` : ""}
       </table>
     </div>`;
+}
+
+function truckingJobsiteSubtotalCells(rows, columns, label) {
+  const amounts = ["income", "allocated_labor", "unallocated_labor", "admin_labor", "total_labor", "profit"];
+  return columns.map((column, index) => {
+    const sum = rows.reduce((total, row) => total + Number(row[column] || 0), 0);
+    const value = index === 0 ? esc(label) : column === "moves" ? String(sum) : column === "run_hours" ? sum.toFixed(2) : amounts.includes(column) ? money(sum) : "";
+    return `<td data-report-column="${esc(column)}">${value}</td>`;
+  }).join("");
+}
+
+function refreshTruckingJobsiteSubtotals(wrap) {
+  if (!wrap.classList.contains("trucking-jobsite-by-customer-table")) return;
+  const columns = [...wrap.querySelectorAll("thead tr:first-child th")].map((cell) => cell.dataset.reportColumn);
+  let heading = null;
+  let group = [];
+  const visible = [];
+  for (const row of wrap.querySelectorAll("tbody tr")) {
+    if (row.dataset.truckingGroupRow === "true") {
+      heading = row;
+      group = [];
+    } else if (row.dataset.truckingSubtotal === "true") {
+      row.hidden = group.length === 0;
+      if (heading) heading.hidden = row.hidden;
+      const label = row.children[0].textContent;
+      row.innerHTML = truckingJobsiteSubtotalCells(group, columns, label);
+    } else if (!row.hidden) {
+      const values = Object.fromEntries([...row.children].map((cell) => [cell.dataset.reportColumn, cell.dataset.filterValue]));
+      group.push(values);
+      visible.push(values);
+    }
+  }
+  const footer = wrap.querySelector("tfoot tr");
+  if (footer) footer.innerHTML = truckingJobsiteSubtotalCells(visible, columns, "REPORT TOTAL");
 }
 
 function exportTruckingVisibleTable(button) {
@@ -30598,12 +30634,14 @@ function applyTruckingTableFilters(control) {
   if (!wrap) return;
   const filters = [...wrap.querySelectorAll(".truck-column-filter")];
   wrap.querySelectorAll("tbody tr").forEach((row) => {
+    if (row.dataset.truckingGroupRow === "true" || row.dataset.truckingSubtotal === "true") return;
     row.hidden = !filters.every((filter) => {
       if (!filter.value) return true;
       const cell = row.children[Number(filter.dataset.columnIndex || 0)];
       return String(cell?.dataset.filterValue || "") === filter.value;
     });
   });
+  refreshTruckingJobsiteSubtotals(wrap);
   syncTruckingTicketSelectAll(wrap);
 }
 
@@ -30636,6 +30674,7 @@ function clearTruckingTableFilters(button) {
   }
   wrap.querySelectorAll(".truck-column-filter").forEach((filter) => { filter.value = ""; });
   wrap.querySelectorAll("tbody tr").forEach((row) => { row.hidden = false; });
+  refreshTruckingJobsiteSubtotals(wrap);
 }
 
 function truckingEnhanceSuggestInputs(root = document) {
