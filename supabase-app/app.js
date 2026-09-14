@@ -4719,7 +4719,7 @@ function renderFilteredAging() {
   const mode = $("agingMode")?.value || "summary";
   const q = ($("agingSearch")?.value || "").toLowerCase();
   const rows = currentRows.filter((row) => !q || Object.values(row).join(" ").toLowerCase().includes(q));
-  $("agingTableHost").innerHTML = agingTableHtml(rows, mode);
+  $("agingTableHost").innerHTML = agingTableHtml(rows, mode) + agingControlReviewHtml($("agingType")?.value || "ar", q);
   bindAgingTableControls();
   updateAgingActionButtons();
 }
@@ -4956,13 +4956,13 @@ function arAgingDetailRows(asOf) {
   let rows = accountsReceivableRowsAsOf({ invoices, invoiceLines, payments }, asOf)
     .filter((row) => Math.abs(Number(row.balance || 0)) > 0.004)
     .map((row) => agingBucketRow({ ...row, name: row.customer, reference: row.source_ref, _aging_type: "ar", _record_id: row.id }, asOf));
-  rows = clearAgingCreditsByParty(rows);
+  const excluded = rows.filter((row) => /customer deposit/i.test(row.type || "") && !agingDocumentGlRows(row, rows, gl, "ar", asOf).length);
+  rows = rows.filter((row) => !excluded.includes(row));
+  rows = clearAgingCreditsByParty(reconcileAgingDocumentBalances(rows, gl, "ar", asOf));
   const subledgerBalance = rows.reduce((sum, row) => sum + Number(row.balance || 0), 0);
   const glBalance = accountsReceivableGlBalance(gl, asOf);
   const difference = roundCurrency(glBalance - subledgerBalance);
-  if (Math.abs(difference) > 0.004) {
-    rows.push(...subledgerPartyDifferenceRows({ type: "ar", rows, gl, asOf, difference }));
-  }
+  saveAgingControlReview("ar", { rows, gl, asOf, difference, excluded, glBalance, subledgerBalance });
   return rows;
 }
 
@@ -4986,7 +4986,7 @@ function apAgingDetailRows(asOf) {
       const postDate = String(po.posting_date || ap.invoice_date || po.po_date || "").slice(0, 10);
       return !postDate || postDate <= asOf;
     });
-  const cutoffCheckRuns = (checkRuns || []).filter((run) => !run.payment_date || String(run.payment_date).slice(0, 10) <= asOf);
+  const cutoffCheckRuns = (checkRuns || []).filter((run) => !(run.posting_date || run.payment_date) || String(run.posting_date || run.payment_date).slice(0, 10) <= asOf);
   let rows = accountsPayableRows({ pos, gl: cutoffGl, allGl: cutoffGl, checkRuns: cutoffCheckRuns })
     .filter((row) => Math.abs(Number(row.balance || 0)) > 0.004)
     .map((row) => agingBucketRow({
@@ -4999,14 +4999,73 @@ function apAgingDetailRows(asOf) {
       _record_id: row.id,
       _po_no: row.po_no,
     }, asOf));
-  rows = clearAgingCreditsByParty(rows);
+  const hasControlPosting = (row) => row.beginning_ap || cutoffGl.some((line) =>
+    subledgerAccountMatches(line.account, "Accounts Payable") && Number(line.credit || 0) > 0.004
+    && String(line.reference || "").trim() === String(row.reference || "").trim()
+    && canonicalPartyName(line.vendor).toLowerCase() === canonicalPartyName(row.name).toLowerCase()
+    && (!row.partial_receipt || normalizeCheckRunDocumentKey(line.invoice_no) === normalizeCheckRunDocumentKey(row.invoice_no)));
+  const excluded = rows.filter((row) => !hasControlPosting(row));
+  rows = rows.filter(hasControlPosting);
+  rows = clearAgingCreditsByParty(reconcileAgingDocumentBalances(rows, cutoffGl, "ap", asOf));
   const subledgerBalance = rows.reduce((sum, row) => sum + Number(row.balance || 0), 0);
   const glBalance = accountsPayableGlBalance(gl, asOf);
   const difference = roundCurrency(glBalance - subledgerBalance);
-  if (Math.abs(difference) > 0.004) {
-    rows.push(...subledgerPartyDifferenceRows({ type: "ap", rows, gl, asOf, difference, openingRecords: pos }));
-  }
+  saveAgingControlReview("ap", { rows, gl, asOf, difference, excluded, glBalance, subledgerBalance, openingRecords: pos });
   return rows;
+}
+
+function agingDocumentGlRows(row, candidates, gl, type, asOf) {
+  const key = (value) => String(value || "").trim().toLowerCase();
+  const party = (item) => key(canonicalPartyName(item.name || item.customer || item.vendor));
+  const keys = (item) => [item.stored_invoice_no, item.invoice_no, item.reference, item.po_no].map(key).filter(Boolean);
+  const mine = keys(row);
+  return (gl || []).map(normalizeGlRow).filter((line) => {
+    if (!subledgerAccountMatches(line.account, type === "ap" ? "Accounts Payable" : "Accounts Receivable")) return false;
+    if (String(line.posting_date || "").slice(0, 10) > asOf || /draft|unposted/i.test(line.status || "")) return false;
+    if (key(canonicalPartyName(type === "ap" ? line.vendor : line.customer)) !== party(row)) return false;
+    const document = key(line.invoice_no || line.reference);
+    return document && mine.includes(document) && candidates.filter((candidate) => party(candidate) === party(row) && keys(candidate).includes(document)).length === 1;
+  });
+}
+
+function reconcileAgingDocumentBalances(rows, gl, type, asOf) {
+  const reconciled = rows.map((row) => {
+    const support = agingDocumentGlRows(row, rows, gl, type, asOf);
+    const charge = support.reduce((sum, line) => sum + Number(type === "ap" ? line.credit : line.debit), 0);
+    const settlement = support.reduce((sum, line) => sum + Number(type === "ap" ? line.debit : line.credit), 0);
+    // Never allocate a batch payment by guesswork or treat absent postings as payment.
+    if (charge <= 0.004 || settlement <= 0.004 || Math.abs(charge - Number(row.invoice_amount ?? row.total ?? row.balance)) > 0.004) return row;
+    const balance = roundCurrency(charge - settlement);
+    return agingBucketRow({ ...row, balance, _settlement_support: support }, asOf);
+  });
+  productMeta.agingSettlementDetails ||= {};
+  productMeta.agingSettlementDetails[type] = reconciled.filter((row) => row._settlement_support);
+  return reconciled.filter((row) => Math.abs(Number(row.balance)) > 0.004);
+}
+
+function saveAgingControlReview(type, review) {
+  productMeta.agingControlReview ||= {};
+  // Calculate per-party differences even when opposite parties net to zero globally.
+  review.differences = subledgerPartyDifferenceRows({ type, ...review });
+  productMeta.agingControlReview[type] = review;
+}
+
+function agingControlReviewHtml(type, search = "") {
+  const review = productMeta.agingControlReview?.[type];
+  if (!review) return "";
+  const matches = (row) => !search || Object.values(row).join(" ").toLowerCase().includes(search);
+  const differences = review.differences.filter(matches);
+  const excluded = review.excluded.filter(matches);
+  const settlements = (productMeta.agingSettlementDetails?.[type] || []).filter(matches);
+  const cells = (values) => `<tr>${values.map((value) => `<td>${esc(value ?? "")}</td>`).join("")}</tr>`;
+  const settlementDetail = settlements.length ? `<h4>Document-matched settlements</h4><table><thead><tr><th>Party</th><th>Invoice</th><th>Remaining</th><th>Supporting postings</th></tr></thead><tbody>${settlements.map((row) => cells([row.name,row.invoice_no,money(row.balance),row._settlement_support.map((line) => `${line.posting_date}: ${line.reference} / ${line.invoice_no || ""} — debit ${money(line.debit)}, credit ${money(line.credit)}`).join("; ")])).join("")}</tbody></table>` : "";
+  const detail = settlementDetail + differences.map((row) => {
+    const partyKey = canonicalPartyName(row.name).toLowerCase();
+    const glRows = review.gl.map(normalizeGlRow).filter((line) => subledgerAccountMatches(line.account, type === "ap" ? "Accounts Payable" : "Accounts Receivable") && String(line.posting_date || "").slice(0, 10) <= review.asOf && (row.invoice_no === "GL-DIFFERENCE" || canonicalPartyName(type === "ap" ? line.vendor : line.customer).toLowerCase() === partyKey));
+    const documents = review.rows.filter((item) => canonicalPartyName(item.name).toLowerCase() === partyKey);
+    return `<details><summary>${esc(row.name)} — difference ${money(row.balance)}</summary><p>Difference = GL control less open invoice detail. This is not an invoice or a payment; unmatched amounts are not automatically cleared.</p><table><thead><tr><th>Posting date</th><th>Reference</th><th>Invoice #</th><th>Source</th><th>Debit</th><th>Credit</th></tr></thead><tbody>${glRows.map((line) => cells([line.posting_date, line.reference, line.invoice_no, line.source, money(line.debit), money(line.credit)])).join("") || '<tr><td colspan="6">No individually assigned control postings. Review beginning-balance allocation or unassigned GL entries.</td></tr>'}</tbody></table><h4>Open invoice detail</h4><table><thead><tr><th>Reference</th><th>Invoice</th><th>Due date</th><th>Balance</th></tr></thead><tbody>${documents.map((item) => cells([item.reference,item.invoice_no,item.due_date,money(item.balance)])).join("") || '<tr><td colspan="4">No open invoice detail.</td></tr>'}</tbody></table></details>`;
+  }).join("");
+  return `<details class="aging-control-review" style="margin-top:16px;padding:12px;border:1px solid #ccd7e0"><summary><strong>Control reconciliation & excluded-item details (${differences.length} differences, ${excluded.length} excluded items)</strong></summary><p>As of ${esc(review.asOf)} · GL control: ${money(review.glBalance)} · Open aging: ${money(review.subledgerBalance)} · Difference: ${money(review.difference)}. No adjustment entries are created by this report.</p>${detail}${excluded.length ? `<h4>Not included in open aging</h4><table><thead><tr><th>Party</th><th>Reference</th><th>Invoice</th><th>Amount</th><th>Reason</th></tr></thead><tbody>${excluded.map((row) => cells([row.name,row.reference,row.invoice_no,money(row.balance),type === "ar" ? "Customer deposit — no A/R control posting" : "Not posted to A/P control; review payable posting"])).join("")}</tbody></table>` : ""}</details>`;
 }
 
 function clearAgingCreditsByParty(rows = []) {
