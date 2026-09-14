@@ -18993,6 +18993,42 @@ async function postPartialSalesOrderInvoiceAccounting(order, invoice, lines = []
   assertBalancedLedgerRows(rows, `Partial Sales Order invoice ${invoice.invoice_no}`);
   await supabase.from("general_ledger").delete().eq("reference", invoice.invoice_no).eq("source", "Sales Order Invoice");
   if (rows.length) await upsertManyWithOptionalColumns("general_ledger", rows, "id", ["bank_reference"]);
+  if (paymentMode === "credit card" && netReceivable > 0) {
+    await settlePostedCreditCardInvoice(invoice, netReceivable);
+  }
+}
+
+async function settlePostedCreditCardInvoice(invoice, amount) {
+  // Settlement detail only: the invoice posting already debited the bank.
+  // Never call postCustomerPayment here, which would debit cash a second time.
+  const { data: ledger, error: ledgerError } = await supabase.from("general_ledger")
+    .select("account,debit,credit,status,source").eq("invoice_no", invoice.invoice_no);
+  if (ledgerError) throw ledgerError;
+  const posted = (ledger || []).filter((row) => row.status === "Posted");
+  const bank = posted.filter((row) => row.account === "FHB Checking" && row.source === "Sales Order Invoice")
+    .reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+  const ar = posted.filter((row) => /accounts receivable/i.test(row.account || ""))
+    .reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+  if (!(amount > 0) || Math.abs(bank - amount) > 0.004 || Math.abs(ar) > 0.004) {
+    throw new Error(`Credit-card settlement for ${invoice.invoice_no} does not match its posted bank receipt. Review Accounting before marking it paid.`);
+  }
+  const { data: payments, error: paymentsError } = await supabase.from("customer_payments")
+    .select("*").eq("invoice_no", invoice.invoice_no);
+  if (paymentsError) throw paymentsError;
+  const receiptNo = `SETTLED-${invoice.invoice_no}`;
+  const active = (payments || []).filter((row) => !/void|revers|cancel/i.test(row.status || ""));
+  if (active.some((row) => row.receipt_no !== receiptNo || Math.abs(Number(row.amount || 0) - amount) > 0.004)) {
+    throw new Error(`Invoice ${invoice.invoice_no} already has payment activity. Review it before recording another settlement.`);
+  }
+  if (!active.length) await upsertOne("customer_payments", {
+    receipt_no: receiptNo, invoice_no: invoice.invoice_no, customer: invoice.customer,
+    payment_date: invoice.invoice_date, amount, method: "Credit Card",
+    bank_reference: invoice.invoice_no, status: "Posted",
+    notes: "Settlement link only: bank receipt already posted by Sales Order Invoice. Do not repost this receipt.",
+  }, "receipt_no");
+  const { error } = await supabase.from("invoices").update({ status: "Paid" }).eq("id", invoice.id);
+  if (error) throw error;
+  invoice.status = "Paid";
 }
 
 async function createSalesOrderDepositInvoice(orderNo) {
