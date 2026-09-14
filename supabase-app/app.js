@@ -21215,7 +21215,7 @@ async function ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products = [], po
   await ensureWorkOrderAccountingAccounts(true);
   const ledgerDate = dateTextToIso(postingDate || workOrderClosingDate(wo));
   if (!ledgerDate) throw new Error(`Work order ${wo.wo_no || ""} does not have a Closing Date for final cost posting.`);
-  const expectedCost = (wo._parts || []).reduce((sum, part) => {
+  const expectedCost = (wo._parts || []).filter(isBillableWorkOrderPart).reduce((sum, part) => {
     const product = (products || []).find((item) => item.id === part.product_id || item.sku === part.sku) || {};
     return sum + Number(part.accepted_qty || 0) * Number(part.unit_cost || product.cost || 0);
   }, 0);
@@ -22466,9 +22466,14 @@ async function markWorkOrderReadyToClose(wo) {
   }
 }
 
+function isBillableWorkOrderPart(part = {}) {
+  return !/released|removed|cancel|returned|void|revers/i.test(effectivePartStatus(part))
+    && Number(part.accepted_qty || 0) > 0;
+}
+
 function repairPartsTotal(wo) {
   const billable = Boolean(wo?.bill_to_customer && !/internal/i.test(wo.bill_to_customer));
-  return (wo._parts || []).reduce((s, part) => {
+  return (wo._parts || []).filter(isBillableWorkOrderPart).reduce((s, part) => {
     const rate = billable ? workOrderPartSellingPrice(part, {}, wo.bill_to_customer || wo.customer) : Number(part.unit_cost || 0);
     return s + Number(part.accepted_qty || 0) * rate;
   }, 0);
@@ -24237,7 +24242,7 @@ async function invoiceWorkOrder(woNo) {
   }
   const products = productMeta.products?.length ? productMeta.products : await getAll("products");
   const lines = [
-    ...(wo._parts || []).filter((p) => Number(p.accepted_qty || 0) > 0).map((p) => {
+    ...(wo._parts || []).filter(isBillableWorkOrderPart).map((p) => {
       const product = products.find((item) => item.id === p.product_id || item.sku === p.sku) || {};
       return { description: `${p.sku} - ${p.product_name}`, unit: product.unit || p.unit || "", qty: Number(p.accepted_qty || 0), rate: workOrderPartSellingPrice(p, product, wo.bill_to_customer || wo.customer), revenue_account: "Parts Sales" };
     }),
@@ -24249,6 +24254,17 @@ async function invoiceWorkOrder(woNo) {
   }
   try {
     const existingInvoices = await getAll("invoices");
+    // Never overwrite a reversed invoice's original posting while its reversal
+    // remains in the ledger. Such invoices require an audited accounting revision.
+    const priorInvoice = existingInvoices.find((row) => row.invoice_no === wo.wo_no);
+    if (priorInvoice) {
+      const { data: reversals, error: reversalError } = await supabase.from("general_ledger")
+        .select("id").eq("invoice_no", wo.wo_no).eq("source", "Invoice Reversal").limit(1);
+      if (reversalError) throw reversalError;
+      if (reversals?.length || priorInvoice.void_date || /void|revers/i.test(priorInvoice.status || "")) {
+        throw new Error(`Invoice ${wo.wo_no} has reversal history. Accounting must post an audited invoice revision before it can be invoiced again; the original invoice and reversal have not been changed.`);
+      }
+    }
     const incompleteInvoice = existingInvoices.find((invoiceRow) =>
       String(invoiceRow.source_ref || "") === String(wo.wo_no || "")
       && /work order/i.test(invoiceRow.type || "")
@@ -24284,7 +24300,8 @@ async function invoiceWorkOrder(woNo) {
     } else {
       invoice = await upsertOne("invoices", invoicePayload, "invoice_no");
     }
-    await supabase.from("invoice_lines").delete().eq("invoice_id", invoice.id);
+    const { error: deleteLinesError } = await supabase.from("invoice_lines").delete().eq("invoice_id", invoice.id);
+    if (deleteLinesError) throw deleteLinesError;
     await upsertInvoiceLines(lines.map((line) => ({
       invoice_id: invoice.id,
       description: line.description,
@@ -24841,6 +24858,10 @@ function parseInvoiceModalLines() {
 }
 
 async function saveInvoiceModal() {
+  if (editing?.invoice_no) {
+    try { await assertInvoiceHasNoReversalHistory(editing.invoice_no); }
+    catch (error) { alert(error.message || error); return; }
+  }
   if (editing && /paid|void|reversed/i.test(invoiceDisplayStatus(editing))) {
     alert(`Invoice ${editing.invoice_no} is ${invoiceDisplayStatus(editing)} and cannot be edited. Use Reverse if it needs to be corrected.`);
     return;
@@ -24906,6 +24927,8 @@ async function saveInvoiceModal() {
 }
 
 async function reverseInvoice(invoiceNo, options = {}) {
+  try { await assertInvoiceHasNoReversalHistory(invoiceNo); }
+  catch (error) { alert(error.message || error); return; }
   const workOrderReversal = Boolean(options.returnToRepairs);
   let invoice = currentRows.find((i) => i.invoice_no === invoiceNo && i.invoice_date);
   if (!invoice) {
@@ -25002,7 +25025,15 @@ function invoiceNumberPrefix(type = "") {
   return "M";
 }
 
+async function assertInvoiceHasNoReversalHistory(invoiceNo) {
+  const { data, error } = await supabase.from("general_ledger").select("id")
+    .eq("invoice_no", invoiceNo).eq("source", "Invoice Reversal").limit(1);
+  if (error) throw error;
+  if (data?.length) throw new Error(`Invoice ${invoiceNo} has reversal history. Use an audited accounting revision; automatic reposting would overwrite its history. No automatic changes were made.`);
+}
+
 async function postInvoiceLedger(invoice, lines) {
+  await assertInvoiceHasNoReversalHistory(invoice.invoice_no);
   const total = (lines || []).reduce((s, l) => s + Number(l.qty || 0) * Number(l.rate || 0), 0);
   if (!total) return;
   const linkedSalesOrder = /parts/i.test(invoice.type || "") && (await invoiceLinkedSalesOrder(invoice));
