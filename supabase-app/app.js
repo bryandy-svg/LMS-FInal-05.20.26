@@ -4951,8 +4951,8 @@ function agingRows(type, mode, asOfInput) {
   return [...grouped.values()].sort((a, b) => b.balance - a.balance);
 }
 
-function arAgingDetailRows(asOf) {
-  const { invoices = [], invoiceLines = [], payments = [], gl = [] } = productMeta.aging || {};
+function arAgingDetailRows(asOf, source = productMeta.aging || {}) {
+  const { invoices = [], invoiceLines = [], payments = [], gl = [] } = source;
   let rows = accountsReceivableRowsAsOf({ invoices, invoiceLines, payments }, asOf)
     .filter((row) => Math.abs(Number(row.balance || 0)) > 0.004)
     .map((row) => agingBucketRow({ ...row, name: row.customer, reference: row.source_ref, _aging_type: "ar", _record_id: row.id }, asOf));
@@ -4976,10 +4976,18 @@ function accountsReceivableGlBalance(gl = [], asOf = today()) {
   }).reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
 }
 
-function apAgingDetailRows(asOf) {
-  const { purchaseOrders = [], poLines = [], receipts = [], gl = [], checkRuns = [] } = productMeta.aging || {};
+function apAgingDetailRows(asOf, source = productMeta.aging || {}) {
+  const { purchaseOrders = [], poLines = [], receipts = [], gl = [], checkRuns = [] } = source;
   const cutoffGl = (gl || []).map(normalizeGlRow).filter((row) => !row.posting_date || row.posting_date <= asOf);
   const pos = purchaseOrders
+    .map((po) => {
+      // A later check changes the PO's current status, not its earlier balance.
+      const laterRuns = checkRuns.filter((run) => String(run.posting_date || run.payment_date || "").slice(0, 10) > asOf);
+      const paidLater = checkRunPaymentForApRow({ po_no: po.po_no, invoice_no: po.vendor_invoice_no, vendor: po.vendor }, laterRuns);
+      return paidLater && /paid/i.test(`${po.payment_status || ""} ${po.status || ""}`)
+        ? { ...po, payment_status: "Ready to Pay", status: String(po.status || "").replace(/paid/gi, "") }
+        : po;
+    })
     .map((po) => ({ ...po, _lines: poLines.filter((line) => line.po_id === po.id || line.po_no === po.po_no), _receipts: receipts.filter((gr) => gr.po_no === po.po_no) }))
     .filter((po) => {
       const ap = poApSummary(po);
@@ -8027,12 +8035,16 @@ function periodCloseChecks(data) {
   const tb = trialBalanceRows(data);
   const tbDebit = tb.reduce((sum, row) => sum + Number(row.debit || 0), 0);
   const tbCredit = tb.reduce((sum, row) => sum + Number(row.credit || 0), 0);
-  const arDetail = accountsReceivableRows(data).reduce((sum, row) => sum + Number(row.balance || 0), 0);
-  const arGl = accountingGlBalance(data, /accounts receivable/i);
-  const apDetail = accountsPayableRows(data).filter((row) => !/paid|void|reversed/i.test(`${row.payment || ""} ${row.status || ""}`)).reduce((sum, row) => sum + Number(row.invoice_amount || row.ap || 0), 0);
-  const apGl = -accountingGlBalance(data, /accounts payable|parts accrual/i);
-  const inventoryGl = accountingGlBalance(data, /parts inventory/i);
   const asOf = data.reportTo || sessionStorage.getItem("lms.accountingReportTo") || today();
+  // Close and aging must reconcile the same documents and settlements at the
+  // same cutoff. Current invoice totals include later activity and omit GL
+  // settlements; Parts Accrual is a separate control from vendor invoices.
+  const agingSource = { ...data, purchaseOrders: data.pos || [], gl: data.allGl || data.gl || [] };
+  const arDetail = arAgingDetailRows(asOf, agingSource).reduce((sum, row) => sum + Number(row.balance || 0), 0);
+  const arGl = accountsReceivableGlBalance(agingSource.gl, asOf);
+  const apDetail = apAgingDetailRows(asOf, agingSource).reduce((sum, row) => sum + Number(row.balance || 0), 0);
+  const apGl = accountsPayableGlBalance(agingSource.gl, asOf);
+  const inventoryGl = accountingGlBalance(data, /parts inventory/i);
   const inventoryDetail = stockMovementLedgerValue(data.movements || [], asOf);
   const unmatchedBank = (data.bankRows || []).filter((row) => /unmatched|review/i.test(row.status || "")).length;
   const unmatchedPo = (data.pos || []).filter((row) => /mismatch|review/i.test(`${row.match_status || ""} ${row.payment_status || ""}`)).length;
@@ -8049,10 +8061,11 @@ function periodCloseChecks(data) {
 }
 
 async function accountingControlData(asOf = today()) {
-  const [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements] = await Promise.all([
+  const [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns] = await Promise.all([
     getAll("general_ledger"), getAll("chart_of_accounts"), getAll("invoices"), getAll("invoice_lines"), getAll("customer_payments"), getAll("purchase_orders"), getAll("purchase_order_lines"), getAll("goods_receipts"), getAll("sales_orders"), getAll("sales_order_lines"), getAll("bank_transactions"), getAll("products"), getAll("stock_movements"),
+    getAll("check_runs"),
   ]);
-  return buildAccountingData({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, reportFrom: "", reportTo: asOf, reportTab: "tb" });
+  return buildAccountingData({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, reportFrom: "", reportTo: asOf, reportTab: "tb" });
 }
 
 async function openTransactionPostingAudit() {
