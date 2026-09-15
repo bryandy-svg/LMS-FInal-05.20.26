@@ -32483,17 +32483,47 @@ function truckingSimilarJobsiteLabels(values = []) {
   return result;
 }
 
+function truckingApplyLoggedLabor(rows, payrollRows, drivers) {
+  const groups = new Map();
+  rows.forEach(row => { const key = row.labor_date + "|" + String(row.driver_name || "").trim().toLowerCase(); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(row); });
+  const result = [];
+  groups.forEach((dayRows, key) => {
+    const payroll = payrollRows.find(row => String(row.payroll_date || "").slice(0,10) + "|" + String(row.driver_name || "").trim().toLowerCase() === key);
+    if (!payroll) { result.push(...dayRows.map(row => ({...row, missing_logged_hours:true}))); return; }
+    const actual = Math.max(0, Number(payroll.total_hours || 0));
+    const driver = drivers.find(row => String(row.name || "").trim().toLowerCase() === String(dayRows[0].driver_name || "").trim().toLowerCase());
+    const regular = payroll.regular_hours == null ? Math.min(8,actual) : Number(payroll.regular_hours || 0);
+    const overtime = payroll.overtime_hours == null ? Math.max(0,actual-regular) : Number(payroll.overtime_hours || 0);
+    const total = payroll.labor_cost != null && payroll.labor_cost !== "" ? Number(payroll.labor_cost) : (regular + overtime*1.5)*Number(driver?.hourly_labor_rate || 0);
+    const services = dayRows.filter(row => !row.is_labor_daily);
+    const run = services.reduce((sum,row)=>sum+Number(row.run_hours||0),0);
+    const supported = actual > 0 ? total * Math.min(1,run/actual) : 0;
+    let allocated = 0;
+    services.forEach((row,index) => {
+      const cost = index === services.length-1 ? Math.round((supported-allocated)*100)/100 : Math.round((run ? supported*Number(row.run_hours||0)/run : 0)*100)/100;
+      allocated += cost;
+      result.push({...row,total_labor_cost:cost,income_less_labor:Number(row.ticket_income||0)-cost-Number(row.fuel_cost||0)});
+    });
+    const remaining = Math.round((total-allocated)*100)/100;
+    result.push({driver_name:dayRows[0].driver_name,labor_date:dayRows[0].labor_date,move_order:"—",customer:"Labor",report_service:"Logged Hours / Hours Without Move",route:actual.toFixed(2)+" logged hr − "+run.toFixed(2)+" run hr = "+(actual-run).toFixed(2)+" hr"+(run>actual ? " · Run hours exceed logged hours" : ""),start_time:"",end_time:"",run_hours:0,actual_hours:actual,hours_difference:actual-run,gap_between_moves:"—",total_labor_cost:remaining,ticket_income:0,fuel_cost:0,income_less_labor:-remaining,is_labor_daily:true});
+  });
+  return result;
+}
+
 function truckingDriverSummaryWithFuel(rows, dailyMode = false) {
   const groups = new Map();
   rows.filter(row => !row.is_driver_total).forEach(row => {
     const driver = String(row.driver_name || "Unassigned Driver").trim();
     const date = dailyMode ? row.labor_date || "" : "";
     const key = date + "|" + driver.toLowerCase();
-    const group = groups.get(key) || {date, driver, moves:0, run_hours:0, move_hours:0, income:0, labor:0, fuel_cost:0, profit:0};
+    const group = groups.get(key) || {date, driver, moves:0, run_hours:0, move_hours:0, actual_hours:0, hours_difference:0, missing_logged_hours:false, income:0, labor:0, fuel_cost:0, profit:0};
     const isMove = !row.is_fuel_daily && !row.is_labor_daily;
     group.moves += isMove ? 1 : 0;
     group.move_hours += isMove ? Number(row.run_hours || 0) : 0;
     group.run_hours += Number(row.run_hours || 0);
+    group.actual_hours += Number(row.actual_hours || 0);
+    group.hours_difference += Number(row.hours_difference || 0);
+    group.missing_logged_hours ||= Boolean(row.missing_logged_hours);
     group.income += Number(row.ticket_income || 0);
     group.labor += Number(row.total_labor_cost || 0);
     group.fuel_cost += Number(row.fuel_cost || 0);
@@ -32857,6 +32887,9 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
     route: `${Number(day.paid || 0).toFixed(2)} paid hr · ${money(day.labor_cost || 0)}`,
     start_time: "", end_time: "", run_hours: 0, gap_between_moves: "—", total_labor_cost: Number(day.labor_cost || 0), ticket_income: 0, income_less_labor: -Number(day.labor_cost || 0), is_labor_daily: true,
   }));
+  const loggedLaborRows = truckingApplyLoggedLabor(driverMoveRows, productMeta.truckingPayrollHours || [], productMeta.truckingDrivers || []);
+  driverMoveRows.length = 0;
+  driverMoveRows.push(...loggedLaborRows);
   const chronologyGroups = new Map();
   driverMoveRows.forEach((row) => {
     const key = String(row.driver_name || "Unassigned Driver").trim().toLowerCase();
@@ -32914,13 +32947,13 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   const fuelOverageGallons = fuelRows.reduce((sum, row) => sum + Number(row.overage_gallons || 0), 0);
   const fuelUsage = `<div class="trucking-driver-performance-heading"><strong>Fuel Usage & Pricing</strong><span>${fuelRows.length} service line${fuelRows.length === 1 ? "" : "s"} · ${fuelGallons.toFixed(2)} dispensed gal · ${fuelAllocatedGallons.toFixed(2)} cost gal · cost ${money(fuelCost)} · selling value ${money(fuelSellingValue)} · margin ${money(fuelMargin)}${unpricedFuelRows ? ` · ${unpricedFuelRows} unpriced` : ""} · monitoring only</span></div>${truckingSimpleTable(fuelUsageRows, ["fuel_date", "report_no", "driver_name", "fuel_truck", "equipment_name", "jobsite", "gallons", "shortage_gallons", "overage_gallons", "allocated_gallons", "cost_per_gallon", "fuel_cost", "selling_price_per_gallon", "fuel_selling_value", "fuel_margin", "pricing_period"], { wrapClass: "trucking-report-table trucking-report-detail-table trucking-fuel-usage-table", labels: ["Date", "Fuel Report #", "Driver", "Fuel Truck", "Equipment Refilled", "Jobsite", "Dispensed Gal", "Shortage", "Overage", "Cost Gal", "Cost / Gal", "Fuel Cost", "Selling / Gal", "Selling Value", "Fuel Margin", "Pricing Period"], format: { fuel_date: (value) => esc(formatDisplayDate(value)), gallons: (value) => Number(value || 0).toFixed(2), shortage_gallons: (value) => Number(value || 0).toFixed(2), overage_gallons: (value) => Number(value || 0).toFixed(2), allocated_gallons: (value) => Number(value || 0).toFixed(2), cost_per_gallon: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_cost: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", selling_price_per_gallon: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_selling_value: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_margin: (value, row) => row.has_fuel_rate ? `<strong>${money(value || 0)}</strong>` : "Not set" }, empty: "No fuel usage was recorded for the selected period." })}`;
   const driverFuelSummary = truckingDriverSummaryWithFuel(driverMoveRows, dailyMode);
-  const driverFuelColumns = [...(dailyMode ? ["date"] : []), "driver", "moves", "run_hours", "average", "income", "labor", "fuel_cost", "profit"];
-  const driverFuelTotals = driverFuelSummary.reduce((sum,row) => { for (const field of ["moves","run_hours","move_hours","income","labor","fuel_cost","profit"]) sum[field] += row[field]; return sum; }, {moves:0,run_hours:0,move_hours:0,income:0,labor:0,fuel_cost:0,profit:0});
+  const driverFuelColumns = [...(dailyMode ? ["date"] : []), "driver", "moves", "run_hours", "actual_hours", "hours_difference", "average", "income", "labor", "fuel_cost", "profit"];
+  const driverFuelTotals = driverFuelSummary.reduce((sum,row) => { for (const field of ["moves","run_hours","actual_hours","hours_difference","move_hours","income","labor","fuel_cost","profit"]) sum[field] += row[field]; return sum; }, {moves:0,run_hours:0,actual_hours:0,hours_difference:0,move_hours:0,income:0,labor:0,fuel_cost:0,profit:0});
   const driverFuelSummaryHtml = '<h3>Summary by Driver</h3>' + truckingSimpleTable(driverFuelSummary, driverFuelColumns, {
-    labels: [...(dailyMode ? ["Date"] : []), "Driver", "Moves", "Run Hours", "Avg Run Hours / Move", "Income", "Total Labor", "Fuel Cost", "Profit"],
+    labels: [...(dailyMode ? ["Date"] : []), "Driver", "Moves", "Run Hours", "Actual Hours Logged", "Actual − Run Hours", "Avg Run Hours / Move", "Income", "Total Labor", "Fuel Cost", "Profit"],
     wrapClass: "trucking-report-table trucking-report-summary-table",
-    format: {run_hours:value=>Number(value||0).toFixed(2), average:(value,row)=>row.moves ? (row.move_hours/row.moves).toFixed(2) : "—", income:value=>money(value||0),labor:value=>money(value||0),fuel_cost:value=>money(value||0),profit:value=>'<strong>'+money(value||0)+'</strong>'},
-    footer: [...(dailyMode ? [""] : []), "<strong>REPORT TOTAL</strong>", String(driverFuelTotals.moves), driverFuelTotals.run_hours.toFixed(2), driverFuelTotals.moves ? (driverFuelTotals.move_hours/driverFuelTotals.moves).toFixed(2) : "—", money(driverFuelTotals.income),money(driverFuelTotals.labor),money(driverFuelTotals.fuel_cost),money(driverFuelTotals.profit)],
+    format: {actual_hours:(value,row)=>row.missing_logged_hours ? "Incomplete logs" : Number(value||0).toFixed(2), hours_difference:(value,row)=>row.missing_logged_hours ? "—" : Number(value||0).toFixed(2),run_hours:value=>Number(value||0).toFixed(2), average:(value,row)=>row.moves ? (row.move_hours/row.moves).toFixed(2) : "—", income:value=>money(value||0),labor:value=>money(value||0),fuel_cost:value=>money(value||0),profit:value=>'<strong>'+money(value||0)+'</strong>'},
+    footer: [...(dailyMode ? [""] : []), "<strong>REPORT TOTAL</strong>", String(driverFuelTotals.moves), driverFuelTotals.run_hours.toFixed(2), driverFuelTotals.actual_hours.toFixed(2), driverFuelSummary.some(row=>row.missing_logged_hours) ? "—" : driverFuelTotals.hours_difference.toFixed(2), driverFuelTotals.moves ? (driverFuelTotals.move_hours/driverFuelTotals.moves).toFixed(2) : "—", money(driverFuelTotals.income),money(driverFuelTotals.labor),money(driverFuelTotals.fuel_cost),money(driverFuelTotals.profit)],
   });
   const selectedSections = new Set((Array.isArray(reportSection) ? reportSection : [reportSection]).filter(Boolean));
   const daySummaryRows = summarize((row) => row.labor_date, "Day");
