@@ -19897,7 +19897,7 @@ async function renderRepairsView() {
     <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search repairs by WO, asset, mechanic, customer PO, status, issue"></div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Repair & Service History</strong><span>Work orders with mechanic time, inventory parts, labor, and next service</span></div><div class="actions"><button id="repairEmailSelectedBtn">Email Selected PDFs</button><button id="mechanicClosingReportBtn">Mechanic Closing Report</button><button id="repairCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newWoBtn">New work order</button></div></div>
-      <div class="tabbar"><button class="tabbtn active" data-repair-tab="open">Open WO ${openRows.length}</button><button class="tabbtn" data-repair-tab="partsissues">Parts Issues ${repairRowsByTab("partsissues").length}</button><button class="tabbtn" data-repair-tab="ready">Ready to Close ${repairRowsByTab("ready").length}</button><button class="tabbtn" data-repair-tab="closed">Closed Not Invoiced ${repairRowsByTab("closed").length}</button><button class="tabbtn" data-repair-tab="invoiced">Invoiced WO ${repairRowsByTab("invoiced").length}</button><button class="tabbtn" data-repair-tab="void">Voided WO ${repairRowsByTab("void").length}</button></div>
+      <div class="tabbar"><button class="tabbtn active" data-repair-tab="open">Open WO ${openRows.length}</button><button class="tabbtn" data-repair-tab="partsissues">Parts Issues ${repairRowsByTab("partsissues").length}</button><button class="tabbtn" data-repair-tab="ready">Ready to Close ${repairRowsByTab("ready").length}</button><button class="tabbtn" data-repair-tab="closed">Closed Not Invoiced ${repairRowsByTab("closed").length}</button><button class="tabbtn" data-repair-tab="invoiced">Invoiced WO ${repairRowsByTab("invoiced").length}</button><button class="tabbtn" data-repair-tab="void">Voided WO ${repairRowsByTab("void").length}</button><button class="tabbtn" data-repair-tab="all">All Work Orders ${repairRowsByTab("all").length}</button></div>
       <div id="repairTableHost">${repairTableHtml(openRows, "open")}</div>
     </section>`;
   $("repairSearch").oninput = renderFilteredRepairs;
@@ -19924,6 +19924,7 @@ async function renderInventoryPartsIssuesView() {
 }
 
 function repairRowsByTab(tab) {
+  if (tab === "all") return [...currentRows];
   if (tab === "void") return currentRows.filter((wo) => /void|cancel/i.test(wo.status || ""));
   if (tab === "invoiced") return currentRows.filter((wo) => wo.invoice_no || /invoiced/i.test(wo.status || ""));
   if (tab === "partsissues") return currentRows.filter((wo) => !wo.invoice_no && /parked for parts issuance/i.test(wo.status || ""));
@@ -19939,6 +19940,7 @@ function renderFilteredRepairs() {
   const q = ($("repairSearch")?.value || "").toLowerCase();
   const rows = repairRowsByTab(tab).filter((wo) => !q || [
     Object.values(wo).join(" "),
+    workOrderAssetDetails(wo).serial,
     (wo._issues || []).map((i) => `${i.issue} ${i.assigned_mechanic} ${i.work_notes}`).join(" "),
     (wo._parts || []).map((p) => `${p.sku} ${p.product_name}`).join(" "),
     (wo._labor || []).map((l) => `${l.mechanic} ${l.issue} ${l.work_done}`).join(" "),
