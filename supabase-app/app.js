@@ -1072,16 +1072,55 @@ function applyTableColumnOrder(table, order) {
   table.dataset.customColumnOrder = "1";
 }
 
+function fitTruckingReportTable(table) {
+  if (!table?.closest("#truckingManagementReportHost")) return;
+  const heads = [...(table.tHead?.rows[0]?.cells || [])];
+  const visible = heads.map((cell, index) => ({ cell, index })).filter(({cell}) => !cell.hidden && cell.style.display !== "none");
+  if (!visible.length) return;
+  const font = Math.max(10, Math.min(16, 21 - visible.length * 0.8));
+  const rows = [...table.rows];
+  const weights = visible.map(({cell, index}) => {
+    const key = cell.dataset.reportColumn || "";
+    if (/move_order|^moves$/.test(key)) return 3;
+    if (/date|time|hours|cost|income|profit|labor|gap/.test(key)) return 8;
+    const lengths = rows.filter(row => row.cells.length === heads.length).slice(0, 50).map(row => String(row.cells[index]?.textContent || "").trim().length);
+    return Math.max(9, Math.min(28, Math.max(cell.textContent.length, ...lengths) * 0.6));
+  });
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  table.style.setProperty("width", "100%", "important");
+  table.style.setProperty("min-width", "0", "important");
+  table.style.setProperty("table-layout", "fixed", "important");
+  table.querySelectorAll("colgroup").forEach(group => group.remove());
+  rows.forEach(row => {
+    if (row.cells.length === 1 && (row.cells[0].colSpan > 1 || row.classList.contains("trucking-table-group-row"))) {
+      row.cells[0].colSpan = visible.length;
+      row.cells[0].style.display = "";
+    }
+    [...row.cells].forEach(cell => {
+      cell.style.setProperty("font-size", font + "px", "important");
+      cell.style.setProperty("white-space", "normal", "important");
+      cell.style.setProperty("overflow-wrap", "anywhere", "important");
+      cell.style.setProperty("max-width", "none", "important");
+      cell.querySelectorAll("strong,small,span").forEach(child => child.style.setProperty("font-size", "inherit", "important"));
+    });
+  });
+  visible.forEach(({index}, position) => rows.filter(row => row.cells.length === heads.length).forEach(row => {
+    row.cells[index].style.setProperty("width", (weights[position] / total * 100).toFixed(3) + "%", "important");
+  }));
+}
+
 function applyTableHiddenColumns(table, hiddenLabels = []) {
   const hidden = new Set(hiddenLabels || []);
   const labels = tableColumnLabels(table);
   labels.forEach((label, index) => {
     const shouldHide = hidden.has(label);
     table.querySelectorAll("tr").forEach((row) => {
+      if (table.closest("#truckingManagementReportHost") && row.cells.length === 1 && (row.cells[0].colSpan > 1 || row.classList.contains("trucking-table-group-row"))) return;
       const cell = row.children[index];
       if (cell) cell.style.display = shouldHide ? "none" : "";
     });
   });
+  fitTruckingReportTable(table);
 }
 
 function applySavedColumnPreferences(root = $("content")) {
@@ -32881,6 +32920,7 @@ function printTruckingManagementReport() {
   if (!source) return alert("Apply the trucking report before printing.");
   const useTabloid = $("truckingReportPaperSize")?.value === "tabloid";
   const printable = source.cloneNode(true);
+  printable.querySelectorAll("table").forEach(fitTruckingReportTable);
   printable.querySelectorAll(".truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
   printable.querySelectorAll("tbody tr[hidden]").forEach((row) => row.remove());
   printable.querySelectorAll('.trucking-report-jobsite-table [data-report-column="category"]').forEach((cell) => {
