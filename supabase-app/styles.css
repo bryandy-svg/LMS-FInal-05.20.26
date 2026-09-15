@@ -2545,6 +2545,12 @@ body.trucking-requestor-mode #fullTourBtn {
   border-bottom: 1px solid #9eb1c1;
   text-align: left;
 }
+.trucking-equipment-chronology-table table { table-layout: fixed; width: 100%; }
+.trucking-equipment-chronology-table [data-report-column="equipment_label"],
+.trucking-equipment-chronology-table [data-report-column="requested_equipment_label"] { width: 18%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.trucking-equipment-chronology-table [data-report-column="customer"] { width: 12%; white-space: normal; overflow-wrap: anywhere; }
+.trucking-equipment-chronology-table [data-report-column="move_order"] { width: 3%; }
+.trucking-equipment-chronology-table .trucking-table-group-row td { font-weight: 700; background: #e8f0f5; border-top: 2px solid #5f7f91; }
 .trucking-driver-chronology-table table { table-layout: fixed; }
 .trucking-driver-chronology-table [data-report-column="labor_date"] {
   width: 6%;
