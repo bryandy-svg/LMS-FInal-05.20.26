@@ -125,7 +125,7 @@ const tableMap = {
   accounting: { table: "general_ledger", key: "id", title: "Accounting", sub: "Posting-date ledger detail with customers, vendors, invoices, assets, and mechanics.", heads: ["posting_date", "account", "customer", "vendor", "invoice_no", "invoice_date", "due_date", "mechanic", "asset", "description", "reference", "bank_reference", "debit", "credit", "source", "status"], labels: ["Posting Date", "Account", "Customer", "Vendor", "Invoice #", "Invoice Date", "Due Date", "Mechanic", "Asset", "Description", "Reference", "Bank Reference", "Debit", "Credit", "Source", "Status"] },
   coa: { table: "chart_of_accounts", key: "account", title: "Chart of Accounts", sub: "LMS account codes, financial statement grouping, account types, and normal balances.", heads: ["account_code", "account", "report_group", "type", "normal_balance", "notes"], labels: ["Code", "Account", "Report", "Type", "Normal Balance", "Notes"] },
   bank: { table: "bank_transactions", key: "id", title: "Bank Reconciliation", sub: "Match bank activity to GL, payments, deposits, and checks.", heads: ["tx_date", "description", "reference", "amount", "status", "matched_reference", "notes"], labels: ["Date", "Description", "Reference", "Amount", "Status", "Matched Ref", "Notes"] },
-  checkrun: { table: "check_runs", key: "check_run_no", title: "Check Run", sub: "Select approved payables, issue checks, and post payments.", heads: ["check_run_no", "payment_date", "payment_mode", "payment_account", "bank_account", "check_no", "vendor", "reference", "invoice_no", "invoice_date", "due_date", "amount", "status"], labels: ["Check Run", "Date", "Mode", "Payment Account", "Bank", "Check #", "Vendor", "Reference", "Invoice", "Invoice Date", "Due Date", "Amount", "Status"] },
+  checkrun: { table: "check_runs", key: "check_run_no", title: "Check Run", sub: "Select approved payables, issue checks, and post payments.", heads: ["check_run_no", "payment_date", "posting_date", "payment_mode", "payment_account", "bank_account", "check_no", "vendor", "reference", "invoice_no", "invoice_date", "due_date", "amount", "status"], labels: ["Check Run", "Payment Date", "Posting Date", "Mode", "Payment Account", "Bank", "Check #", "Vendor", "Reference", "Invoice", "Invoice Date", "Due Date", "Amount", "Status"] },
   vendors: { table: "vendors", key: "reference", title: "Vendor Master", sub: "Suppliers, source vendors, terms, purchase history, and multiple email recipients.", heads: ["reference", "name", "email", "phone", "address", "terms", "tax_id", "notes"], labels: ["Reference", "Name", "Emails", "Phone", "Address", "Terms", "Tax ID", "Notes"] },
   customers: { table: "customers", key: "reference", title: "Customer Master", sub: "Buyers, billing details, customer pricing, credit controls, rentals, statements, and order history.", heads: ["reference", "name", "email", "phone", "address", "terms", "parts_markup_percent", "mechanic_hourly_rate", "credit_limit", "credit_status", "tax_id", "notes"], labels: ["Reference", "Name", "Emails", "Phone", "Address", "Terms", "Parts Markup %", "Mechanic Rate / Hr", "Credit Limit", "Credit Status", "Tax ID", "Notes"] },
   users: { table: "app_profiles", key: "id", title: "Users", sub: "Create company logins and restrict access by module.", heads: ["username", "email", "full_name", "role", "modules"], labels: ["Username", "Email", "Name", "Role", "Modules"] },
@@ -9304,6 +9304,7 @@ async function createCheckRunFromPo(data, poNo, invoiceNo = "", receiptGroupKey 
     <div class="form-grid">
       ${productInput("Check run #", "check_run_no", checkRunNo)}
       ${productInput("Payment date", "payment_date", today(), "date")}
+      ${productInput("Posting date", "posting_date", today(), "date")}
       ${productSelect("Pay from account", "payment_account", accounts, accounts[0] || "FHB Checking")}
       ${productSelect("Payment mode", "payment_mode", ["Check", "ACH", "Wire", "Cash", "Credit Card", "Intercompany"], paymentModeForAccount(accounts[0] || "FHB Checking"))}
       ${productInput("Check # / EFT reference", "check_no", "")}
@@ -9328,14 +9329,14 @@ async function createCheckRunFromPo(data, poNo, invoiceNo = "", receiptGroupKey 
       alert("Choose the payment account.");
       return;
     }
-    if (isLockedAccountingDate(record.payment_date)) {
-      alert("This payment date is inside the closed accounting period.");
-      return;
-    }
     try {
+      if (!record.posting_date) throw new Error("Posting date is required.");
+      await loadAccountingCloseDate();
+      validateCheckRunDates(record);
       const run = {
         check_run_no: record.check_run_no,
         payment_date: record.payment_date,
+        posting_date: record.posting_date,
         payment_mode: record.payment_mode || paymentModeForAccount(record.payment_account),
         payment_account: record.payment_account,
         bank_account: record.payment_account,
@@ -9752,11 +9753,11 @@ function bindCheckRunPayableSelectAll(root = document) {
 }
 
 function checkRunHistoryTable(rows) {
-  const heads = ["Check Run", "Date", "Payment Account", "Check #", "Vendor", "Invoice #", "Amount", "Work Order #", "PO #", "Jobsite", "Equipment", "Description of Parts", "Status", ""];
+  const heads = ["Check Run", "Payment Date", "Posting Date", "Payment Account", "Check #", "Vendor", "Invoice #", "Amount", "Work Order #", "PO #", "Jobsite", "Equipment", "Description of Parts", "Status", ""];
   return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map((r) => {
     const editable = !/printed|cleared|void/i.test(r.status || "");
     const missingReversal = /void/i.test(r.status || "") && r._hasOriginalLedger && !r._hasVoidLedger;
-    return `<tr><td>${esc(r.check_run_no)}</td><td>${esc(formatDisplayDate(r.payment_date))}</td><td>${esc(r.payment_account)}</td><td>${esc(r.check_no || "")}</td><td>${esc(r.vendor)}</td><td>${esc(r.invoice_no || "")}</td><td>${money(r.amount)}</td><td>${esc(checkRunOptionalDisplay(r.wo_no))}</td><td>${esc(r.po_no || r.reference || "")}</td><td>${esc(checkRunOptionalDisplay(r.jobsite))}</td><td>${esc(checkRunOptionalDisplay(r.equipment))}</td><td>${esc(checkRunOptionalDisplay(r.parts_description))}</td><td>${badge(r.status)}${missingReversal ? '<br><span class="badge bad">Missing reversal</span>' : ""}</td><td><div class="rowactions">${editable ? `<button class="rowbtn" data-check-edit="${esc(r.check_run_no)}">Edit</button><button class="rowbtn" data-check-add="${esc(r.check_run_no)}">Add Payables</button>` : ""}<button class="rowbtn" data-check-draft="${esc(r.check_run_no)}">Draft Print</button><button class="rowbtn" data-check-print="${esc(r.check_run_no)}">Final Print</button>${!/void/i.test(r.status || "") ? `<button class="rowbtn danger" data-check-void="${esc(r.check_run_no)}">Void</button>` : missingReversal ? `<button class="rowbtn danger" data-check-post-missing-reversal="${esc(r.check_run_no)}">Post Missing Reversal</button>` : ""}</div></td></tr>`;
+    return `<tr><td>${esc(r.check_run_no)}</td><td>${esc(formatDisplayDate(r.payment_date))}</td><td>${esc(formatDisplayDate(r.posting_date || r.payment_date))}</td><td>${esc(r.payment_account)}</td><td>${esc(r.check_no || "")}</td><td>${esc(r.vendor)}</td><td>${esc(r.invoice_no || "")}</td><td>${money(r.amount)}</td><td>${esc(checkRunOptionalDisplay(r.wo_no))}</td><td>${esc(r.po_no || r.reference || "")}</td><td>${esc(checkRunOptionalDisplay(r.jobsite))}</td><td>${esc(checkRunOptionalDisplay(r.equipment))}</td><td>${esc(checkRunOptionalDisplay(r.parts_description))}</td><td>${badge(r.status)}${missingReversal ? '<br><span class="badge bad">Missing reversal</span>' : ""}</td><td><div class="rowactions">${editable ? `<button class="rowbtn" data-check-edit="${esc(r.check_run_no)}">Edit</button><button class="rowbtn" data-check-add="${esc(r.check_run_no)}">Add Payables</button>` : ""}<button class="rowbtn" data-check-draft="${esc(r.check_run_no)}">Draft Print</button><button class="rowbtn" data-check-print="${esc(r.check_run_no)}">Final Print</button>${!/void/i.test(r.status || "") ? `<button class="rowbtn danger" data-check-void="${esc(r.check_run_no)}">Void</button>` : missingReversal ? `<button class="rowbtn danger" data-check-post-missing-reversal="${esc(r.check_run_no)}">Post Missing Reversal</button>` : ""}</div></td></tr>`;
   }).join("") : `<tr><td colspan="${heads.length}" class="empty">No check runs yet.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -9820,6 +9821,7 @@ async function openEditCheckRunModal(data, checkRunNo) {
     <div class="form-grid">
       ${productInput("Check run #", "check_run_no", row.check_run_no || checkRunNo)}
       ${productInput("Payment date", "payment_date", row.payment_date || today(), "date")}
+      ${productInput("Posting date", "posting_date", row.posting_date || row.payment_date || today(), "date")}
       ${productSelect("Pay from account", "payment_account", accounts, row.payment_account || "FHB Checking")}
       ${productSelect("Payment mode", "payment_mode", ["Check", "ACH", "Wire", "Cash", "Credit Card", "Intercompany"], row.payment_mode || "Check")}
       ${productInput("Starting check # / EFT batch", "check_no", row.check_no || "")}
@@ -9831,10 +9833,16 @@ async function openEditCheckRunModal(data, checkRunNo) {
     const read = (name) => $("modalBody").querySelector(`[data-product-field="${name}"]`)?.value?.trim() || "";
     const payload = {
       payment_date: read("payment_date"),
+      posting_date: read("posting_date"),
       payment_account: read("payment_account"),
       payment_mode: read("payment_mode"),
       check_no: read("check_no"),
     };
+    try {
+      if (!payload.posting_date) throw new Error("Posting date is required.");
+      await loadAccountingCloseDate();
+      validateCheckRunDates(payload);
+    } catch (error) { return alert(error.message); }
     if (/^check$/i.test(payload.payment_mode) && !isFhbCheckingAccount(payload.payment_account)) return alert("Only FHB Checking can use Check payment mode.");
     if (!checkRunUsesPrintedCheck(payload.payment_account, payload.payment_mode)) payload.check_no = "";
     const { error } = await supabase.from("check_runs").update(payload).eq("check_run_no", checkRunNo);
@@ -9857,6 +9865,7 @@ async function openCheckRunModal(data, vendorFilter = "") {
     <div class="form-grid">
       ${productInput("Check run #", "check_run_no", number)}
       ${productInput("Payment date", "payment_date", today(), "date")}
+      ${productInput("Posting date", "posting_date", today(), "date")}
       ${productSelect("Pay from account", "payment_account", accounts, defaultPaymentAccount)}
       ${productSelect("Payment mode", "payment_mode", ["Check", "ACH", "Wire", "Cash", "Credit Card", "Intercompany"], "Check")}
       ${productInput("Starting check # / EFT batch", "check_no", startingCheckNo)}
@@ -9900,10 +9909,11 @@ async function saveCheckRunModal(data, payables) {
     alert("Select at least one payable.");
     return;
   }
-  if (isLockedAccountingDate(record.payment_date)) {
-    alert("This payment date is inside the closed accounting period.");
-    return;
-  }
+  try {
+    if (!record.posting_date) throw new Error("Posting date is required.");
+    await loadAccountingCloseDate();
+    validateCheckRunDates(record);
+  } catch (error) { return alert(error.message); }
   try {
     const groups = groupPayablesByVendor(selected);
     if (usesPrintedCheck) {
@@ -9933,6 +9943,7 @@ async function saveCheckRunModal(data, payables) {
       await upsertOne("check_runs", {
         check_run_no: index ? `${record.check_run_no}-${index + 1}` : record.check_run_no,
         payment_date: record.payment_date,
+        posting_date: record.posting_date,
         payment_mode: record.payment_mode || paymentModeForAccount(record.payment_account),
         payment_account: record.payment_account,
         bank_account: record.payment_account,
@@ -10107,7 +10118,7 @@ async function postCheckRun(checkRunNo) {
   const rows = await getAll("check_runs");
   const run = rows.find((r) => r.check_run_no === checkRunNo);
   if (!run) return;
-  if (isLockedAccountingDate(run.payment_date)) {
+  if (isLockedAccountingDate(run.posting_date || run.payment_date)) {
     alert("This check run is inside the closed accounting period.");
     return;
   }
@@ -10119,7 +10130,21 @@ function splitCheckRunReferences(reference) {
   return String(reference || "").split(",").map((ref) => ref.trim()).filter(Boolean);
 }
 
+function validateCheckRunDates(run) {
+  const postingDate = run.posting_date || run.payment_date;
+  for (const [label, value] of [["Payment date", run.payment_date], ["Posting date", postingDate]]) {
+    const parsed = new Date(`${value}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "") || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+      throw new Error(`${label} must be a valid date.`);
+    }
+  }
+  if (isLockedAccountingDate(postingDate)) throw new Error("This posting date is inside the closed accounting period. Choose an open posting date.");
+  return postingDate;
+}
+
 async function postCheckRunLedger(run) {
+  await loadAccountingCloseDate();
+  const postingDate = validateCheckRunDates(run);
   const amount = Number(run.amount || 0);
   if (!amount) return;
   const bankReference = run.check_run_no || run.reference;
@@ -10142,8 +10167,8 @@ async function postCheckRunLedger(run) {
   }
   await supabase.from("general_ledger").delete().eq("reference", run.check_run_no || run.reference).eq("source", "Check Run");
   await upsertMany("general_ledger", [
-    { entry_date: run.payment_date, posting_date: run.payment_date, account: "Accounts Payable (A/P)", vendor: run.vendor, invoice_no: run.invoice_no || null, invoice_date: run.invoice_date || null, due_date: run.due_date || null, description: `Payment to ${run.vendor}`, reference: run.check_run_no || run.reference, debit: amount, credit: 0, source: "Check Run", status: run.status || "Posted" },
-    { entry_date: run.payment_date, posting_date: run.payment_date, account: run.payment_account || "FHB Checking", vendor: run.vendor, invoice_no: run.invoice_no || null, invoice_date: run.invoice_date || null, due_date: run.due_date || null, description: `Check run ${run.check_no || run.check_run_no || ""}`, reference: run.check_run_no || run.reference, debit: 0, credit: amount, source: "Check Run", status: run.status || "Posted" },
+    { entry_date: run.payment_date, posting_date: postingDate, account: "Accounts Payable (A/P)", vendor: run.vendor, invoice_no: run.invoice_no || null, invoice_date: run.invoice_date || null, due_date: run.due_date || null, description: `Payment to ${run.vendor}`, reference: run.check_run_no || run.reference, debit: amount, credit: 0, source: "Check Run", status: run.status || "Posted" },
+    { entry_date: run.payment_date, posting_date: postingDate, account: run.payment_account || "FHB Checking", vendor: run.vendor, invoice_no: run.invoice_no || null, invoice_date: run.invoice_date || null, due_date: run.due_date || null, description: `Check run ${run.check_no || run.check_run_no || ""}`, reference: run.check_run_no || run.reference, debit: 0, credit: amount, source: "Check Run", status: run.status || "Posted" },
   ], "id");
 }
 
@@ -10304,6 +10329,10 @@ function promptCheckVoidDetails(documentLabel) {
 async function printCheckRun(checkRunNo, draftOnly = false) {
   const { data: row, error: rowError } = await supabase.from("check_runs").select("*").eq("check_run_no", checkRunNo).maybeSingle();
   if (rowError || !row) return alert(rowError?.message || "Check run was not found.");
+  if (!draftOnly && !/printed|cleared|void/i.test(row.status || "")) {
+    try { await loadAccountingCloseDate(); validateCheckRunDates(row); }
+    catch (error) { return alert(error.message); }
+  }
   const vendors = await getAll("vendors").catch(() => []);
   const vendor = vendors.find((v) => String(v.name || "").trim().toLowerCase() === String(row.vendor || "").trim().toLowerCase());
   const detail = parseCheckRunNotes(row.notes);
