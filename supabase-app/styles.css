@@ -3524,3 +3524,7 @@ body.trucking-requestor-mode #fullTourBtn {
 .trucking-equipment-chronology-table [data-report-column="route"] { width: 14%; white-space: normal; overflow-wrap: anywhere; }
 .trucking-equipment-chronology-table [data-report-column="customer"] { width: 8%; }
 .trucking-equipment-chronology-table [data-report-column="start_time"], .trucking-equipment-chronology-table [data-report-column="end_time"] { width: 5%; white-space: nowrap; }
+
+@media print {
+  #truckingManagementReportHost, #truckingManagementReportHost * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
