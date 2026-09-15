@@ -35708,6 +35708,25 @@ function bindFuelPricingPeriodRows() {
   });
 }
 
+function fuelPricingDayBefore(value) {
+  const date = new Date(value + "T00:00:00Z");
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeFuelPricingPeriods(rows) {
+  const active = rows.filter(row => row.status === "Active" && row.effective_from)
+    .sort((a, b) => a.effective_from.localeCompare(b.effective_from));
+  for (let index = 0; index < active.length; index += 1) {
+    const next = active[index + 1];
+    if (next && next.effective_from === active[index].effective_from) throw new Error("Only one active fuel price is allowed for each start date.");
+  }
+  active.forEach((row, index) => {
+    row.effective_to = active[index + 1] ? fuelPricingDayBefore(active[index + 1].effective_from) : "9999-12-31";
+  });
+  return rows;
+}
+
 async function openFuelPricingPeriodsModal() {
   if (!isAdminUser()) return alert("Only administrators can manage fuel pricing periods.");
   await loadFuelTankState();
@@ -35727,7 +35746,7 @@ async function openFuelPricingPeriodsModal() {
     refillMap.set(date, item);
   });
   const refillDates = [...refillMap.keys()].sort();
-  const dayBefore = (value) => { const date = new Date(`${value}T00:00:00`); date.setDate(date.getDate() - 1); return date.toISOString().slice(0, 10); };
+  const dayBefore = fuelPricingDayBefore;
   const rows = refillDates.map((date, index) => {
     const refill = refillMap.get(date);
     const saved = savedRows.find((row) => row.effective_from === date) || {};
@@ -35743,7 +35762,7 @@ async function openFuelPricingPeriodsModal() {
   $("modalCancel").onclick = closeModal;
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   $("modalBody").innerHTML = `
-    <div class="hint">Each beginning balance or saved tank refill starts a pricing period. The date, fuel truck used, receipt, and gallons come from the Fuel Tank ledger. Enter either Cost / Gallon or Total Fuel Invoice and the other amount calculates automatically. Trucking reports apply that price until the next refill. Monitoring only—no accounting entry is created.</div>
+    <div class="hint">Each beginning balance or saved tank refill starts a pricing period. The date, fuel truck used, receipt, and gallons come from the Fuel Tank ledger. Enter either Cost / Gallon or Total Fuel Invoice and the other amount calculates automatically. End dates are calculated automatically through the day before the next active priced period. Refills with no entered price do not interrupt the current price. Monitoring only—no accounting entry is created.</div>
     <div class="actions" style="justify-content:flex-start;margin:10px 0"><button type="button" id="fuelPricingAddRefillBtn">Record missed refill</button></div>
     <div class="table-wrap"><table class="fuel-pricing-period-table">
       <thead><tr><th>Refill Date</th><th>Fuel Truck Used</th><th>Receipt #</th><th>Gallons</th><th>Cost / Gallon</th><th>Total Fuel Invoice</th><th>Selling / Gallon</th><th>Margin / Gallon</th><th>Notes</th><th>Status</th></tr></thead>
@@ -35781,6 +35800,7 @@ async function saveFuelPricingPeriods() {
     delete row.invoice_total;
     delete row.refill_gallons;
   });
+  try { normalizeFuelPricingPeriods(pricedRows); } catch (error) { return alert(error.message); }
   const incomplete = pricedRows.find((row) => !row.effective_from || !row.effective_to);
   if (incomplete) return alert("Every fuel pricing period needs an Effective From and Effective To date.");
   const badDates = pricedRows.find((row) => row.effective_from > row.effective_to);
@@ -35801,7 +35821,7 @@ async function saveFuelPricingPeriods() {
       const { error } = await supabase.from("fuel_pricing_periods").delete().in("id", removedIds);
       if (error) throw error;
     }
-    for (const row of pricedRows) {
+    for (const row of [...pricedRows].sort((a, b) => a.effective_from.localeCompare(b.effective_from))) {
       const { id, ...payload } = row;
       const query = id
         ? supabase.from("fuel_pricing_periods").update(payload).eq("id", id)
