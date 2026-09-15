@@ -18848,12 +18848,23 @@ async function syncSalesOrderWorkOrderCharge(order, line, product, cumulativeShi
   else await insertOneWithOptionalColumns("work_order_parts", record, ["markup_percent", "selling_price"], "Parts were issued, but the Work Order selling price requires the latest Work Order parts SQL update.");
 }
 
+function salesOrderInvoiceAdjustments(order, billableLines = [], previousInvoices = []) {
+  const active = previousInvoices.filter((invoice) => invoice.source_ref === order.order_no
+    && !/void|revers|cancel/i.test(invoice.status || "") && !/customer deposit/i.test(invoice.type || ""));
+  const previousLines = active.flatMap((invoice) => invoice._lines || []);
+  const freightBilled = previousLines.filter((line) => /^freight$/i.test(String(line.description || "").trim()))
+    .reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.rate || 0), 0);
+  const depositUsed = previousLines.filter((line) => /^less:?\s+customer deposit/i.test(String(line.description || "").trim()))
+    .reduce((sum, line) => sum + Math.max(0, -Number(line.qty || 0) * Number(line.rate || 0)), 0);
+  const freight = roundCurrency(Math.max(0, Number(order.freight_amount || 0) - freightBilled));
+  const subtotal = billableLines.reduce((sum, line) => sum + Number(line.billQty || 0) * Number(line.price || 0), 0);
+  const depositApplied = roundCurrency(Math.min(Math.max(0, subtotal + freight), Math.max(0, Number(order.deposit_amount || 0) - depositUsed)));
+  return { freight, depositApplied, total: roundCurrency(subtotal + freight - depositApplied) };
+}
+
 function confirmSalesOrderInvoiceDraft(order, billableLines = [], previousInvoices = []) {
   return new Promise((resolve) => {
-    const freight = previousInvoices.length ? 0 : Math.max(0, Number(order.freight_amount || 0));
-    const lineSubtotal = billableLines.reduce((sum, line) => sum + Number(line.billQty || 0) * Number(line.price || 0), 0);
-    const depositApplied = previousInvoices.length ? 0 : Math.min(lineSubtotal + freight, Math.max(0, Number(order.deposit_amount || 0)));
-    const total = lineSubtotal + freight - depositApplied;
+    const { freight, depositApplied, total } = salesOrderInvoiceAdjustments(order, billableLines, previousInvoices);
     const rows = billableLines.map((line) => `<tr><td>${esc(line.sku || "")}</td><td>${esc(line.description || line.product_name || "")}</td><td class="num">${esc(line.billQty)}</td><td class="num">${money(line.price)}</td><td class="num">${money(Number(line.billQty || 0) * Number(line.price || 0))}</td></tr>`).join("");
     const adjustments = `${freight > 0 ? `<tr><td></td><td>Freight</td><td class="num">1</td><td class="num">${money(freight)}</td><td class="num">${money(freight)}</td></tr>` : ""}${depositApplied > 0 ? `<tr><td></td><td>Less customer deposit ${esc(order.deposit_invoice_no || "")}</td><td class="num">1</td><td class="num">${money(-depositApplied)}</td><td class="num">${money(-depositApplied)}</td></tr>` : ""}`;
     $("modalTitle").textContent = `Draft invoice — ${order.order_no}`;
@@ -18924,7 +18935,9 @@ async function invoiceSalesOrder(orderNo, silent = false) {
   if (!billableLines.length) return alert(`There is no reserved, uninvoiced quantity on ${orderNo}. Save the Sales Order with available stock so ISS is reserved first.`);
   let previousInvoices = [];
   try {
-    previousInvoices = (await getAll("invoices")).filter((row) => row.source_ref === order.order_no && !/void|reversed/i.test(row.status || ""));
+    const [invoices, lines] = await Promise.all([getAll("invoices"), getAll("invoice_lines")]);
+    previousInvoices = invoices.filter((row) => row.source_ref === order.order_no && !/void|revers|cancel/i.test(row.status || "") && !/customer deposit/i.test(row.type || ""))
+      .map((row) => ({ ...row, _lines: lines.filter((line) => line.invoice_id === row.id) }));
   } catch (error) {
     alert(error.message || error);
     return;
@@ -18959,8 +18972,8 @@ async function invoiceSalesOrder(orderNo, silent = false) {
       issued_qty: Number(line.issued_qty || 0),
       shipped_qty: line.billQty,
     }));
-    if (!previousInvoices.length && Number(order.freight_amount || 0) > 0) invoiceLines.push({ invoice_id: invoice.id, description: "Freight", qty: 1, rate: Number(order.freight_amount || 0), ordered_qty: 1, issued_qty: 1, shipped_qty: 1 });
-    const depositApplied = previousInvoices.length ? 0 : Math.min(invoiceLines.reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.rate || 0), 0), Math.max(0, Number(order.deposit_amount || 0)));
+    const { freight, depositApplied } = salesOrderInvoiceAdjustments(order, billableLines, previousInvoices);
+    if (freight > 0) invoiceLines.push({ invoice_id: invoice.id, description: "Freight", qty: 1, rate: freight, ordered_qty: 1, issued_qty: 1, shipped_qty: 1 });
     if (depositApplied > 0) invoiceLines.push({ invoice_id: invoice.id, description: `Less customer deposit ${order.deposit_invoice_no || ""}`.trim(), qty: 1, rate: -depositApplied });
     await upsertInvoiceLines(invoiceLines, "id");
     const products = productMeta.products?.length ? productMeta.products : await getAll("products");
@@ -18984,7 +18997,7 @@ async function invoiceSalesOrder(orderNo, silent = false) {
         reason: `Customer invoice ${invoiceNo} for ${order.order_no}`,
       }, "reference_no", ["from_bin_shelf"]);
     }
-    await postPartialSalesOrderInvoiceAccounting(order, invoice, billableLines, { freight: !previousInvoices.length ? Number(order.freight_amount || 0) : 0, depositApplied });
+    await postPartialSalesOrderInvoiceAccounting(order, invoice, billableLines, { freight, depositApplied });
     for (const line of billableLines) {
       const nextInvoiced = Number(line.invoiced_qty || 0) + line.billQty;
       const nextShipped = Number(line.shipped_qty || 0) + Number(line.shipQty || 0);
