@@ -17248,12 +17248,13 @@ function salesOrderRowHtml(order) {
     <td>${toOrderQty ? badge(`${toOrderQty} to order`) : ""}</td>
     <td>${Number(order.deposit_amount || 0) ? `${money(order.deposit_amount)}<br><small>${esc(order.deposit_invoice_no || "")}</small>` : ""}</td>
     <td>${money(salesOrderTotal(order))}</td>
-    <td><div class="rowactions"><button class="rowbtn" type="button" data-sales-sign="${esc(order.order_no)}">Sign</button><button class="rowbtn" type="button" data-sales-pdf="${esc(order.order_no)}">PDF</button>${order.invoice_no ? `<button class="rowbtn" type="button" data-sales-invoice-history="${esc(order.order_no)}">PDF Invoice History</button>` : ""}${!inactive && salesOrderAtOrBelowReorder(order) ? `<button class="rowbtn" type="button" data-sales-create-po="${esc(order.order_no)}">Create PO</button>` : ""}${!inactive && /special order|backorder/i.test(order.order_type || "") && !order.deposit_invoice_no && !issued ? `<button class="rowbtn" type="button" data-sales-deposit="${esc(order.order_no)}">Deposit invoice</button>` : ""}${!inactive && canInvoice ? `<button class="rowbtn" type="button" data-sales-invoice="${esc(order.order_no)}">Inv</button>` : ""}${!inactive && !issued ? `<button class="rowbtn" type="button" data-sales-issue="${esc(order.order_no)}">Deliver / Issue</button>` : ""}${canEdit ? `<button class="rowbtn" type="button" data-sales-edit="${esc(order.order_no)}">Edit</button>` : ""}${!inactive && issued ? `<button class="rowbtn danger" type="button" data-sales-reverse="${esc(order.order_no)}">Reverse</button>` : ""}${!inactive && !issued ? `<button class="rowbtn danger" type="button" data-sales-void="${esc(order.order_no)}">Void</button>` : ""}</div></td>
+    <td><div class="rowactions"><button class="rowbtn" type="button" data-sales-sign="${esc(order.order_no)}">Sign</button><button class="rowbtn" type="button" data-sales-pdf="${esc(order.order_no)}">PDF</button>${order.order_no ? `<button class="rowbtn" type="button" data-sales-invoice-history="${esc(order.order_no)}">PDF Invoice History</button>` : ""}${!inactive && salesOrderAtOrBelowReorder(order) ? `<button class="rowbtn" type="button" data-sales-create-po="${esc(order.order_no)}">Create PO</button>` : ""}${!inactive && /special order|backorder/i.test(order.order_type || "") && !order.deposit_invoice_no && !issued ? `<button class="rowbtn" type="button" data-sales-deposit="${esc(order.order_no)}">Deposit invoice</button>` : ""}${!inactive && canInvoice ? `<button class="rowbtn" type="button" data-sales-invoice="${esc(order.order_no)}">Inv</button>` : ""}${!inactive && !issued ? `<button class="rowbtn" type="button" data-sales-issue="${esc(order.order_no)}">Deliver / Issue</button>` : ""}${canEdit ? `<button class="rowbtn" type="button" data-sales-edit="${esc(order.order_no)}">Edit</button>` : ""}${!inactive && (quantities.shipped > 0 || quantities.invoiced > 0) ? `<button class="rowbtn danger" type="button" data-sales-reverse="${esc(order.order_no)}">Reverse</button>` : ""}${!inactive && !issued && quantities.shipped === 0 && quantities.invoiced === 0 ? `<button class="rowbtn danger" type="button" data-sales-void="${esc(order.order_no)}">Void</button>` : ""}</div></td>
   </tr>`;
 }
 
 function salesOrderDisplayStatus(order = {}) {
   const status = String(order.status || "Open");
+  if (/void|revers|cancel/i.test(status)) return status;
   if (/paid/i.test(status)) return "Paid";
   if (String(order.invoice_no || "").trim()) return "Invoiced";
   return status;
@@ -18504,51 +18505,16 @@ async function reverseSalesOrder(orderNo) {
   if (!order || /void|reversed|cancelled/i.test(order.status || "")) return;
   const reason = prompt(`Reason for reversing ${orderNo}:`);
   if (!reason?.trim()) return;
-  if (!confirm(`Reverse ${orderNo}? Inventory will be restored and reversing accounting entries will be posted. The original records will remain for audit history.`)) return;
+  if (!confirm(`Reverse ${orderNo} and reopen it for invoicing? Shipped stock will be returned, invoice accounting reversed, and freight and deposits retained. Original records remain in Invoice History.`)) return;
   try {
-    if (isLockedAccountingDate(today())) throw new Error("Today's posting date is inside the closed accounting period.");
-    for (const line of order._lines || []) {
-      const product = (productMeta.products || []).find((p) => p.id === line.product_id || p.sku === line.sku);
-      if (!product) throw new Error(`Cannot restore ${line.sku}; the product is missing from Product Master.`);
-      const qty = Number(line.qty || 0);
-      const unitCost = Number(product.cost || 0);
-      await supabase.from("products").update({ qty: Number(product.qty || 0) + qty }).eq("id", product.id);
-      await upsertOneWithOptionalColumns("stock_movements", {
-        reference_no: `REV-${order.order_no}-${line.sku}`,
-        movement_date: today(),
-        type: "Sales Order Reversal",
-        product_id: product.id,
-        sku: product.sku,
-        product_name: product.name,
-        vendor: product.source_vendor,
-        sold_to: order.customer,
-        sold_date: order.order_date,
-        qty,
-        to_warehouse: product.warehouse,
-        to_bin_shelf: product.bin_shelf || "",
-        unit_fifo_cost: unitCost,
-        total_fifo_cost: qty * unitCost,
-        document_no: order.order_no,
-        entered_by: profile?.full_name || profile?.username || "Owner",
-        reason: `Reversal of ${order.order_no}: ${reason.trim()}`,
-      }, "reference_no", ["to_bin_shelf"]);
-    }
-    const accountingReferences = [order.order_no, order.invoice_no].filter(Boolean);
-    const { data: ledgerRows, error } = await supabase.from("general_ledger").select("*").in("reference", accountingReferences).in("source", ["Sales Order", "Sales Fulfillment", "Sales Order Invoice"]);
+    const { error } = await supabase.rpc("reverse_sales_order_and_reopen", {
+      p_order_no: orderNo, p_reason: reason.trim(), p_posting_date: today(),
+      p_expected_invoice_no: order.invoice_no || null,
+      p_expected_delivered_at: order.delivered_at || null,
+    });
     if (error) throw error;
-    const reversals = reversalLedgerRows(ledgerRows, order.order_no, "Sales Order Reversal", `Reverse ${orderNo}:`);
-    if (reversals.length) await upsertManyWithOptionalColumns("general_ledger", reversals, "id", ["bank_reference"]);
-    if (order.invoice_no) {
-      await supabase.from("invoices").update({ status: "Reversed", notes: `Reversed with sales order ${orderNo}: ${reason.trim()}` }).eq("invoice_no", order.invoice_no);
-      await supabase.from("customer_payments").update({ status: "Reversed" }).eq("invoice_no", order.invoice_no).neq("status", "Void");
-    }
-    await updateOneWithOptionalColumns("sales_orders", {
-      status: "Reversed",
-      special_order_status: /special order|backorder/i.test(order.order_type || "") ? "Ready for Delivery" : "Unfulfilled",
-      notes: [order.notes, `Reversed ${today()} by ${profile?.full_name || profile?.username || "Owner"}: ${reason.trim()}`].filter(Boolean).join("\n"),
-    }, "id", order.id, ["special_order_status"]);
-    await releaseQuotationFromSalesOrder(orderNo, `Sales Order reversed on ${formatDisplayDate(today())}: ${reason.trim()}`);
-    renderSalesOrdersView();
+    salesOrderTab = /special order|backorder/i.test(order.order_type || "") ? "special" : "current";
+    await renderSalesOrdersView();
   } catch (error) {
     alert(error.message || error);
   }
