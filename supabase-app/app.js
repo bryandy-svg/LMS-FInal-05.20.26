@@ -37617,7 +37617,16 @@ async function openAssetHistoryModal(assetTag, sourceAsset = null) {
     const locationEvents = buildFleetLocationEvents({ assets: [], workOrders, equipmentRequests, fuelLogs, truckingRequests, truckingRequestLines })
       .filter(row => String(row.asset_tag || '').trim().toLowerCase() === String(assetTag).trim().toLowerCase())
       .sort((a, b) => b.event_date.localeCompare(a.event_date));
-    const locationHistoryHtml = `<section class="subpanel"><div class="panel-title"><strong>Location history</strong><span>Current recorded location: ${esc(asset.location || asset.actual_location || 'Not recorded')}. Historical locations below come from dated operational records; requests are not confirmation of movement.</span></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Location</th><th>Source</th><th>Reference</th><th>Details</th></tr></thead><tbody>${locationEvents.length ? locationEvents.map(row => `<tr><td>${esc(formatDisplayDate(row.event_date))}</td><td>${esc(row.location)}</td><td>${esc(row.source)}</td><td>${esc(row.reference)}</td><td>${esc(row.detail)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">No dated location history found for this equipment.</td></tr>'}</tbody></table></div></section>`;
+    const woLink = number => number ? '<button type="button" class="rowbtn" data-history-wo="'+esc(number)+'">'+esc(number)+'</button>' : '';
+    locationEvents.forEach(event => {
+      const record = event.source === "Work Order" ? workOrders.find(row=>row.wo_no===event.reference)
+        : event.source === "Fuel Run" ? fuelLogs.find(row=>row.report_no===event.reference && row.jobsite===event.location)
+        : event.source === "Equipment Request" ? equipmentRequests.find(row=>row.request_no===event.reference)
+        : truckingRequests.find(row=>row.request_no===event.reference);
+      event.customer = record?.bill_to_customer || record?.company || record?.customer_name || record?.customer || "";
+      event.jobsite = record?.jobsite_location || record?.jobsite || record?.project_jobsite || record?.location || "";
+    });
+    const locationHistoryHtml = `<section class="subpanel"><div class="panel-title"><strong>Location history</strong><span>Current recorded location: ${esc(asset.location || asset.actual_location || 'Not recorded')}. Historical locations below come from dated operational records; requests are not confirmation of movement.</span></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Location</th><th>Customer</th><th>Jobsite</th><th>Source</th><th>Reference</th><th>Details</th></tr></thead><tbody>${locationEvents.length ? locationEvents.map(row => `<tr><td>${esc(formatDisplayDate(row.event_date))}</td><td>${esc(row.location)}</td><td>${esc(row.customer)}</td><td>${esc(row.jobsite)}</td><td>${esc(row.source)}</td><td>${row.source === "Work Order" ? woLink(row.reference) : esc(row.reference)}</td><td>${esc(row.detail)}</td></tr>`).join('') : '<tr><td colspan="7" class="empty">No dated location history found for this equipment.</td></tr>'}</tbody></table></div></section>`;
     const assetWos = workOrders.filter((wo) => String(wo.asset_tag || "").toLowerCase() === String(assetTag || "").toLowerCase());
     const woIds = new Set(assetWos.map((wo) => wo.id));
     const woNoById = new Map(assetWos.map((wo) => [wo.id, wo.wo_no]));
@@ -37625,7 +37634,7 @@ async function openAssetHistoryModal(assetTag, sourceAsset = null) {
     const laborRows = labor.filter((row) => woIds.has(row.wo_id));
     const issueRows = issues.filter((row) => woIds.has(row.wo_id));
     $("modalBody").innerHTML = `
-      <div class="form-grid compact">
+      <div class="toolbar" data-history-export><button type="button" id="historyPdf">PDF / Print</button><button type="button" id="historyExcel">Excel</button></div><div id="equipmentHistoryContent"><div class="form-grid compact">
         <div class="stat"><span>Work orders</span><strong>${assetWos.length}</strong></div>
         <div class="stat"><span>Parts lines</span><strong>${partRows.length}</strong></div>
         <div class="stat"><span>Labor hours</span><strong>${laborRows.reduce((sum, row) => sum + laborHours(row), 0).toFixed(2)}</strong></div>
@@ -37638,16 +37647,34 @@ async function openAssetHistoryModal(assetTag, sourceAsset = null) {
             const woIssues = issueRows.filter((row) => row.wo_id === wo.id).map((row) => row.issue).filter(Boolean).join("; ") || wo.description || "";
             const woParts = partRows.filter((row) => row.wo_id === wo.id).map((row) => `${partDisplayName(row)} (${row.accepted_qty || row.qty_needed || 0})`).join("; ") || "No parts";
             const woLabor = laborRows.filter((row) => row.wo_id === wo.id).reduce((sum, row) => sum + laborHours(row), 0);
-            return `<tr><td>${esc(wo.wo_no)}</td><td>${esc(formatDisplayDate(wo.wo_date))}</td><td>${badge(wo.status || "Open")}</td><td>${esc(woIssues)}</td><td>${esc(woParts)}</td><td>${woLabor.toFixed(2)} hr</td></tr>`;
+            return `<tr><td>${woLink(wo.wo_no)}</td><td>${esc(formatDisplayDate(wo.wo_date))}</td><td>${badge(wo.status || "Open")}</td><td>${esc(woIssues)}</td><td>${esc(woParts)}</td><td>${woLabor.toFixed(2)} hr</td></tr>`;
           }).join("") : `<tr><td colspan="6" class="empty">No work orders found for this asset.</td></tr>`}
         </tbody></table></div>
       </section>
       <section class="subpanel">
         <div class="panel-title"><strong>Parts detail</strong><span>Every requested, reserved, accepted, or released part tied to this asset.</span></div>
-        <div class="table-wrap"><table><thead><tr><th>WO #</th><th>Part</th><th>Qty Needed</th><th>Qty Accepted by Mechanic</th><th>Status</th><th>Cost</th></tr></thead><tbody>
-          ${partRows.length ? partRows.map((row) => `<tr><td>${esc(woNoById.get(row.wo_id) || "")}</td><td>${esc(partDisplayName(row))}</td><td>${esc(row.qty_needed ?? "")}</td><td>${esc(row.accepted_qty ?? 0)}</td><td>${badge(effectivePartStatus(row))}</td><td>${money(row.unit_cost || 0)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">No parts history found for this asset.</td></tr>`}
+        <div class="table-wrap"><table><thead><tr><th>WO #</th><th>Part #</th><th>Part</th><th>Qty Needed</th><th>Qty Accepted by Mechanic</th><th>Status</th><th>Cost</th></tr></thead><tbody>
+          ${partRows.length ? partRows.map((row) => `<tr><td>${woLink(woNoById.get(row.wo_id))}</td><td>${row.sku ? `<button type="button" class="rowbtn" data-history-part="${esc(row.sku)}">${esc(row.sku)}</button>` : ""}</td><td>${esc(partDisplayName(row))}</td><td>${esc(row.qty_needed ?? "")}</td><td>${esc(row.accepted_qty ?? 0)}</td><td>${badge(effectivePartStatus(row))}</td><td>${money(row.unit_cost || 0)}</td></tr>`).join("") : `<tr><td colspan="7" class="empty">No parts history found for this asset.</td></tr>`}
         </tbody></table></div>
-      </section>`;
+      </section></div>`;
+
+    const bindWorkOrders = () => $("modalBody").querySelectorAll("[data-history-wo]").forEach(button => button.onclick = () => printWorkOrderDraft(button.dataset.historyWo));
+    bindWorkOrders();
+    $("modalBody").querySelectorAll("[data-history-part]").forEach(button => button.onclick = () => {
+      const sku = button.dataset.historyPart;
+      const selected = partRows.filter(row=>row.sku===sku);
+      $("modalTitle").textContent = "Part history — " + sku;
+      $("modalBody").innerHTML = '<button type="button" id="historyBack">Back to equipment history</button>' + simpleTable(selected.map(row=>({work_order:woNoById.get(row.wo_id),part_no:row.sku,description:partDisplayName(row),quantity:row.qty_needed,accepted:row.accepted_qty,status:effectivePartStatus(row),unit_cost:money(row.unit_cost||0)})),["work_order","part_no","description","quantity","accepted","status","unit_cost"]);
+      $("historyBack").onclick = () => openAssetHistoryModal(assetTag,asset);
+    });
+    const exportContent = () => { const copy = $("equipmentHistoryContent").cloneNode(true); copy.querySelectorAll('button').forEach(button=>button.replaceWith(document.createTextNode(button.textContent))); return copy; };
+    $("historyPdf").onclick = () => openPrintWindow('<!doctype html><html><head><title>'+esc(assetTag)+' Equipment History</title><style>@page{size:landscape;margin:.4in}body{font:12px Arial;color:#172638}table{width:100%;border-collapse:collapse}th,td{padding:7px;border-bottom:1px solid #ccd7df;text-align:left;vertical-align:top}th{background:#edf2f7}thead{display:table-header-group}tr{break-inside:avoid}.panel-title strong,.panel-title span{display:block}.subpanel{margin-top:20px}button{display:none}*{print-color-adjust:exact}</style></head><body><h1>Equipment history — '+esc(assetTag)+'</h1>'+exportContent().innerHTML+'</body></html>',assetTag+'-equipment-history');
+    $("historyExcel").onclick = async () => { try {
+      const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");
+      const workbook = XLSX.utils.book_new();
+      exportContent().querySelectorAll('table').forEach((table,index)=>XLSX.utils.book_append_sheet(workbook,XLSX.utils.table_to_sheet(table,{raw:true}),["Location History","Work Orders","Parts Detail"][index]));
+      XLSX.writeFile(workbook,assetTag+'-equipment-history.xlsx');
+    } catch(error) { alert(error.message || error); } };
   } catch (error) {
     $("modalBody").innerHTML = `<div class="notice error">${esc(error.message || error)}</div>`;
   }
