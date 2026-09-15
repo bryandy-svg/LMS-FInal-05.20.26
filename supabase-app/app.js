@@ -32505,7 +32505,7 @@ function truckingApplyLoggedLabor(rows, payrollRows, drivers) {
       result.push({...row,total_labor_cost:cost,income_less_labor:Number(row.ticket_income||0)-cost-Number(row.fuel_cost||0)});
     });
     const remaining = Math.round((total-allocated)*100)/100;
-    result.push({driver_name:dayRows[0].driver_name,labor_date:dayRows[0].labor_date,move_order:"—",customer:"Labor",report_service:"Logged Hours / Hours Without Move",route:actual.toFixed(2)+" logged hr − "+run.toFixed(2)+" run hr = "+(actual-run).toFixed(2)+" hr"+(run>actual ? " · Run hours exceed logged hours" : ""),start_time:"",end_time:"",run_hours:0,actual_hours:actual,hours_difference:actual-run,gap_between_moves:"—",total_labor_cost:remaining,ticket_income:0,fuel_cost:0,income_less_labor:-remaining,is_labor_daily:true});
+    result.push({driver_name:dayRows[0].driver_name,labor_date:dayRows[0].labor_date,move_order:"—",customer:"Labor",report_service:"Logged Hours / Hours Without Move",route:actual.toFixed(2)+" logged hr − "+run.toFixed(2)+" run hr = "+(actual-run).toFixed(2)+" hr"+(run>actual ? " · Run hours exceed logged hours" : ""),start_time:"",end_time:"",run_hours:0,logged_payroll_hours:actual,hours_difference:actual-run,gap_between_moves:"—",total_labor_cost:remaining,ticket_income:0,fuel_cost:0,income_less_labor:-remaining,is_labor_daily:true});
   });
   return result;
 }
@@ -32521,7 +32521,7 @@ function truckingDriverSummaryWithFuel(rows, dailyMode = false) {
     group.moves += isMove ? 1 : 0;
     group.move_hours += isMove ? Number(row.run_hours || 0) : 0;
     group.run_hours += Number(row.run_hours || 0);
-    group.actual_hours += Number(row.actual_hours || 0);
+    group.actual_hours += Number(row.logged_payroll_hours || 0);
     group.hours_difference += Number(row.hours_difference || 0);
     group.missing_logged_hours ||= Boolean(row.missing_logged_hours);
     group.income += Number(row.ticket_income || 0);
