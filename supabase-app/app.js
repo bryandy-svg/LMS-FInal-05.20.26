@@ -32477,6 +32477,26 @@ function truckingSimilarJobsiteLabels(values = []) {
   return result;
 }
 
+function truckingDriverSummaryWithFuel(rows, dailyMode = false) {
+  const groups = new Map();
+  rows.filter(row => !row.is_driver_total).forEach(row => {
+    const driver = String(row.driver_name || "Unassigned Driver").trim();
+    const date = dailyMode ? row.labor_date || "" : "";
+    const key = date + "|" + driver.toLowerCase();
+    const group = groups.get(key) || {date, driver, moves:0, run_hours:0, move_hours:0, income:0, labor:0, fuel_cost:0, profit:0};
+    const isMove = !row.is_fuel_daily && !row.is_labor_daily;
+    group.moves += isMove ? 1 : 0;
+    group.move_hours += isMove ? Number(row.run_hours || 0) : 0;
+    group.run_hours += Number(row.run_hours || 0);
+    group.income += Number(row.ticket_income || 0);
+    group.labor += Number(row.total_labor_cost || 0);
+    group.fuel_cost += Number(row.fuel_cost || 0);
+    group.profit = group.income - group.labor - group.fuel_cost;
+    groups.set(key,group);
+  });
+  return [...groups.values()].sort((a,b)=>a.date.localeCompare(b.date)||b.profit-a.profit);
+}
+
 function truckingFuelReportRows(fuels = [], drivers = []) {
   const groups = new Map();
   fuels.forEach((fuel, index) => {
@@ -32887,6 +32907,15 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   const fuelShortageGallons = fuelRows.reduce((sum, row) => sum + Number(row.shortage_gallons || 0), 0);
   const fuelOverageGallons = fuelRows.reduce((sum, row) => sum + Number(row.overage_gallons || 0), 0);
   const fuelUsage = `<div class="trucking-driver-performance-heading"><strong>Fuel Usage & Pricing</strong><span>${fuelRows.length} service line${fuelRows.length === 1 ? "" : "s"} · ${fuelGallons.toFixed(2)} dispensed gal · ${fuelAllocatedGallons.toFixed(2)} cost gal · cost ${money(fuelCost)} · selling value ${money(fuelSellingValue)} · margin ${money(fuelMargin)}${unpricedFuelRows ? ` · ${unpricedFuelRows} unpriced` : ""} · monitoring only</span></div>${truckingSimpleTable(fuelUsageRows, ["fuel_date", "report_no", "driver_name", "fuel_truck", "equipment_name", "jobsite", "gallons", "shortage_gallons", "overage_gallons", "allocated_gallons", "cost_per_gallon", "fuel_cost", "selling_price_per_gallon", "fuel_selling_value", "fuel_margin", "pricing_period"], { wrapClass: "trucking-report-table trucking-report-detail-table trucking-fuel-usage-table", labels: ["Date", "Fuel Report #", "Driver", "Fuel Truck", "Equipment Refilled", "Jobsite", "Dispensed Gal", "Shortage", "Overage", "Cost Gal", "Cost / Gal", "Fuel Cost", "Selling / Gal", "Selling Value", "Fuel Margin", "Pricing Period"], format: { fuel_date: (value) => esc(formatDisplayDate(value)), gallons: (value) => Number(value || 0).toFixed(2), shortage_gallons: (value) => Number(value || 0).toFixed(2), overage_gallons: (value) => Number(value || 0).toFixed(2), allocated_gallons: (value) => Number(value || 0).toFixed(2), cost_per_gallon: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_cost: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", selling_price_per_gallon: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_selling_value: (value, row) => row.has_fuel_rate ? money(value || 0) : "Not set", fuel_margin: (value, row) => row.has_fuel_rate ? `<strong>${money(value || 0)}</strong>` : "Not set" }, empty: "No fuel usage was recorded for the selected period." })}`;
+  const driverFuelSummary = truckingDriverSummaryWithFuel(driverMoveRows, dailyMode);
+  const driverFuelColumns = [...(dailyMode ? ["date"] : []), "driver", "moves", "run_hours", "average", "income", "labor", "fuel_cost", "profit"];
+  const driverFuelTotals = driverFuelSummary.reduce((sum,row) => { for (const field of ["moves","run_hours","move_hours","income","labor","fuel_cost","profit"]) sum[field] += row[field]; return sum; }, {moves:0,run_hours:0,move_hours:0,income:0,labor:0,fuel_cost:0,profit:0});
+  const driverFuelSummaryHtml = '<h3>Summary by Driver</h3>' + truckingSimpleTable(driverFuelSummary, driverFuelColumns, {
+    labels: [...(dailyMode ? ["Date"] : []), "Driver", "Moves", "Run Hours", "Avg Run Hours / Move", "Income", "Total Labor", "Fuel Cost", "Profit"],
+    wrapClass: "trucking-report-table trucking-report-summary-table",
+    format: {run_hours:value=>Number(value||0).toFixed(2), average:(value,row)=>row.moves ? (row.move_hours/row.moves).toFixed(2) : "—", income:value=>money(value||0),labor:value=>money(value||0),fuel_cost:value=>money(value||0),profit:value=>'<strong>'+money(value||0)+'</strong>'},
+    footer: [...(dailyMode ? [""] : []), "<strong>REPORT TOTAL</strong>", String(driverFuelTotals.moves), driverFuelTotals.run_hours.toFixed(2), driverFuelTotals.moves ? (driverFuelTotals.move_hours/driverFuelTotals.moves).toFixed(2) : "—", money(driverFuelTotals.income),money(driverFuelTotals.labor),money(driverFuelTotals.fuel_cost),money(driverFuelTotals.profit)],
+  });
   const selectedSections = new Set((Array.isArray(reportSection) ? reportSection : [reportSection]).filter(Boolean));
   const daySummaryRows = summarize((row) => row.labor_date, "Day");
   const customerSummaryRows = summarize(summarizedCustomer, "Customer");
@@ -32905,7 +32934,7 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   const sectionBlocks = {
     dashboard: `<div class="stats trucking-income-stats">${stat("Moves", String(moves), `${runHours.toFixed(2)} run hours`)}${stat("Income", money(income), "Monitoring income only")}${stat("Total Labor", money(totalLabor), `${money(driverLabor)} driver/trainee + ${money(adminLabor)} admin`)}${stat("Income Less Labor & Fuel", money(profitAfterFuelCost), "Fuel selling value shown separately")}</div>`,
     reconciliation: reconciliationHtml, top_level: topLevelSummary, fuel_pricing: fuelPricingBasis,
-    day: table(daySummaryRows, "Summary by Day"), driver: table(driverSummaryForChronology, "Summary by Driver"), driver_moves: driverMoves, trucking_moves: truckingMoves, trucking_simple: simpleTruckingSummary,
+    day: table(daySummaryRows, "Summary by Day"), driver: driverFuelSummaryHtml, driver_moves: driverMoves, trucking_moves: truckingMoves, trucking_simple: simpleTruckingSummary,
     customer: table(customerSummaryRows, "Summary by Customer"), equipment: equipmentSummary(), jobsite: table(jobsiteSummaryRows, "Summary by Jobsite"), fuel: fuelUsage, detail,
   };
   const defaultSectionOrder = Object.keys(sectionBlocks);
