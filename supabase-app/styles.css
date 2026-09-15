@@ -3528,3 +3528,7 @@ body.trucking-requestor-mode #fullTourBtn {
 @media print {
   #truckingManagementReportHost, #truckingManagementReportHost * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }
+
+@media print {
+  #truckingManagementReportHost [data-management-report-section] + [data-management-report-section] { break-before: page; page-break-before: always; }
+}
