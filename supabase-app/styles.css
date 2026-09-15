@@ -2547,7 +2547,7 @@ body.trucking-requestor-mode #fullTourBtn {
 }
 .trucking-equipment-chronology-table table { table-layout: fixed; width: 100%; }
 .trucking-equipment-chronology-table [data-report-column="equipment_label"],
-.trucking-equipment-chronology-table [data-report-column="requested_equipment_label"] { width: 18%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.trucking-equipment-chronology-table [data-report-column="requested_equipment_label"] { width: 11%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .trucking-equipment-chronology-table [data-report-column="customer"] { width: 12%; white-space: normal; overflow-wrap: anywhere; }
 .trucking-equipment-chronology-table [data-report-column="move_order"] { width: 3%; }
 .trucking-equipment-chronology-table .trucking-table-group-row td { font-weight: 700; background: #e8f0f5; border-top: 2px solid #5f7f91; }
@@ -3520,3 +3520,7 @@ body.trucking-requestor-mode #fullTourBtn {
   margin-bottom: 8px;
   font-weight: 700;
 }
+
+.trucking-equipment-chronology-table [data-report-column="route"] { width: 14%; white-space: normal; overflow-wrap: anywhere; }
+.trucking-equipment-chronology-table [data-report-column="customer"] { width: 8%; }
+.trucking-equipment-chronology-table [data-report-column="start_time"], .trucking-equipment-chronology-table [data-report-column="end_time"] { width: 5%; white-space: nowrap; }
