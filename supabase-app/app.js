@@ -25473,6 +25473,13 @@ async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = nu
   }
   const asset = wo._draftAsset || workOrderAssetDetails(wo);
   const isFinalWorkOrder = !invoice && /closed|complete/i.test(wo.status || "");
+  let lines;
+  let displayedDraftTotal;
+  if (invoice) {
+    // Posted invoice documents must use the same saved charges as the invoice screen.
+    lines = (invoice._lines || []).map(workOrderInvoicePrintableLine);
+    displayedDraftTotal = invoiceTotal(invoice);
+  } else {
   const billable = Boolean(wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer));
   const partEntries = (wo._parts || []).filter((part) => {
     if (/released|removed|cancelled|returned|void|revers/i.test(effectivePartStatus(part))) return false;
@@ -25522,13 +25529,14 @@ async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = nu
     }));
   const partLines = partEntries.map((entry) => entry.line);
   const laborLines = laborEntries.map((entry) => entry.line);
-  const lines = [...partLines, ...laborLines];
+  lines = [...partLines, ...laborLines];
   if (!lines.length) lines.push(["", "Current draft — no billable parts or labor posted yet", "", "", "", money(0)]);
-  const displayedDraftTotal = [...partEntries, ...laborEntries].reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  displayedDraftTotal = [...partEntries, ...laborEntries].reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  }
   const isInvoice = Boolean(invoice);
   const html = printableDocumentHtml({
     title: isInvoice ? "Customer Invoice" : isFinalWorkOrder ? "Work Order" : "Pro Forma Invoice",
-    number: wo.wo_no,
+    number: invoice?.invoice_no || wo.wo_no,
     date: isInvoice ? invoice.invoice_date : wo.wo_date,
     partyLabel: "Customer",
     partyName: invoice?.customer || wo.bill_to_customer || "Internal Repair",
@@ -25538,9 +25546,9 @@ async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = nu
     lines,
     total: displayedDraftTotal,
     totalLabel: isInvoice ? "Invoice Total" : isFinalWorkOrder ? "Final Total" : "Current Draft Total",
-    notes: wo.description || "",
-    notesLabel: "Work Description",
-    extraHtml: `${workOrderDraftSummaryHtml(wo)}${workOrderPdfPhotoGalleryHtml(wo)}`,
+    notes: invoice ? invoice.notes || "" : wo.description || "",
+    notesLabel: invoice ? "Notes" : "Work Description",
+    extraHtml: `${invoice ? "" : workOrderDraftSummaryHtml(wo)}${workOrderPdfPhotoGalleryHtml(wo)}`,
     compactHeader: true,
     stampText: isInvoice ? paidInvoiceStampText(invoice) : "",
   });
