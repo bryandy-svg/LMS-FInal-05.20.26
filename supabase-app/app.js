@@ -20104,7 +20104,7 @@ async function emailSelectedRepairPdfs() {
   const emails = [...new Set(rows.map((wo) => String(wo.requestor_email || "").trim().toLowerCase()).filter(isValidEmail))];
   const recipient = normalizeEmailRecipients(customer.email || emails[0] || "");
   const mixedRequestorEmails = !customer.email && emails.length > 1;
-  const documents = rows.map((wo) => ({ wo, label: wo.invoice_no ? `Invoice ${wo.wo_no}` : `Work Order Draft ${wo.wo_no}` }));
+  const documents = rows.map((wo) => ({ wo, label: wo.invoice_no ? `Invoice ${wo.wo_no}` : `Pro Forma Invoice ${wo.wo_no}` }));
   $("modalTitle").textContent = `Email ${documents.length} selected repair PDF${documents.length === 1 ? "" : "s"}`;
   $("modalBody").innerHTML = `
     ${mixedRequestorEmails ? `<div class="notice"><strong>Different requestor emails found.</strong><br>Enter the intended recipient before opening the email draft.</div>` : ""}
@@ -25447,9 +25447,9 @@ async function loadWorkOrderDraftDocument(woNo) {
 
 async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = null, invoice = null, customer = null } = {}) {
   const initiallyFinal = /closed|complete/i.test((currentRows || []).find((row) => row.wo_no === woNo)?.status || "");
-  const loadingWindow = returnHtml ? null : (targetWindow || openInAppDocumentWindow(`${initiallyFinal ? "Work Order" : "Work Order Draft"} ${woNo}`));
+  const loadingWindow = returnHtml ? null : (targetWindow || openInAppDocumentWindow(`${initiallyFinal ? "Work Order" : "Pro Forma Invoice"} ${woNo}`));
   if (!returnHtml && !loadingWindow) {
-    alert("Allow popups to prepare the refreshed Work Order Draft PDF.");
+    alert("Allow popups to prepare the refreshed Pro Forma Invoice PDF.");
     return null;
   }
   if (loadingWindow) loadingWindow.document.write("<p style='font-family:sans-serif;padding:24px'>Refreshing the latest work order parts and labor…</p>");
@@ -25525,7 +25525,7 @@ async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = nu
   const displayedDraftTotal = [...partEntries, ...laborEntries].reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
   const isInvoice = Boolean(invoice);
   const html = printableDocumentHtml({
-    title: isInvoice ? "Customer Invoice" : isFinalWorkOrder ? "Work Order" : "Work Order Draft",
+    title: isInvoice ? "Customer Invoice" : isFinalWorkOrder ? "Work Order" : "Pro Forma Invoice",
     number: wo.wo_no,
     date: isInvoice ? invoice.invoice_date : wo.wo_date,
     partyLabel: "Customer",
