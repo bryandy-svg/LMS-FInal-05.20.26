@@ -1,0 +1,14 @@
+const fs=require('node:fs');
+const vm=require('node:vm');
+const assert=require('node:assert/strict');
+const source=fs.readFileSync('supabase-app/app.js','utf8');
+const start=source.indexOf('function workOrderMatchesSearch(');
+const end=source.indexOf('\n}',start)+2;
+const context={workOrderAssetDetails:()=>({name:'WasteCorp Pumps - Super Duty Vacuum Pump (Sewer Jetter)',serial:'986825',plate:'TR8440'}),actualLocationForWorkOrder:()=> 'Mall Lot'};
+vm.createContext(context);
+vm.runInContext(source.slice(start,end),context);
+const wo={wo_no:'W100070',asset_tag:'LMS-VT03',jobsite_location:'DZSP',_parts:[{sku:'FILTER-123',product_name:'Oil Filter'}],_labor:[{mechanic:'Michael Bayow',work_done:'Replaced seal'}]};
+for(const query of ['vacuum','VACUUM',' vacuum  DZSP ','sewer jetter','986825','TR8440','Mall Lot','FILTER-123','Michael seal','LMS VT03',''])assert.equal(context.workOrderMatchesSearch(wo,query),true,query);
+assert.equal(context.workOrderMatchesSearch(wo,'vacuum missingcustomer'),false);
+assert.equal(context.workOrderMatchesSearch(wo,'excavator'),false);
+console.log('PASS: equipment name, serial, plate, location, parts, labor and multiword search');

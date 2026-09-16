@@ -19894,7 +19894,7 @@ async function renderRepairsView() {
       ${statCard("Invoiced WO", repairRowsByTab("invoiced").length, "Locked unless reversed")}
       ${statCard("Voided WO", repairRowsByTab("void").length, "Kept for audit trail")}
     </div>
-    <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search repairs by WO, asset, mechanic, customer PO, status, issue"></div>
+    <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search WO, equipment, serial, plate, customer, jobsite, mechanic, parts or issue"></div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Repair & Service History</strong><span>Work orders with mechanic time, inventory parts, labor, and next service</span></div><div class="actions"><button id="repairEmailSelectedBtn">Email Selected PDFs</button><button id="mechanicClosingReportBtn">Mechanic Closing Report</button><button id="repairCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newWoBtn">New work order</button></div></div>
       <div class="tabbar"><button class="tabbtn active" data-repair-tab="open">Open WO ${openRows.length}</button><button class="tabbtn" data-repair-tab="partsissues">Parts Issues ${repairRowsByTab("partsissues").length}</button><button class="tabbtn" data-repair-tab="ready">Ready to Close ${repairRowsByTab("ready").length}</button><button class="tabbtn" data-repair-tab="closed">Closed Not Invoiced ${repairRowsByTab("closed").length}</button><button class="tabbtn" data-repair-tab="invoiced">Invoiced WO ${repairRowsByTab("invoiced").length}</button><button class="tabbtn" data-repair-tab="void">Voided WO ${repairRowsByTab("void").length}</button><button class="tabbtn" data-repair-tab="all">All Work Orders ${repairRowsByTab("all").length}</button></div>
@@ -19933,18 +19933,26 @@ function repairRowsByTab(tab) {
   return currentRows.filter(isRepairHistoryOpenWorkOrder);
 }
 
+function workOrderMatchesSearch(wo, query) {
+  const normalize = (value) => String(value ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const scalarValues = (row) => Object.values(row || {}).filter((value) => value != null && typeof value !== "object").join(" ");
+  const text = normalize([
+    scalarValues(wo),
+    scalarValues(workOrderAssetDetails(wo)),
+    actualLocationForWorkOrder(wo),
+    ...(wo._issues || []).map(scalarValues),
+    ...(wo._parts || []).map(scalarValues),
+    ...(wo._labor || []).map(scalarValues),
+  ].join(" "));
+  return normalize(query).split(/\s+/).filter(Boolean).every((word) => text.includes(word));
+}
+
 function renderFilteredRepairs() {
   const previousWrap = $("repairTableHost")?.querySelector(".table-wrap");
   const previousView = previousWrap ? collectCurrentTableView(previousWrap) : null;
   const tab = $("repairTableHost")?.dataset.tab || "open";
   const q = ($("repairSearch")?.value || "").toLowerCase();
-  const rows = repairRowsByTab(tab).filter((wo) => !q || [
-    Object.values(wo).join(" "),
-    workOrderAssetDetails(wo).serial,
-    (wo._issues || []).map((i) => `${i.issue} ${i.assigned_mechanic} ${i.work_notes}`).join(" "),
-    (wo._parts || []).map((p) => `${p.sku} ${p.product_name}`).join(" "),
-    (wo._labor || []).map((l) => `${l.mechanic} ${l.issue} ${l.work_done}`).join(" "),
-  ].join(" ").toLowerCase().includes(q));
+  const rows = repairRowsByTab(tab).filter((wo) => workOrderMatchesSearch(wo, q));
   $("repairTableHost").innerHTML = repairTableHtml(rows, tab);
   bindRepairRows();
   const nextWrap = $("repairTableHost")?.querySelector(".table-wrap");
