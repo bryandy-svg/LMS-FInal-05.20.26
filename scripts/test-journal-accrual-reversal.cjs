@@ -1,0 +1,14 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync('supabase-app/app.js','utf8');
+const extract=name=>{const start=source.search(new RegExp('(?:async )?function '+name+'\\('));return source.slice(start,source.indexOf('\n}',start)+2);};
+const ctx={isLockedAccountingDate:date=>date<='2026-08-31'};vm.createContext(ctx);
+vm.runInContext(['validateAccrualReversalDate','accrualReversalRows','balancedJournalEditEligibility'].map(extract).join('\n'),ctx);
+ctx.validateAccrualReversalDate('2026-09-30','2026-10-01');
+for(const date of ['', '2026-02-30','2026-09-30','2026-09-29'])assert.throws(()=>ctx.validateAccrualReversalDate('2026-09-30',date));
+assert.throws(()=>ctx.validateAccrualReversalDate('2026-07-31','2026-08-01'),/closed/);
+const rows=[{id:'one',reference:'JE-1',account:'Expense',debit:100,credit:0,jobsite:'Site',bank_reference:'Bank'}, {id:'two',reference:'JE-1',account:'Accrued Expenses',debit:0,credit:100}];
+const reversed=ctx.accrualReversalRows(rows,'2026-10-01');
+assert.equal(reversed[0].debit,0);assert.equal(reversed[0].credit,100);assert.equal(reversed[1].debit,100);
+assert.equal(reversed[0].id,undefined);assert.equal(reversed[0].bank_reference,null);assert.equal(reversed[0].jobsite,'Site');assert.equal(reversed[0].reference,'REV-JE-1');assert.equal(reversed[0].posting_date,'2026-10-01');assert.equal(rows[0].debit,100);
+assert.equal(reversed.reduce((n,r)=>n+r.debit-r.credit,0),0);
+(async()=>{for(const type of ['Manual Journal Accrual','Manual Journal Accrual Reversal'])assert.equal((await ctx.balancedJournalEditEligibility({reference:'JE-1',source:type})).allowed,false);console.log('PASS: accrual reversal dates, swapped balanced lines, links, preserved details and pair edit protection');})().catch(e=>{console.error(e);process.exitCode=1;});

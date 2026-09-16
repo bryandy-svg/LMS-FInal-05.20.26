@@ -7639,6 +7639,7 @@ async function openBalancedJournalModal(data = null, editGroup = null, prefillGr
       <div class="field"><label>Work Order #</label><input class="suggest-input" data-suggest-source="work_orders" data-product-field="work_order_no" value="${esc(formGroup?.work_order_no || "")}" placeholder="Type WO #, asset, customer, or status" autocomplete="off" inputmode="search"><small>Results appear in separate columns after you start typing.</small></div>
       <div class="field"><label>Jobsite</label><input class="suggest-input" data-suggest-source="locations" data-product-field="jobsite" value="${esc(formGroup?.jobsite || "")}" placeholder="Type jobsite, project, or equipment location" autocomplete="off" inputmode="search"><div class="actions table-actions"><button class="rowbtn" type="button" id="createJournalJobsiteBtn">+ Create new jobsite</button></div><small>Results appear in separate columns after you start typing. New jobsites are added to the shared location list.</small></div>
       <div class="field"><label>Equipment</label><input class="suggest-input" data-suggest-source="equipment" data-equipment-source="master" data-product-field="equipment" value="${esc(formGroup?.equipment || "")}" placeholder="Type asset #, equipment, plate, serial, VIN, type, or location" autocomplete="off" inputmode="search"><small>Results appear in separate columns after you start typing.</small></div>
+      ${!editGroup ? `<div class="field wide"><label><input type="checkbox" id="journalAutoReverse" data-product-field="auto_reverse"> Create dated accrual reversal</label><div id="journalReversalDateField" hidden>${productInput("Reversal date", "reversal_date", "", "date")}</div><small>Save posts both balanced entries now, using their respective dates. Use accrual GL accounts, not Accounts Payable or Accounts Receivable. The linked pair is read-only after posting; correct it with a new journal.</small></div>` : ""}
       <div class="field wide"><label>Journal description</label><textarea data-product-field="description" required>${esc(formGroup?.description || "")}</textarea></div>
       <div class="field wide"><label>Debit and credit lines</label><div class="table-wrap"><table class="line-table"><thead><tr><th>Chart of Account</th><th>Description</th><th>Debit</th><th>Credit</th><th></th></tr></thead><tbody id="journalLineBody">${editLines.map((line, index) => journalLineRowHtml(line, index, accounts)).join("")}</tbody></table></div><div class="actions table-actions"><button type="button" id="addJournalLineBtn">Add line</button></div></div>
     </div>
@@ -7655,6 +7656,13 @@ async function openBalancedJournalModal(data = null, editGroup = null, prefillGr
   saveOnlyButton.onclick = () => runExclusiveModalSave(saveOnlyButton, () => saveBalancedJournalModal(coa, { keepOpen: !editGroup, editGroup }));
   $("modalSave").before(saveOnlyButton);
   $("modal").style.display = "flex";
+  const autoReverse = $("journalAutoReverse");
+  if (autoReverse) autoReverse.onchange = () => {
+    $("journalReversalDateField").hidden = !autoReverse.checked;
+    const date = $("journalReversalDateField").querySelector("input");
+    date.required = autoReverse.checked;
+    if (!autoReverse.checked) date.value = "";
+  };
   const postingDateInput = document.querySelector('[data-product-field="posting_date"]');
   const referenceInput = document.querySelector('[data-product-field="reference"]');
   if (referenceInput) {
@@ -7768,6 +7776,7 @@ function loadBalancedJournalPaymentChecks() {
 
 async function balancedJournalEditEligibility(group, paymentChecks = null) {
   if (!group?.reference) return { allowed: false, reason: "Journal reference is missing." };
+  if (/manual journal accrual/i.test(group.source || "")) return { allowed: false, reason: "This journal belongs to a dated accrual pair. Post a separate correcting journal to preserve both entries." };
   if (/reversed|void|cancel/i.test(group.status || "")) return { allowed: false, reason: "Reversed or voided journals are read-only." };
   if (isLockedAccountingDate(group.posting_date) || isLockedAccountingDate(group.invoice_date)) return { allowed: false, reason: "The posting or invoice date is in a closed accounting period." };
   const reference = String(group.reference).trim();
@@ -7840,8 +7849,27 @@ function openBalancedJournalHistoryDetail(group, groups = []) {
   };
 }
 
+function validateAccrualReversalDate(postingDate, reversalDate) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(reversalDate || "") || !Number.isFinite(Date.parse(reversalDate)) || new Date(reversalDate).toISOString().slice(0, 10) !== reversalDate) throw new Error("Enter a valid reversal date.");
+  if (reversalDate <= postingDate) throw new Error("Reversal date must be after the original posting date.");
+  if (isLockedAccountingDate(reversalDate)) throw new Error("Reversal date is inside the closed accounting period.");
+}
+
+function accrualReversalRows(rows, reversalDate) {
+  return rows.map(({ id, ...row }) => ({
+    ...row,
+    entry_date: reversalDate, posting_date: reversalDate, invoice_date: reversalDate,
+    reference: `REV-${row.reference}`,
+    description: `Accrual reversal of ${row.reference}: ${row.description || ""}`,
+    bank_reference: null,
+    debit: row.credit, credit: row.debit,
+    source: "Manual Journal Accrual Reversal", status: "Posted",
+  }));
+}
+
 async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup = null } = {}) {
   const header = collectProductModalFields();
+  const autoReverse = Boolean($("journalAutoReverse")?.checked);
   const systemJournalReference = document.querySelector('[data-product-field="reference"]')?.dataset.systemJournalReference || "";
   const lines = readBalancedJournalLines();
   if (!header.posting_date || !header.invoice_date || !header.reference || !header.description) return alert("Posting date, invoice date, journal reference, and journal description are required.");
@@ -7863,6 +7891,8 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
   if (arLines.length && !selectedCustomer) return alert("Select a customer from Customer Master when using Accounts Receivable.");
   if (apLines.length && apCredit <= 0) return alert("A manual Accounts Payable journal must create a positive payable credit. Use Check Run, Write Off, or a reversal to reduce an existing payable.");
   if (arLines.length && arDebit <= 0) return alert("A manual Accounts Receivable journal must create a positive receivable debit. Use Receive Payment, Write Off, or a reversal to reduce an existing receivable.");
+  if (autoReverse && (apLines.length || arLines.length)) return alert("Use accrual GL accounts for a dated reversal. Accounts Payable and Accounts Receivable require their subledger reversal workflow.");
+  try { if (autoReverse) validateAccrualReversalDate(header.posting_date, header.reversal_date); } catch (error) { return alert(error.message); }
   try { assertBalancedLedgerRows(lines, `Journal ${header.reference}`); } catch (error) { return alert(error.message); }
   if (editGroup) {
     const eligibility = await balancedJournalEditEligibility(editGroup);
@@ -7871,6 +7901,7 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
   const existing = await getAll("general_ledger");
   if (!editGroup && existing.some((row) => String(row.reference || "").trim().toLowerCase() === String(header.reference).trim().toLowerCase() && !/reversed|void/i.test(row.status || ""))) return alert(`Journal reference ${header.reference} already exists.`);
   if (header.bank_reference && existing.some((row) => String(row.bank_reference || "").trim().toLowerCase() === String(header.bank_reference).trim().toLowerCase() && String(row.reference || "").trim().toLowerCase() !== String(header.reference).trim().toLowerCase() && !/reversed|void/i.test(row.status || ""))) return alert(`Bank reference ${header.bank_reference} is already in the General Ledger.`);
+  if (autoReverse && existing.some((row) => String(row.reference || "").trim().toLowerCase() === `REV-${header.reference}`.toLowerCase())) return alert("The linked reversal reference already exists. Use a different journal reference.");
   const journalAmount = Math.max(lines.reduce((sum, line) => sum + line.debit, 0), lines.reduce((sum, line) => sum + line.credit, 0));
   const rows = lines.map((line) => ({
     ...(line.id ? { id: line.id } : {}),
@@ -7890,7 +7921,7 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
     equipment: header.equipment || null,
     debit: line.debit,
     credit: line.credit,
-    source: "Manual Journal",
+    source: autoReverse ? "Manual Journal Accrual" : "Manual Journal",
     status: "Posted",
   }));
   try {
@@ -7921,7 +7952,14 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
         if (result.error) throw result.error;
       }
     }
-    await upsertManyWithOptionalColumns("general_ledger", rows, "id", ["bank_reference", "work_order_no", "jobsite", "equipment"]);
+    const postingRows = autoReverse ? [...rows, ...accrualReversalRows(rows, header.reversal_date)] : rows;
+    if (autoReverse) {
+      // One insert keeps the entire dated pair atomic, including journals over 100 lines.
+      const result = await supabase.from("general_ledger").insert(postingRows.map((row) => canonicalizePartyFields(row, "general_ledger")));
+      if (result.error) throw result.error;
+    } else {
+      await upsertManyWithOptionalColumns("general_ledger", postingRows, "id", ["bank_reference", "work_order_no", "jobsite", "equipment"]);
+    }
     if (editGroup) {
       const keptIds = new Set(lines.map((line) => line.id).filter(Boolean));
       await deleteWhereIn("general_ledger", "id", (editGroup.lines || []).map((line) => line.id).filter((id) => id && !keptIds.has(id)));
@@ -7929,7 +7967,7 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
     if (!editGroup && systemJournalReference && header.reference === systemJournalReference) {
       await incrementJournalSequence(header.posting_date, header.reference);
     }
-    await writeAuditLog({ tableName: "general_ledger", action: editGroup ? "Updated balanced journal" : "Posted balanced journal", beforeData: editGroup || null, afterData: { ...header, amount: journalAmount, lines } });
+    await writeAuditLog({ tableName: "general_ledger", action: editGroup ? "Updated balanced journal" : "Posted balanced journal", beforeData: editGroup || null, afterData: { ...header, auto_reverse: autoReverse, reversal_reference: autoReverse ? `REV-${header.reference}` : null, amount: journalAmount, lines } });
     if (editGroup) {
       await renderAccountingView();
       const refreshedGl = await getAll("general_ledger");
