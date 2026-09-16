@@ -13687,6 +13687,7 @@ async function closePurchaseOrder(poNo) {
 }
 
 async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
+  productMeta.products = await getAll("products");
   const purchaseWorkOrders = await getAll("work_orders");
   productMeta.workOrders = purchaseWorkOrders;
   productMeta.openWorkOrders = purchaseWorkOrders.filter(isOpenWorkOrder);
@@ -16532,7 +16533,7 @@ async function openQuotationModal(quote = null, options = {}) {
     return;
   }
   editing = quote;
-  if (!productMeta.products?.length) productMeta.products = await getAll("products");
+  productMeta.products = await getAll("products");
   if (!productMeta.customers?.length) productMeta.customers = (await getAll("customers")).map((c) => c.name).filter(Boolean).sort();
   const quoteNo = quote?.quote_no || await nextRefPreview("quote", "QT-", "quotations", "quote_no");
   const lines = quote?._lines?.length ? quote._lines : [{ sku: "", product_name: "", unit: "", qty: 1, price: 0 }];
@@ -17451,6 +17452,7 @@ async function salesOrderLinkedPurchaseOrderMap(orderNo) {
 }
 
 async function openSalesOrderModal(order = null, options = {}) {
+  productMeta.products = await getAll("products");
   const readOnly = Boolean(order && (options.forceReadOnly || String(order.invoice_no || "").trim() || /^(invoiced|paid|void|reversed|cancelled)$/i.test(order.status || "")));
   editing = order;
   if (!Array.isArray(productMeta.salesPricingRates)) productMeta.salesPricingRates = await getAll("sales_pricing_rates").catch(() => []);
@@ -24753,6 +24755,7 @@ function paidInvoiceStampText(inv) {
 }
 
 async function openInvoiceModal(inv = null, forceReadOnly = false) {
+  productMeta.products = await getAll("products");
   const readOnly = Boolean(inv && (forceReadOnly || /paid|void|reversed/i.test(invoiceDisplayStatus(inv))));
   editing = inv;
   let linkedSourceSalesOrder = inv?._salesOrder || null;
@@ -26334,6 +26337,7 @@ function openSupplyIssueReadOnly(reference) {
 }
 
 async function openSupplyIssueModal() {
+  productMeta.products = await getAll("products");
   const reference = await nextRefPreview("stock", "SM-", "stock_movements", "reference_no");
   $("modalTitle").textContent = `New supplies issue ${reference}`;
   $("modalBody").innerHTML = `
@@ -28042,7 +28046,6 @@ function printEquipmentRepairQuote(quoteNo) {
 async function openEquipmentRepairQuoteModal(row = null, prefill = {}) {
   editing = row;
   await ensureWorkOrderModalMeta();
-  if (!Array.isArray(productMeta.products) || !productMeta.products.length) productMeta.products = await getAll("products").catch(() => []);
   const quoteNo = row?.quote_no || await nextRefPreview("repair_quote", "ERQ-", "equipment_repair_quotes", "quote_no");
   const quoteDate = row?.quote_date || today();
   const expiresOn = row?.expires_on || dateAfterDays(quoteDate, 30);
@@ -38835,6 +38838,7 @@ function motherPartDefaultValue(values, preferred) {
 }
 
 async function openCreateMotherPartModal() {
+  productMeta.products = await getAll("products");
   editing = null;
   const sku = await nextRefPreview("product", "SKU-", "products", "sku");
   $("modalTitle").textContent = "Create mother part";
@@ -40992,13 +40996,14 @@ async function deactivateMasterRow(key) {
 
 async function getAll(table) {
   const pageSize = 1000;
+  const productLookupTable = ["products", "product_alternates", "product_cross_references"].includes(table);
   const pageQuery = (count = false) => {
     const query = supabase.from(table).select("*", count ? { count: "exact" } : undefined);
-    return table === "products" ? query.order("id", { ascending: true }) : query;
+    return productLookupTable ? query.order("id", { ascending: true }) : query;
   };
   const firstPage = await pageQuery(true).range(0, pageSize - 1);
   if (firstPage.error) {
-    if (table === "products") throw new Error(`Could not load Product Master: ${firstPage.error.message}`);
+    if (productLookupTable) throw new Error(`Could not load ${table}: ${firstPage.error.message}`);
     return [];
   }
   const count = Number(firstPage.count || firstPage.data?.length || 0);
@@ -41008,7 +41013,7 @@ async function getAll(table) {
     for (let from = pageSize; from < count; from += pageSize) ranges.push([from, Math.min(from + pageSize - 1, count - 1)]);
     const pages = await Promise.all(ranges.map(([from, to]) => pageQuery().range(from, to)));
     const failedPage = pages.find((page) => page.error);
-    if (table === "products" && failedPage) throw new Error(`Could not load the complete Product Master: ${failedPage.error.message}`);
+    if (productLookupTable && failedPage) throw new Error(`Could not load the complete Product Master: ${failedPage.error.message}`);
     rows = rows.concat(pages.flatMap((page) => page.error ? [] : (page.data || [])).map((row) => canonicalizePartyFields(row, table)));
   }
   return table === "products" ? decorateProductsWithLookupAliases(rows) : rows;
@@ -41017,17 +41022,17 @@ async function getAll(table) {
 async function decorateProductsWithLookupAliases(products = []) {
   if (!products.length) return products;
   const [alternatesResult, crossReferencesResult] = await Promise.all([
-    supabase.from("product_alternates").select("product_id,alternate_sku"),
-    supabase.from("product_cross_references").select("product_id,reference_no"),
+    getAll("product_alternates"),
+    getAll("product_cross_references"),
   ]);
   const alternatesByProduct = new Map();
   const crossReferencesByProduct = new Map();
-  (alternatesResult.data || []).forEach((row) => {
+  (alternatesResult || []).forEach((row) => {
     const key = String(row.product_id || "");
     if (!alternatesByProduct.has(key)) alternatesByProduct.set(key, []);
     if (row.alternate_sku) alternatesByProduct.get(key).push(row.alternate_sku);
   });
-  (crossReferencesResult.data || []).forEach((row) => {
+  (crossReferencesResult || []).forEach((row) => {
     const key = String(row.product_id || "");
     if (!crossReferencesByProduct.has(key)) crossReferencesByProduct.set(key, []);
     if (row.reference_no) crossReferencesByProduct.get(key).push(row.reference_no);
