@@ -9963,8 +9963,8 @@ async function saveCheckRunModal(data, payables) {
     const groups = groupPayablesByVendor(selected);
     if (usesPrintedCheck) {
       const startingCheckNo = Number(String(record.check_no || "").trim());
-      if (!Number.isInteger(startingCheckNo) || startingCheckNo < 6816) {
-        alert("Check numbers must be whole numbers beginning at 6816.");
+      if (!Number.isSafeInteger(startingCheckNo) || startingCheckNo < 1) {
+        alert("Check numbers must be positive whole numbers. Earlier unused check numbers are allowed.");
         return;
       }
       const currentRuns = await getAll("check_runs");
