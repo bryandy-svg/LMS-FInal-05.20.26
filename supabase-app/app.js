@@ -21500,7 +21500,8 @@ async function openNewWorkOrderModal(prefill = {}) {
 }
 
 async function ensureWorkOrderModalMeta() {
-  const loaders = [];
+  // A work order can be opened from other screens or after a product was added.
+  const loaders = [getAll("products").then((rows) => { productMeta.products = rows; })];
   if (!Array.isArray(productMeta.mechanics) || !productMeta.mechanics.length) {
     loaders.push(getAll("mechanics").then((rows) => {
       productMeta.mechanicsRows = rows;
@@ -40991,14 +40992,23 @@ async function deactivateMasterRow(key) {
 
 async function getAll(table) {
   const pageSize = 1000;
-  const firstPage = await supabase.from(table).select("*", { count: "exact" }).range(0, pageSize - 1);
-  if (firstPage.error) return [];
+  const pageQuery = (count = false) => {
+    const query = supabase.from(table).select("*", count ? { count: "exact" } : undefined);
+    return table === "products" ? query.order("id", { ascending: true }) : query;
+  };
+  const firstPage = await pageQuery(true).range(0, pageSize - 1);
+  if (firstPage.error) {
+    if (table === "products") throw new Error(`Could not load Product Master: ${firstPage.error.message}`);
+    return [];
+  }
   const count = Number(firstPage.count || firstPage.data?.length || 0);
   let rows = [...(firstPage.data || []).map((row) => canonicalizePartyFields(row, table))];
   if (count > pageSize) {
     const ranges = [];
     for (let from = pageSize; from < count; from += pageSize) ranges.push([from, Math.min(from + pageSize - 1, count - 1)]);
-    const pages = await Promise.all(ranges.map(([from, to]) => supabase.from(table).select("*").range(from, to)));
+    const pages = await Promise.all(ranges.map(([from, to]) => pageQuery().range(from, to)));
+    const failedPage = pages.find((page) => page.error);
+    if (table === "products" && failedPage) throw new Error(`Could not load the complete Product Master: ${failedPage.error.message}`);
     rows = rows.concat(pages.flatMap((page) => page.error ? [] : (page.data || [])).map((row) => canonicalizePartyFields(row, table)));
   }
   return table === "products" ? decorateProductsWithLookupAliases(rows) : rows;
