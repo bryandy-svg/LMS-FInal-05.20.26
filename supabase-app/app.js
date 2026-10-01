@@ -39084,7 +39084,13 @@ async function approveProductMasterCreation(record, editingProduct = null) {
   const enteredSku = String(record.sku || "").trim();
   const exact = candidates.find((product) => String(product.sku || "").trim().toLowerCase() === enteredSku.toLowerCase());
   if (exact) {
-    alert(`Duplicate part blocked.\n\n${exact.sku} - ${exact.name || "Product Master item"}\n\nSelect the existing part instead of creating another record.`);
+    const status = String(exact.status || "Active").trim() || "Active";
+    const location = [exact.warehouse, exact.bin_shelf].map((value) => String(value || "").trim()).filter(Boolean).join(" / ") || "No location entered";
+    const openExisting = confirm(`This Part # already exists in Product Master.\n\n${exact.sku} - ${exact.name || "Product Master item"}\nStatus: ${status}\nLocation: ${location}\n\nIt may be under the Deactivated tab or outside the current filters.\n\nOK = Open the existing part now\nCancel = Return to the new-part form`);
+    if (openExisting) {
+      closeQuickPartOverlay();
+      await openProductModal(exact);
+    }
     return false;
   }
   const compactSku = normalizedPartNumber(enteredSku);
@@ -39287,11 +39293,6 @@ async function saveProductModal() {
     return;
   }
   try {
-    if (file) {
-      setProductPhotoStatus("Compressing and uploading product photo...");
-      record.photo_url = await uploadProductPhoto(record.sku, file);
-      setProductPhotoStatus("Product photo uploaded.");
-    }
     const wasNew = !editing;
     record.qty = editing ? Number(editing.qty || 0) : 0;
     ["qty", "reorder_point", "cost", "selling_price", "markup_percent"].forEach((k) => {
@@ -39307,6 +39308,11 @@ async function saveProductModal() {
       record.source_vendor = vendor.name;
     }
     if (!await approveProductMasterCreation(record, editing)) return;
+    if (file) {
+      setProductPhotoStatus("Compressing and uploading product photo...");
+      record.photo_url = await uploadProductPhoto(record.sku, file);
+      setProductPhotoStatus("Product photo uploaded.");
+    }
     // Do not send a stale displayed cost back over a newer receipt cost.
     if (!wasNew) delete record.cost;
     const saved = wasNew ? await insertNewProduct(record) : await upsertOne("products", record, "sku");
