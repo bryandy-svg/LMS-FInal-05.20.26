@@ -12198,7 +12198,7 @@ function applyProductColumnFilter(event) {
 function productRowHtml(p, columns = productVisibleColumns()) {
   return `<tr>
     ${columns.map(([key]) => `<td>${productCellHtml(p, key)}</td>`).join("")}
-    <td><div class="rowactions"><button class="rowbtn" data-product-edit="${esc(p.sku)}">Edit</button><button class="rowbtn danger" data-product-deactivate="${esc(p.sku)}">Deactivate</button></div></td>
+    <td><div class="rowactions"><button class="rowbtn" data-product-edit="${esc(p.sku)}">Edit</button><button class="rowbtn" data-product-copy="${esc(p.sku)}">Copy</button><button class="rowbtn danger" data-product-deactivate="${esc(p.sku)}">Deactivate</button></div></td>
   </tr>`;
 }
 
@@ -12263,6 +12263,7 @@ function productStatus(p) {
 
 function bindProductRows() {
   document.querySelectorAll("[data-product-edit]").forEach((b) => b.onclick = () => openProductModal(currentRows.find((p) => p.sku === b.dataset.productEdit)));
+  document.querySelectorAll("[data-product-copy]").forEach((b) => b.onclick = () => openProductCopyModal(currentRows.find((p) => p.sku === b.dataset.productCopy)));
   document.querySelectorAll("[data-product-photo]").forEach((b) => b.onclick = () => openEquipmentRequestPhoto(b.dataset.productPhoto, b.dataset.productPhotoTitle || "Product photo"));
   document.querySelectorAll("[data-product-issuance]").forEach((b) => b.onclick = () => openProductIssuanceHistory(b.dataset.productIssuance));
   document.querySelectorAll("[data-product-reservation]").forEach((b) => b.onclick = () => openProductReservationHistory(b.dataset.productReservation));
@@ -38745,7 +38746,7 @@ async function openProductModal(row = null) {
   $("modalSave").textContent = "Save";
   $("modalBody").innerHTML = `
     <div class="form-grid product-form">
-      <div class="field"><label>Part photo</label>${row?.photo_url ? `<img class="thumb large" src="${esc(row.photo_url)}" alt="Photo">` : ""}<input type="file" accept="image/*" data-product-file="photo_url"><input type="hidden" data-product-field="photo_url" value="${esc(row?.photo_url || "")}"></div>
+      <div class="field" data-product-photo-field><label>Part photo</label>${row?.photo_url ? `<img class="thumb large" data-product-photo-preview src="${esc(row.photo_url)}" alt="Photo">` : ""}<input type="file" accept="image/*" data-product-file="photo_url"><input type="hidden" data-product-field="photo_url" value="${esc(row?.photo_url || "")}">${row?.photo_url ? `<button class="rowbtn danger" type="button" id="removeProductPhotoBtn">Remove current photo</button>` : ""}<small id="productPhotoHelp">${row?.photo_url ? "Choose a new file to replace this photo, or remove it." : "Choose a photo if available."}</small></div>
       ${productInput("Part #", "sku", sku)}
       ${productInput("Product name", "name", row?.name || "")}
       ${productSelect("Category", "category", productMeta.categories, row?.category || "", "New category")}
@@ -38772,7 +38773,14 @@ async function openProductModal(row = null) {
     <p class="notice"><strong>Mother Part:</strong> link every component SKU and the quantity required for one mother part. Issuing the mother part deducts both the mother SKU and all linked component quantities. Bin / Shelf, barcode, batch / lot, expiry date, cost, notes, and alternative SKUs are optional when creating the product. Bin / Shelf becomes required when receiving the part for Inventory Stock. Quantity is controlled by buying, receiving, and issuance. Enter either Selling Price or Markup %, not both.</p>`;
   $("modalSave").onclick = saveProductModal;
   document.getElementById("productHistoryModalBtn")?.remove();
+  document.getElementById("productCopyModalBtn")?.remove();
   if (row) {
+    const copyButton = document.createElement("button");
+    copyButton.id = "productCopyModalBtn";
+    copyButton.type = "button";
+    copyButton.textContent = "Copy";
+    copyButton.onclick = () => openProductCopyModal(row);
+    $("modalCancel").before(copyButton);
     const historyButton = document.createElement("button");
     historyButton.id = "productHistoryModalBtn";
     historyButton.type = "button";
@@ -38788,8 +38796,60 @@ async function openProductModal(row = null) {
   if (addCrossReferenceBtn) addCrossReferenceBtn.onclick = addCrossReferenceRow;
   const addBinBtn = $("addProductBinBtn");
   if (addBinBtn) addBinBtn.onclick = addProductBinRow;
+  const removePhotoButton = $("removeProductPhotoBtn");
+  if (removePhotoButton) removePhotoButton.onclick = () => {
+    const photoField = document.querySelector("[data-product-photo-field]");
+    const photoValue = photoField?.querySelector('[data-product-field="photo_url"]');
+    const fileInput = photoField?.querySelector("[data-product-file]");
+    if (photoValue) {
+      photoValue.value = "";
+      photoValue.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (fileInput) fileInput.value = "";
+    photoField?.querySelector("[data-product-photo-preview]")?.remove();
+    removePhotoButton.disabled = true;
+    removePhotoButton.textContent = "Photo removed";
+    const help = $("productPhotoHelp");
+    if (help) help.textContent = "The current photo will be removed when you save. You may choose a new photo now.";
+  };
   bindMotherPartComponentRows();
   setupImageDropzones($("modalBody"));
+}
+
+async function openProductCopyModal(source) {
+  if (!source) return;
+  await openProductModal();
+  const markup = Number(source.markup_percent || 0);
+  const copiedValues = {
+    name: source.name || "",
+    category: source.category || "",
+    unit: source.unit || "",
+    warehouse: source._primary_warehouse || source.warehouse || "",
+    bin_shelf: source._primary_bin_shelf || source.bin_shelf || "",
+    reorder_point: source.reorder_point ?? 0,
+    cost: source.cost ?? "",
+    markup_percent: markup > 0 ? source.markup_percent : "",
+    selling_price: markup > 0 ? "" : (source.selling_price ?? ""),
+    source_vendor: source.source_vendor || "",
+    barcode: "",
+    batch_lot: "",
+    expiry_date: "",
+    status: "Active",
+    compatible_with: source.compatible_with || "",
+    notes: source.notes || "",
+    photo_url: "",
+  };
+  Object.entries(copiedValues).forEach(([field, value]) => {
+    const input = document.querySelector(`[data-product-field="${field}"]`);
+    if (input) input.value = value ?? "";
+  });
+  $("modalTitle").textContent = `Copy product: ${source.sku}`;
+  $("modalSave").textContent = "Create copied part";
+  const form = document.querySelector(".product-form");
+  form?.insertAdjacentHTML("beforebegin", `<p class="notice"><strong>Creating a new part from ${esc(source.sku)}.</strong> Enter the new Part # and review the copied details. Quantity starts at zero; the original photo, barcode, batch, expiry, alternate numbers, cross-references, component links, and transaction history are not copied.</p>`);
+  const skuInput = document.querySelector('[data-product-field="sku"]');
+  skuInput?.focus();
+  skuInput?.select();
 }
 
 function motherPartComponentRows(links = [], motherProductId = "") {
@@ -39285,6 +39345,7 @@ async function saveProductModal() {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value);
   if (editing) record.cost = editing.cost;
+  record.photo_url = String(record.photo_url || "").trim() || null;
   record.expiry_date = String(record.expiry_date || "").trim() || null;
   const file = document.querySelector("[data-product-file]")?.files?.[0];
   const validation = validateProductRecord(record);
@@ -40822,6 +40883,7 @@ function closeModal(force = false) {
   document.getElementById("salesOrderCreatePoModalBtn")?.remove();
   document.getElementById("manualTruckingDraftBtn")?.remove();
   document.getElementById("productHistoryModalBtn")?.remove();
+  document.getElementById("productCopyModalBtn")?.remove();
   document.querySelector(".modalbox")?.classList.remove("wide-modal");
   const modalBox = document.querySelector(".modalbox");
   if (modalBox) {
