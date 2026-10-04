@@ -21,7 +21,8 @@ function snapshot() {
 function verify() {
   const expected = JSON.parse(fs.readFileSync(path.join(root, 'release-source.json'), 'utf8'));
   const actual = snapshot();
-  if (JSON.stringify(expected.files) !== JSON.stringify(actual)) throw new Error('Release source differs from the reviewed manifest. Run tests, then npm run release:prepare and commit the resulting files.');
+  const changed = [...new Set([...Object.keys(expected.files), ...Object.keys(actual)])].filter(name => expected.files[name] !== actual[name]);
+  if (changed.length) throw new Error('Release source differs from the reviewed manifest: ' + changed.join(', ') + '. Run tests, then npm run release:prepare and commit the resulting files.');
   return { sourceHash: hash(JSON.stringify(actual)), files: actual };
 }
 if (require.main === module) {
