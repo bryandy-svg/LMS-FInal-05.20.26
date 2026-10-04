@@ -5,6 +5,13 @@ const root = path.resolve(__dirname, '..');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 function fileHash(name) {
   const data = fs.readFileSync(path.join(root, name));
+  if (name === 'vercel.json') {
+    // Vercel rewrites formatting and adds platform metadata during Git builds.
+    // Protect the app's routing/build settings, independent of that serialization.
+    const config = JSON.parse(data.toString('utf8'));
+    const keys = ['buildCommand', 'outputDirectory', 'routes', 'rewrites', 'redirects', 'headers', 'functions'];
+    return hash(JSON.stringify(Object.fromEntries(keys.filter(key => config[key] !== undefined).map(key => [key, config[key]]))));
+  }
   // Git may normalize Windows line endings; compare text content consistently on CI.
   return hash(/\.(?:js|cjs|mjs|css|html|json|md|sql|ya?ml|csv|txt|toml)$/i.test(name) ? data.toString('utf8').replace(/\r\n/g, '\n') : data);
 }

@@ -6,7 +6,7 @@
     "scripts/build-vercel.cjs": "83505257b87116162e4cde3b953d154a79da5ac0cc236f2eea46cb28ee4c605e",
     "scripts/capture-real-tutorial.mjs": "d3a6e3a41572527fae31fe1230cf18228c6327722aca369c18f06ad21b1bb37a",
     "scripts/jobsite-merge.sql": "6c87f9b49f89f409c093a8d38dd20bd77031029afc9a4b34cb60628e97499bc3",
-    "scripts/release-manifest.cjs": "e460b451a6e7a08153f97dc8d4d942455aae5678b8ff61a366e466357d5cf715",
+    "scripts/release-manifest.cjs": "4a3428e16d04717c74165f2fc87a7df3fe259b9b41a4aa6af610250ea33d9c53",
     "scripts/render-purchase-order-pdf-preview.cjs": "7c7945298dfe02e60e2ba85c66ddcc506f47cb9abd907b061235d22f3e787985",
     "scripts/render-work-order-pdf-preview.cjs": "350adab56a70711c9e502b40a4d78b2acf2027ea44cfbfd5c25e89e44136dde7",
     "scripts/test-aging-controls.cjs": "821cea7a2f4d9a29b44c8e0976c0c23edd53f8b76a462849c45019b222b8868a",
@@ -110,6 +110,6 @@
     "tests/regression/work-order-invoice-safeguards.cjs": "5def2a39e327cd4f2fc76a7c9388ec30aea09d6b75a4a1df547fe1558b246112",
     "tests/regression/work-order-po-price.cjs": "b744ac925dd73f805aee2f5ce5c01e02bc7bdf2cebbcddad9c39f4d593c79391",
     "tests/source.cjs": "331338e45c8665895912b584ce1f661a74904d2fc8e70f0c10981ba317042319",
-    "vercel.json": "38ce6ff8e9598da47438ef5c5fa526e138dd890540bc98546f569c507dfef443"
+    "vercel.json": "72155b4ecc890cfc6e4af0098ab0ac4a22805e138e0f8a831db4ec69b8ac9628"
   }
 }
