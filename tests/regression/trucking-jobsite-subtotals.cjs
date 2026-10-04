@@ -1,0 +1,37 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('supabase-app/app.js','utf8');
+const names = ['truckingSimpleTable', 'truckingJobsiteSubtotalCells', 'refreshTruckingJobsiteSubtotals', 'applyTruckingTableFilters', 'clearTruckingTableFilters'];
+const context = vm.createContext({ esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;'), money: value => '$' + Number(value).toFixed(2), syncTruckingTicketSelectAll: () => {} });
+for (const name of names) {
+  const start = source.indexOf('function ' + name + '(');
+  const rest = source.slice(start);
+  const end = rest.slice(1).search(/\n(?:async )?function /);
+  vm.runInContext(end < 0 ? rest : rest.slice(0, end + 1), context);
+}
+const columns = ['category', 'moves', 'run_hours', 'income', 'total_labor', 'profit'];
+const rows = [{ customer: 'A', category: 'J1', moves: 1, run_hours: 2, income: 100, total_labor: 30, profit: 70 }, { customer: 'A', category: 'J2', moves: 2, run_hours: 3.5, income: 0, total_labor: 20, profit: -20 }, { customer: 'B', category: 'J3', moves: 1, run_hours: 1, income: 50, total_labor: 5, profit: 45 }];
+const options = { groupBy: row => row.customer, wrapClass: 'trucking-jobsite-by-customer-table' };
+const html = context.truckingSimpleTable(rows, columns, options);
+assert.equal((html.match(/data-trucking-subtotal="true"/g) || []).length, 2);
+assert.match(html, /A — Subtotal<\/td><td[^>]*>3<\/td><td[^>]*>5.50<\/td><td[^>]*>\$100.00<\/td><td[^>]*>\$50.00<\/td><td[^>]*>\$50.00/);
+assert.ok(!context.truckingSimpleTable(rows, columns, {}).includes('data-trucking-subtotal'));
+const heading = () => ({ dataset: { truckingGroupRow: 'true' }, children: [], hidden: false });
+const detail = row => ({ dataset: {}, hidden: false, children: columns.map(column => ({ dataset: { reportColumn: column, filterValue: String(row[column]) } })) });
+const subtotal = name => ({ dataset: { truckingSubtotal: 'true' }, children: [{ textContent: name + ' — Subtotal' }], hidden: false });
+const body = [heading(), detail(rows[0]), detail(rows[1]), subtotal('A'), heading(), detail(rows[2]), subtotal('B')];
+const footer = {};
+const filter = { value: 'J2', dataset: { columnIndex: '0' } };
+const wrap = { classList: { contains: () => true }, querySelector: () => footer, querySelectorAll: selector => selector === 'tbody tr' ? body : selector === 'thead tr:first-child th' ? columns.map(column => ({ dataset: { reportColumn: column } })) : selector === '.truck-column-filter' ? [filter] : [] };
+context.applyTruckingTableFilters({ closest: () => wrap });
+assert.equal(body[0].hidden, false);
+assert.equal(body[4].hidden, true);
+assert.equal(body[6].hidden, true);
+assert.match(body[3].innerHTML, /\$-20.00/);
+assert.match(footer.innerHTML, /\$-20.00/);
+context.clearTruckingTableFilters({ closest: () => wrap });
+assert.ok(body.every(row => !row.hidden));
+assert.match(footer.innerHTML, /\$150.00/);
+assert.match(footer.innerHTML, /\$95.00/);
+console.log('PASS: customer subtotals, negative profit, filtered totals, empty groups and clear filters; no double counting.');

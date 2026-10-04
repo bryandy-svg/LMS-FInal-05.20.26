@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "node scripts/build-vercel.cjs"
+    "build": "node scripts/build-vercel.cjs",
+    "test": "node scripts/test-regressions.cjs",
+    "release:prepare": "npm test && node scripts/release-manifest.cjs --write"
   },
   "dependencies": {
     "html2pdf.js": "0.12.1"
