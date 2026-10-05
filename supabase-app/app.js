@@ -95,11 +95,65 @@ async function appDatabaseFetch(input, init) {
   const writes = !readOnlyRpc && !["GET", "HEAD", "OPTIONS"].includes(method);
   if (writes) { viewWritesInProgress += 1; invalidateChangedTable(url.split("/rest/v1/")[1]?.split("/")[0]); }
   try {
-    return await fetch(input, init);
+    const response = await fetch(input, init);
+    if (writes && response.ok && url.includes("/rest/v1/")) notifyCommittedDatabaseWrite(url.split("/rest/v1/")[1]?.split("/")[0]);
+    return response;
   } finally {
     if (writes) { viewWritesInProgress -= 1; invalidateChangedTable(url.split("/rest/v1/")[1]?.split("/")[0]); }
   }
 }
+
+
+// Notify other same-origin windows without sharing transaction or customer data.
+const DATABASE_CHANGE_KEY = 'lms.databaseChange.v1';
+let bankRefreshTimer;
+let bankRefreshBusy = false;
+let bankRenderSequence = 0;
+function bankRelevantChange(table) {
+  return ['rpc','general_ledger','customer_payments','bank_transactions','bank_beginning_balances','bank_reconciliations','chart_of_accounts'].includes(table);
+}
+function notifyCommittedDatabaseWrite(table) {
+  if (!session?.user?.id || !table) return;
+  const change = {table, userId:session.user.id, nonce:Date.now()+':'+Math.random()};
+  try { localStorage.setItem(DATABASE_CHANGE_KEY, JSON.stringify(change)); } catch (_) { /* Storage may be disabled. */ }
+  if (bankRelevantChange(table)) scheduleBankReconciliationRefresh();
+}
+function receiveDatabaseChange(event) {
+  if (event.key !== DATABASE_CHANGE_KEY || !event.newValue) return;
+  let change;
+  try { change=JSON.parse(event.newValue); } catch (_) { return; }
+  if (!session?.user?.id || change.userId !== session.user.id || !/^[a-z_]+$/.test(change.table || '')) return;
+  invalidateChangedTable(change.table);
+  if (bankRelevantChange(change.table)) scheduleBankReconciliationRefresh();
+}
+function scheduleBankReconciliationRefresh() {
+  clearTimeout(bankRefreshTimer);
+  if (currentView !== 'bank' || !session?.user?.id) return;
+  bankRefreshTimer=setTimeout(() => void refreshBankReconciliationInBackground(), 700);
+}
+async function refreshBankReconciliationInBackground() {
+  if (currentView !== 'bank' || !session?.user?.id) return;
+  if (document.hidden || bankRefreshBusy || viewWritesInProgress || foregroundViewLoads ||
+      (document.hasFocus() && document.activeElement?.matches('input,textarea,select'))) {
+    scheduleBankReconciliationRefresh(); return;
+  }
+  bankRefreshBusy=true;
+  try { await renderBankReconciliationView({background:true}); }
+  catch (error) {
+    console.warn('Bank reconciliation refresh will retry:', error);
+    clearTimeout(bankRefreshTimer);
+    bankRefreshTimer=setTimeout(() => void refreshBankReconciliationInBackground(), 10000);
+  } finally { bankRefreshBusy=false; }
+}
+function refreshBankOnFocus() {
+  if (currentView !== 'bank' || !session?.user?.id) return;
+  // Also recover updates from other devices or windows running an older release.
+  for (const table of ['general_ledger','bank_transactions','bank_beginning_balances','bank_reconciliations']) invalidateChangedTable(table);
+  scheduleBankReconciliationRefresh();
+}
+window.addEventListener('storage', receiveDatabaseChange);
+window.addEventListener('focus', refreshBankOnFocus);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshBankOnFocus(); });
 
 async function getViewData(name, loader, timeoutMs = 25000) {
   // Keep successful screen reads for this session, until Refresh or a write.
@@ -11636,7 +11690,10 @@ function numberToWords(n) {
   return `${numberToWords(Math.floor(n / 1000000))} million${n % 1000000 ? ` ${numberToWords(n % 1000000)}` : ""}`;
 }
 
-async function renderBankReconciliationView() {
+async function renderBankReconciliationView({background = false} = {}) {
+  const sequence = ++bankRenderSequence;
+  const userId = session?.user?.id;
+  const generation = viewReadGeneration;
   currentCfg = tableMap.bank;
   $("viewTitle").textContent = "Bank / Credit Card / Intercompany Reconciliation";
   $("viewSub").textContent = "Statement format per bank, credit card payable, or intercompany account.";
@@ -11644,6 +11701,15 @@ async function renderBankReconciliationView() {
     getViewRows("general_ledger"), getViewRows("bank_transactions"), getViewRows("chart_of_accounts"),
     getViewRows("bank_beginning_balances").catch(() => []), getViewRows("bank_reconciliations").catch(() => []),
   ]);
+  if (currentView !== 'bank' || session?.user?.id !== userId || sequence !== bankRenderSequence) return;
+  if (background && generation !== viewReadGeneration) { scheduleBankReconciliationRefresh(); return; }
+  // Capture immediately before rendering, so edits made while fetching are retained.
+  if (background && document.hasFocus() && document.activeElement?.matches('input,textarea,select')) { scheduleBankReconciliationRefresh(); return; }
+  const retained = background ? {
+    inputs:[...$('content').querySelectorAll('input[id],select[id]')].map(el=>({id:el.id,value:el.value})),
+    details:[...$('content').querySelectorAll('details')].map((el,index)=>({index,open:el.open})),
+    x:window.scrollX,y:window.scrollY,
+  } : null;
   const banks = reconciliationAccountOptions(coa, gl);
   const savedBank = localStorage.getItem("lms.bankRecBank") || "";
   const selectedBank = banks.includes(savedBank) ? savedBank : banks[0] || "Operating Bank";
@@ -11708,6 +11774,12 @@ async function renderBankReconciliationView() {
   bindBankReconciliationMarks();
   bindBankMatchRows();
   groupAccountingToolbarControls();
+  if (retained) {
+    for (const item of retained.inputs) { const el=$(item.id); if(el && el.type !== 'checkbox') el.value=item.value; }
+    const details=$('content').querySelectorAll('details');
+    for (const item of retained.details) if(details[item.index]) details[item.index].open=item.open;
+    window.scrollTo(retained.x,retained.y);
+  }
 }
 
 function groupAccountingToolbarControls() {
