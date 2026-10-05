@@ -53,5 +53,6 @@
   "work-order-po-price",
   "session-retention",
   "recovery-contracts",
-  "bank-live-collections"
+  "bank-live-collections",
+  "bank-section-state"
 ]

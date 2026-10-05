@@ -11707,9 +11707,10 @@ async function renderBankReconciliationView({background = false} = {}) {
   if (background && document.hasFocus() && document.activeElement?.matches('input,textarea,select')) { scheduleBankReconciliationRefresh(); return; }
   const retained = background ? {
     inputs:[...$('content').querySelectorAll('input[id],select[id]')].map(el=>({id:el.id,value:el.value})),
-    details:[...$('content').querySelectorAll('details')].map((el,index)=>({index,open:el.open})),
+    details:captureReconciliationSections($('content')),
     x:window.scrollX,y:window.scrollY,
   } : null;
+  const reportSections = captureReconciliationSections($('content'));
   const banks = reconciliationAccountOptions(coa, gl);
   const savedBank = localStorage.getItem("lms.bankRecBank") || "";
   const selectedBank = banks.includes(savedBank) ? savedBank : banks[0] || "Operating Bank";
@@ -11774,10 +11775,10 @@ async function renderBankReconciliationView({background = false} = {}) {
   bindBankReconciliationMarks();
   bindBankMatchRows();
   groupAccountingToolbarControls();
+  restoreReconciliationSections($('content'), reportSections);
   if (retained) {
     for (const item of retained.inputs) { const el=$(item.id); if(el && el.type !== 'checkbox') el.value=item.value; }
-    const details=$('content').querySelectorAll('details');
-    for (const item of retained.details) if(details[item.index]) details[item.index].open=item.open;
+    restoreReconciliationSections($('content'), retained.details);
     window.scrollTo(retained.x,retained.y);
   }
 }
@@ -11862,20 +11863,30 @@ function setBankReconciliationMark(key, checked) {
   localStorage.setItem(BANK_RECONCILIATION_MARKS_KEY, JSON.stringify(marks));
 }
 
+function captureReconciliationSections(root) {
+  return new Map([...root.querySelectorAll('details')].map(detail => [
+    detail.dataset.bankCategory || detail.id || detail.querySelector('summary')?.textContent?.trim(), detail.open
+  ]).filter(([key]) => key));
+}
+function restoreReconciliationSections(root, states) {
+  root.querySelectorAll('details').forEach(detail => {
+    const key=detail.dataset.bankCategory || detail.id || detail.querySelector('summary')?.textContent?.trim();
+    if (!states.has(key)) return;
+    // The global observer must not collapse a section whose state we restored.
+    detail.dataset.collapseInitialized='1';
+    detail.open=states.get(key);
+  });
+}
 function bindBankReconciliationMarks() {
-  document.querySelectorAll("[data-bank-reconciliation-mark]").forEach((input) => {
+  document.querySelectorAll('[data-bank-reconciliation-mark]').forEach(input => {
     input.onchange = async () => {
-      const openDetails = [...document.querySelectorAll("#bankRecHost details")].map((detail, index) => ({ index, open: detail.open }));
+      const root=$('content');
+      const states=captureReconciliationSections(root);
+      const view=currentView;
       setBankReconciliationMark(input.dataset.bankReconciliationMark, input.checked);
-      if (currentView === "bank") await renderBankReconciliationView();
+      if (view === 'bank') await renderBankReconciliationView();
       else await renderAccountingView();
-      // Re-rendering updates totals, but keep every expanded supporting-
-      // transaction section open so marking one item does not reset the view.
-      const restore = () => document.querySelectorAll("#bankRecHost details").forEach((detail, index) => {
-        if (openDetails[index]?.open) detail.open = true;
-      });
-      restore();
-      setTimeout(restore, 100);
+      if (currentView === view) restoreReconciliationSections($('content'), states);
     };
   });
 }
@@ -12327,7 +12338,7 @@ function bankReportCategory(label, rows = [], total = 0, options = {}) {
   const markHeading = options.mark === "charge" ? "Not on statement" : options.mark === "payment" ? "Not on statement" : "";
   const referenceHeading = options.mark === "check" ? "Check #" : "Reference";
   const usesOutstandingMark = options.mark === "check" || options.mark === "payment";
-  const details = !options.hideDetails && rows.length ? `<details class="bank-category-detail" open><summary>${rows.length} supporting transaction${rows.length === 1 ? "" : "s"}</summary><div class="bank-category-table-wrap"><table><thead><tr>${showMark ? `<th class="bank-mark-column">${esc(markHeading)}</th>` : ""}<th class="bank-date-column">Date</th><th class="bank-reference-column">${esc(referenceHeading)}</th><th class="bank-description-column">Description / Payee</th><th class="num bank-amount-column">Amount</th></tr></thead><tbody>${rows.map((row) => {
+  const details = !options.hideDetails && rows.length ? `<details class="bank-category-detail" open data-bank-category="${esc(label)}"><summary>${rows.length} supporting transaction${rows.length === 1 ? "" : "s"}</summary><div class="bank-category-table-wrap"><table><thead><tr>${showMark ? `<th class="bank-mark-column">${esc(markHeading)}</th>` : ""}<th class="bank-date-column">Date</th><th class="bank-reference-column">${esc(referenceHeading)}</th><th class="bank-description-column">Description / Payee</th><th class="num bank-amount-column">Amount</th></tr></thead><tbody>${rows.map((row) => {
     const description = String(row.vendor || row.description || "");
     const descriptionSizeClass = description.length > 55 ? " bank-description-small" : description.length > 32 ? " bank-description-medium" : "";
     return `<tr>${showMark ? `<td class="bank-mark-column"><input class="no-print" type="checkbox" data-bank-reconciliation-mark="${esc(row._reconciliationKey || "")}" ${(usesOutstandingMark ? row._outstanding : row._inTransit) ? "checked" : ""} aria-label="${esc(markHeading || "Reconciliation mark")} ${esc(row.displayNum || row.num || row.date || "transaction")}"></td>` : ""}<td class="bank-date-column">${formatDisplayDate(row.date)}</td><td class="bank-reference-column">${esc(row.displayNum || row.num || "")}</td><td class="bank-description-column${descriptionSizeClass}">${esc(description)}</td><td class="num bank-amount-column">${bankAmount(row.amount)}</td></tr>`;
