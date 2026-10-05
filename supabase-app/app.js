@@ -1,7 +1,630 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./supabase-config.js";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const viewReadCache = new Map();
+let viewReadGeneration = 0;
+let viewWritesInProgress = 0;
+
+
+// Warm shared lists one table/page at a time; never render or mutate records here.
+let sessionWarmTimer;
+let sessionWarmBusy = false;
+let foregroundViewLoads = 0;
+const sessionWarmAttempted = new Set();
+function scheduleSessionWarmup() {
+  clearTimeout(sessionWarmTimer);
+  sessionWarmTimer = setTimeout(() => void warmNextSessionTable(), 2000);
+}
+function sessionWarmTables() {
+  const groups = [
+    [["products", "inventory", "repairs", "purchasing"], ["products", "categories", "units", "warehouses", "product_bins", "product_mother_components"]],
+    [["vendors", "purchasing", "products"], ["vendors"]],
+    [["customers", "orders", "repairs", "rentals"], ["customers"]],
+    [["assets", "repairs", "fleetreport"], ["assets"]],
+    [["outsidefleet", "repairs"], ["outside_customer_fleet"]],
+    [["purchasing"], ["purchase_orders"]],
+    [["orders"], ["sales_orders"]],
+    [["repairs", "partsissues"], ["work_orders"]],
+    [["invoices"], ["invoices"]],
+    [["rentals"], ["rentals"]],
+  ];
+  groups.push(...[[["dashboard"],["products"]],[["products"],["products","vendors","categories","units","warehouses","product_bins","product_mother_components","purchase_orders","goods_receipts","sales_orders","sales_order_lines","work_order_parts","work_orders","invoices","invoice_lines"]],[["movements"],["products","goods_receipts","purchase_orders","purchase_order_lines","sales_orders","sales_order_lines","work_orders","work_order_parts","warehouses","assets","outside_customer_fleet"]],[["inventory"],["products","goods_receipts","sales_orders","sales_order_lines","work_orders","work_order_parts"]],[["partsreport"],["products","invoices","invoice_lines","goods_receipts","work_orders","work_order_parts"]],[["purchasing"],["purchase_orders","purchase_order_lines","goods_receipts","vendors","customers","work_orders","master_terms","incoterms","standard_po_notes","warehouses","assets","locations","asset_locations"]],[["receipts"],["goods_receipts","products"]],[["quotes"],["quotations","quotation_lines","customers","products","sales_orders"]],[["orders"],["sales_orders","sales_order_lines","customers","products","product_alternates","sales_pricing_rates","work_orders","asset_locations","assets","outside_customer_fleet"]],[["salesrates"],["sales_pricing_rates"]],[["laborrates"],["labor_pricing_rates"]],[["salestopurchase"],["sales_orders","sales_order_lines","products"]],[["rentalbids"],["equipment_rental_bids","equipment_rental_bid_lines"]],[["rentals"],["rentals","customers","assets","products","equipment_rental_rates"]],[["invoices"],["invoices","invoice_lines","customer_payments","customers","products","work_orders","work_order_issues","work_order_parts","work_order_labor","assets","outside_customer_fleet","sales_orders"]],[["payments"],["customer_payments","invoices","invoice_lines","customers"]],[["accounting"],["chart_of_accounts"]],[["coa"],["chart_of_accounts"]],[["checkrun"],["purchase_orders","purchase_order_lines","goods_receipts","check_runs","chart_of_accounts","work_orders","assets"]],[["bank"],["bank_transactions","chart_of_accounts","bank_beginning_balances","bank_reconciliations"]],[["assets"],["assets","asset_locations","asset_types","work_orders"]],[["fleetreport"],["assets","equipment_requests","work_orders","trucking_requests","trucking_request_lines"]],[["outsidefleet"],["outside_customer_fleet","work_orders","customers"]],[["equipmentrepairquotes"],["equipment_repair_quotes","customers","assets","outside_customer_fleet"]],[["repairreport"],["work_orders","work_order_issues","work_order_parts","work_order_labor","assets","mechanics","invoices","invoice_lines"]],[["equipmentrequests"],["equipment_requests","assets"]],[["customerforms"],["customer_equipment_forms"]],[["truckingrequests"],["trucking_request_lines"]],[["truckingquotes"],["trucking_quotations","trucking_quotation_lines"]],[["truckingreport"],["fuel_pricing_periods","trucking_request_lines"]],[["truckingrates"],["trucking_rates"]],[["propertymaster"],["property_maintenance_properties"]],[["propertyrequests"],["property_maintenance_requests","property_maintenance_properties"]],[["propertyworkorders"],["property_maintenance_work_orders","property_maintenance_properties","property_maintenance_requests"]],[["propertyreport"],["property_maintenance_work_orders"]],[["equipmentrepairqueue"],["assets","work_orders","asset_locations","asset_types","customers"]],[["repairs"],["work_orders","work_order_issues","work_order_parts","work_order_labor","assets","outside_customer_fleet","mechanics","customers","products","purchase_orders","purchase_order_lines"]],[["partsrequests"],["products","work_order_parts"]],[["supplies"],["products","mechanics","work_orders","work_order_parts"]],[["aging"],["invoices","invoice_lines","customer_payments","purchase_orders","purchase_order_lines","goods_receipts","check_runs"]]]);
+  return [...new Set(groups.filter(([views]) => views.some(canAccess)).flatMap(([, tables]) => tables))];
+}
+async function warmNextSessionTable() {
+  if (sessionWarmBusy || !session?.user?.id) return;
+  if (document.hidden || foregroundViewLoads || viewWritesInProgress || navigator.connection?.saveData || navigator.onLine === false) {
+    scheduleSessionWarmup(); return;
+  }
+  const userId = session.user.id;
+  const generation = viewReadGeneration;
+  const table = sessionWarmTables().filter(table => ["categories","units","warehouses","master_terms","incoterms","standard_po_notes","sales_pricing_rates","labor_pricing_rates"].includes(table)).find(table => {
+    const key = userId + ":" + table + ":*";
+    return !viewReadCache.has(key) && !sessionWarmAttempted.has(generation + ":" + key);
+  });
+  if (!table) return;
+  const key = userId + ":" + table + ":*";
+  sessionWarmAttempted.add(generation + ":" + key);
+  sessionWarmBusy = true;
+  let promoted = false;
+  const valid = () => session?.user?.id === userId && generation === viewReadGeneration;
+  const beforePage = async signal => {
+    while (true) {
+      if (!valid() || signal.aborted) throw new Error("Background loading cancelled.");
+      if (promoted && Date.now() >= bulkReadPauseUntil) return;
+      await new Promise(resolve => setTimeout(resolve, 400));
+      if (!document.hidden && !foregroundViewLoads && !viewWritesInProgress && Date.now() >= bulkReadPauseUntil && navigator.onLine !== false && !navigator.connection?.saveData) return;
+    }
+  };
+  try {
+    const pending = getPagedViewRows(table, { beforePage });
+    const entry = viewReadCache.get(key);
+    let promotionTimer;
+    if (entry) {
+      entry.promote = () => {
+        if (promoted || entry.loaded) return;
+        promoted = true;
+        // Foreground joins the same pages; per-page deadlines replace a whole-table deadline.
+      };
+      entry.cancelWarmup = () => { if (!promoted) entry.controller.abort(); };
+    }
+    try { await pending; } finally { clearTimeout(promotionTimer); }
+  } catch (error) {
+    // A failed optional warmup must not interrupt the active screen.
+    if (valid()) console.debug("Background list unavailable:", table, error.message);
+  } finally {
+    sessionWarmBusy = false;
+    scheduleSessionWarmup();
+  }
+}
+
+function invalidateViewReads() {
+  viewReadGeneration += 1;
+  for (const entry of viewReadCache.values()) entry.cancelWarmup?.();
+  viewReadCache.clear();
+  sessionWarmAttempted.clear();
+  scheduleSessionWarmup();
+}
+
+async function appDatabaseFetch(input, init) {
+  const method = String(init?.method || input?.method || "GET").toUpperCase();
+  // This stable SQL function only reads inventory. POST is the RPC transport,
+  // not a mutation; visiting Products must not evict every module's data.
+  const url = String(input?.url || input || "").split("?")[0];
+  const readOnlyRpc = method === "POST" && url.endsWith("/rest/v1/rpc/get_product_inventory_control_totals");
+  const writes = !readOnlyRpc && !["GET", "HEAD", "OPTIONS"].includes(method);
+  if (writes) { viewWritesInProgress += 1; invalidateChangedTable(url.split("/rest/v1/")[1]?.split("/")[0]); }
+  try {
+    return await fetch(input, init);
+  } finally {
+    if (writes) { viewWritesInProgress -= 1; invalidateChangedTable(url.split("/rest/v1/")[1]?.split("/")[0]); }
+  }
+}
+
+async function getViewData(name, loader, timeoutMs = 25000) {
+  // Keep successful screen reads for this session, until Refresh or a write.
+  // Save/posting validations continue using uncached getAll reads.
+  const key = String(session?.user?.id || "") + ":" + name;
+  const existing = !viewWritesInProgress && viewReadCache.get(key);
+  if (existing) { existing.promote?.(); return structuredClone(await existing.promise); }
+  const generation = viewReadGeneration;
+  const controller = new AbortController();
+  let timer;
+  const entry = { promise: null, controller };
+  entry.promise = Promise.race([
+    Promise.resolve().then(() => loader(controller.signal)),
+    new Promise((_, reject) => { timer = setTimeout(() => {
+      reject(new Error("Loading " + name.replaceAll("_", " ") + " timed out. Please click Refresh to try again."));
+      controller.abort();
+    }, timeoutMs); }),
+  ]).then(rows => {
+    entry.loaded = true;
+    if (generation !== viewReadGeneration && viewReadCache.get(key) === entry) viewReadCache.delete(key);
+    return rows;
+  }).catch(error => {
+    if (viewReadCache.get(key) === entry) viewReadCache.delete(key);
+    throw error;
+  }).finally(() => { clearTimeout(timer); controller.abort(); });
+  if (!viewWritesInProgress) {
+    viewReadCache.set(key, entry);
+  }
+  return structuredClone(await entry.promise);
+}
+
+// Shared pacing applies to full-table reads; targeted search queries bypass this queue.
+let bulkReadSlots = 0;
+let bulkReadPauseUntil = 0;
+function prioritizeInteractiveRead() { bulkReadPauseUntil = Date.now() + 900; }
+document.addEventListener("input", event => {
+  if (event.target?.matches?.("input,textarea,select")) prioritizeInteractiveRead();
+}, true);
+async function pacedReadPage(makeQuery, parentSignal) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    while (bulkReadSlots >= 3 || Date.now() < bulkReadPauseUntil) {
+      if (parentSignal?.aborted) throw new Error("Record loading was cancelled.");
+      await new Promise(resolve => setTimeout(resolve, 75));
+    }
+    if (parentSignal?.aborted) throw new Error("Record loading was cancelled.");
+    bulkReadSlots++;
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    parentSignal?.addEventListener("abort", cancel, { once: true });
+    const timer = setTimeout(cancel, 20000);
+    try {
+      const result = await makeQuery(controller.signal);
+      if (!result.error) return result;
+      lastError = result.error;
+      if (/permission|policy|does not exist|schema cache|invalid input/i.test(lastError.message || "")) throw lastError;
+    } catch (error) {
+      lastError = error;
+      if (parentSignal?.aborted || /permission|policy|does not exist|schema cache|invalid input/i.test(error.message || "")) throw error;
+    } finally {
+      clearTimeout(timer); parentSignal?.removeEventListener("abort", cancel); bulkReadSlots--;
+    }
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+  }
+  throw new Error("A page could not be loaded after three attempts: " + (lastError?.message || "Connection timed out"));
+}
+async function getPagedViewRows(table, { columns = "*", beforePage, onEntry } = {}) {
+  const key = String(session?.user?.id || "") + ":" + table + ":" + columns;
+  const existing = !viewWritesInProgress && viewReadCache.get(key);
+  if (existing) { existing.promote?.(); return structuredClone(await existing.promise); }
+  const controller = new AbortController();
+  const generation = viewReadGeneration;
+  const entry = { controller, promise: null, loaded: false };
+  entry.promise = Promise.resolve().then(() => getAll(table, { strict: true, signal: controller.signal, columns, beforePage }))
+    .then(rows => {
+      if (generation !== viewReadGeneration) throw new Error("Data changed while loading. Reopen this module to load the latest records.");
+      entry.loaded = true; return rows;
+    }).catch(error => { if (viewReadCache.get(key) === entry) viewReadCache.delete(key); throw error; });
+  if (!viewWritesInProgress) viewReadCache.set(key, entry);
+  onEntry?.(entry);
+  return structuredClone(await entry.promise);
+}
+
+const moduleListPreferences = new Map();
+const moduleDateFields = {fuel:'fuel_date',purchasing:'po_date',orders:'order_date',repairs:'wo_date',partsissues:'wo_date',invoices:'invoice_date',quotes:'quote_date',receipts:'gr_date',payments:'payment_date',customerforms:'form_date',rentalbids:'bid_date',rentals:'start_date',truckingrequests:'request_date',truckingtickets:'move_date',truckingticketentry:'move_date',trucking:'move_date',truckingquotes:'quote_date',propertyrequests:'request_date',propertyworkorders:'opened_date',equipmentrepairquotes:'quote_date',equipmentrequests:'request_date'};
+const truckingListColumns = 'id,ticket_no,request_no,request_line_no,move_date,customer,project,jobsite,requested_by,po_no,asset_source,asset_tag,equipment_label,service,rate,rate_type,amount,origin,destination,driver_name,driver_email,start_time,end_time,container_no,seal_no,vessel_voyage,bl_no,truck_license,chassis_no,bin_status,customer_print,driver_print,notes,status,created_at,updated_at,trip_type,material_description,unit_of_measurement,weight_lb,dimensions,materials_loaded,number_of_loads,cy_per_load,total_cy,requested_equipment_label,dispatched_at,driver_signed_at,customer_signed_at,finalized_at,accepted_at,payment_mode,cancellation_reason,cancelled_at,discount_amount,amount_to_bill,billing_status,billed_at,move_description,billing_reference,billing_batch,service_size,tipping_fee,roll_off_tons,tipping_rate,tipping_rate_type,tipping_charge,discount_percent,actual_hours,debris_type,cy_ton,imported_final_ticket,import_batch,import_source,standby_hours,standby_notes';
+function moduleActiveTab(view) {
+  return ({repairs:repairListTab,partsissues:repairListTab,truckingtickets:truckingTicketBillingTab,truckingticketentry:truckingTicketEntryTab,truckingrequests:truckingRequestTab,trucking:truckingSchedulerTab,purchasing:purchasingTab,orders:salesOrderTab,quotes:quotationTab,equipmentrepairquotes:equipmentRepairQuoteTab,equipmentrequests:equipmentRequestTab})[view] || '';
+}
+function moduleDefaultPeriod(view,tab) {
+  if (['billed','closed','issued','expired','cancelled','invoiced','void','all','final','denied'].includes(tab)) return 'month';
+  if (['truckingtickets','truckingticketentry','truckingrequests','trucking','purchasing','orders','repairs','partsissues','quotes','equipmentrequests','propertyrequests','propertyworkorders','equipmentrepairquotes','rentals'].includes(view)) return 'outstanding';
+  return 'month';
+}
+function moduleDateRange(period,from='',to='',now=new Date()) {
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  if(period==='month' || period==='previous') {
+    const month=now.getMonth()-(period==='previous'?1:0);
+    return {from:iso(new Date(now.getFullYear(),month,1)),to:iso(new Date(now.getFullYear(),month+1,0))};
+  }
+  return period==='custom'?{from,to}:{from:'',to:''};
+}
+function applyModuleListFilters(query,state,tab=state.tab) {
+  const dateField=moduleDateFields[state.view];
+  if(dateField && state.from) query=query.gte(dateField,state.from);
+  if(dateField && state.to) query=query.lte(dateField,state.to);
+  if(state.view==='truckingtickets') {
+    query=query.eq('status','Finalized').not('driver_signature','is',null).not('customer_signature','is',null).neq('driver_signature','').neq('customer_signature','');
+    if(tab==='unbilled') query=query.or('billing_status.is.null,and(billing_status.not.ilike.ready to bill,billing_status.not.ilike.billed)');
+    if(tab==='ready') query=query.ilike('billing_status','Ready to Bill');
+    if(tab==='billed') query=query.ilike('billing_status','Billed');
+  }
+  if(state.view==='truckingticketentry') {
+    query=query.or('request_no.is.null,request_no.eq.').or('imported_final_ticket.eq.true,import_source.like.Manual Draft Ticket*');
+    if(tab==='draft')query=query.ilike('status','Draft');
+    if(tab==='final')query=query.or('status.is.null,status.not.ilike.Draft');
+  }
+  if(state.view==='truckingrequests') {
+    if(tab==='cancelled') query=query.ilike('status','Cancelled');
+    if(tab==='scheduled') query=query.or('status.ilike.Dispatched,status.ilike.Scheduled,status.ilike.Completed,status.ilike.Finalized');
+    if(tab==='unscheduled') query=query.or('status.is.null,and(status.not.ilike.Cancelled,status.not.ilike.Dispatched,status.not.ilike.Scheduled,status.not.ilike.Completed,status.not.ilike.Finalized)');
+  }
+  if(state.query) {
+    const pattern=JSON.stringify('%'+state.query.replace(/[\\%_]/g,'\\$&')+'%');
+    const clauses=state.spec[3].map(field=>field+'.ilike.'+pattern);
+    if(state.relatedSearch?.ids.length)clauses.push(state.relatedSearch.field+'.in.('+state.relatedSearch.ids.map(value=>JSON.stringify(String(value))).join(',')+')');
+    query=query.or(clauses.join(','));
+  }
+  return query;
+}
+function installModulePeriodControls(state,bar) {
+  if(!moduleDateFields[state.view]) return;
+  const controls=document.createElement('div');controls.className='toolbar';controls.id='modulePeriodControls';
+  controls.innerHTML='<label>Period <select data-list-period><option value="outstanding">All dates / outstanding</option><option value="month">This month</option><option value="previous">Previous month</option><option value="custom">Custom range</option><option value="all">All dates</option></select></label><label>From <input type="date" data-list-from></label><label>To <input type="date" data-list-to></label><button type="button" data-list-apply>Apply dates</button>';
+  $('modulePeriodControls')?.remove();
+  controls.className='module-period-inline';
+  controls.style.cssText='display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0;padding:0;border:0;background:transparent;font-size:12px;max-width:100%';
+  controls.querySelectorAll('label').forEach(label=>label.style.cssText='display:flex;align-items:center;gap:4px;margin:0;white-space:nowrap');
+  controls.querySelectorAll('input,select,button').forEach(input=>input.style.cssText='width:auto;min-height:30px;padding:4px 7px;font-size:12px;margin:0');
+  const title=$('content').querySelector('.panel-head .panel-title');
+  if(title) {
+    title.style.cssText+=';display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px 16px;flex:1;min-width:0';
+    const heading=title.querySelector('strong');
+    if(heading)heading.insertAdjacentElement('afterend',controls);else title.append(controls);
+    [...title.children].filter(child=>child.tagName==='SPAN').forEach(description=>{description.style.flexBasis='100%';description.style.order='2';});
+  } else $('content').prepend(controls);
+  const period=controls.querySelector('[data-list-period]'),from=controls.querySelector('[data-list-from]'),to=controls.querySelector('[data-list-to]');
+  period.value=state.period;from.value=state.from;to.value=state.to;
+  from.disabled=to.disabled=false;
+  from.oninput=to.oninput=()=>{period.value='custom';prioritizeInteractiveRead();};
+  const apply=()=>{
+    if(period.value==='custom' && (!from.value || !to.value || from.value>to.value)){alert('Choose a valid start and end date.');return;}
+    prioritizeInteractiveRead();void loadView(state.view,{period:period.value,from:from.value,to:to.value});
+  };
+  period.onchange=()=>{if(period.value!=='custom')apply();};
+  controls.querySelector('[data-list-apply]').onclick=apply;
+}
+async function refreshModuleTabCounts(state) {
+  const configs={truckingticketentry:['data-trucking-entry-tab',['draft','final','all']],truckingtickets:['data-trucking-billing-tab',['unbilled','ready','billed','all']],truckingrequests:['data-trucking-request-tab',['unscheduled','scheduled','cancelled']]};
+  const cfg=configs[state.view];if(!cfg)return;
+  for(const tab of cfg[1]) {
+    try {
+      const count=await getViewData('list-count:'+state.cacheKey+':'+tab,async signal=>{
+        const result=await applyModuleListFilters(supabase.from(state.spec[0]).select('id',{count:'exact',head:true}),state,tab).abortSignal(signal);
+        if(result.error)throw result.error;return result.count;
+      });
+      if(currentView!==state.view || moduleListPreferences.get(session.user.id+':'+state.view)?.cacheKey!==state.cacheKey)return;
+      const badge=document.querySelector('['+cfg[0]+'="'+tab+'"] .badge');if(badge)badge.textContent=String(count);
+    }catch(error){console.warn('Tab count unavailable',error);}
+  }
+}
+function invalidateChangedTable(table) {
+  if(!table || table==='rpc') {invalidateViewReads();return;}
+  for(const [key,entry] of viewReadCache) {
+    // Computed reports may span tables. Direct table reads remain independently cached.
+    const direct=/^[^:]+:[a-z_]+:/.test(key) && !/:module:|:list-|:wo-action:/.test(key);
+    if(key.includes(':'+table+':') || key.endsWith(':'+table) || !direct) {entry.cancelWarmup?.();viewReadCache.delete(key);}
+  }
+  for(const state of moduleListPages.values()) if(state.spec[0]===table || state.dependencies?.has(table)) state.dirty=true;
+  sessionWarmAttempted.clear();
+}
+let repairListTab='open';
+function bindModulePriorityTabs(state) {
+  const configs={truckingticketentry:'data-trucking-entry-tab',truckingtickets:'data-trucking-billing-tab',truckingrequests:'data-trucking-request-tab',trucking:'data-trucking-scheduler-tab',purchasing:'data-po-tab',orders:'data-sales-order-tab',quotes:'data-quotation-tab',repairs:'data-repair-tab',partsissues:'data-repair-tab',equipmentrequests:'data-equipment-request-tab',equipmentrepairquotes:'data-equipment-repair-quote-tab'};
+  const attribute=configs[state.view];if(!attribute)return;
+  if(['repairs','partsissues'].includes(state.view)) document.querySelector('['+attribute+'="'+repairListTab+'"]')?.click();
+  document.querySelectorAll('['+attribute+']').forEach(button=>{
+    const original=button.onclick;
+    button.onclick=async event=>{
+      prioritizeInteractiveRead();
+      const tab=button.getAttribute(attribute);
+      if(['truckingtickets','truckingrequests','truckingticketentry'].includes(state.view)) {
+        if(moduleActiveTab(state.view)===tab && button.classList.contains('active'))return;
+        clearTimeout(moduleListTimer);
+        if(state.view==='truckingtickets')truckingTicketBillingTab=tab;
+        if(state.view==='truckingrequests')truckingRequestTab=tab;
+        if(state.view==='truckingticketentry')truckingTicketEntryTab=tab;
+      } else {
+        await original?.call(button,event);
+        if(['repairs','partsissues'].includes(state.view))repairListTab=tab;
+        const preferences=moduleListPreferences.get(session.user.id+':'+state.view);
+        if(preferences)preferences.tab=tab;
+        state.tab=tab;
+        // These tabs filter the already loaded dataset without another module read.
+        return;
+      }
+      if(['repairs','partsissues'].includes(state.view))repairListTab=button.getAttribute(attribute);
+      await loadView(state.view);
+    };
+  });
+}
+async function refreshPostedAccounting(data, poNo) {
+  // Read the committed document directly: do not wait for unrelated catalog tables.
+  const read = async (table, column) => {
+    const rows=[];
+    for(let offset=0;;offset+=500) {
+      const {data:page,error}=await supabase.from(table).select('*').eq(column,poNo).order('id').range(offset,offset+499);
+      if(error)throw error;
+      rows.push(...(page||[]));
+      if((page||[]).length<500)return rows;
+    }
+  };
+  const [gl,pos,receipts]=await Promise.all([read('general_ledger','reference'),read('purchase_orders','po_no'),read('goods_receipts','po_no')]);
+  const merge=(previous,fresh,field)=>[...(previous||[]).filter(row=>row[field]!==poNo),...fresh];
+  data.allGl=merge(data.allGl||data.gl,gl,'reference');
+  data.gl=data.allGl;
+  data.pos=merge(data.pos,pos,'po_no');
+  data.receipts=merge(data.receipts,receipts,'po_no');
+  if(currentView!=='accounting')return;
+  const search=$('accountingSearch')?.value || '';
+  renderLoadedAccountingView(data);
+  const input=$('accountingSearch');
+  if(input && search){input.value=search;input.dispatchEvent(new Event('input',{bubbles:true}));}
+  const notice=document.createElement('div');notice.className='notice';notice.setAttribute('role','status');
+  notice.textContent='Posting completed. AP status and counts are updated.';
+  $('content').prepend(notice);
+}
+const remotePartInputs=new WeakMap();
+function queuePartSearch(input) {
+  if(!isProductSuggestInput(input))return;
+  const term=productLookupQuery(input.value),user=session?.user?.id;
+  let state=remotePartInputs.get(input);
+  if(state?.term===term && state.user===user)return;
+  clearTimeout(state?.timer);state?.controller?.abort();
+  state={term,user,loading:Boolean(term),error:''};remotePartInputs.set(input,state);
+  if(!term)return;
+  prioritizeInteractiveRead();
+  state.timer=setTimeout(async()=>{
+    const controller=new AbortController();state.controller=controller;
+    const timeout=setTimeout(()=>controller.abort(),15000);
+    try {
+      const escaped=term.replace(/[\\%_]/g,'\\$&');
+      const pattern=JSON.stringify('%'+escaped+'%');
+      const skuPattern=JSON.stringify('%'+compactProductLookupText(term).split('').join('%')+'%');
+      const [base,alternates,cross,exact]=await Promise.all([
+        supabase.from('products').select('*').or('sku.ilike.'+pattern+',sku.ilike.'+skuPattern+',name.ilike.'+pattern+',source_vendor.ilike.'+pattern).order('sku').limit(40).abortSignal(controller.signal),
+        supabase.from('product_alternates').select('product_id,alternate_sku').ilike('alternate_sku','%'+escaped+'%').limit(40).abortSignal(controller.signal),
+        supabase.from('product_cross_references').select('product_id,reference_no').ilike('reference_no','%'+escaped+'%').limit(40).abortSignal(controller.signal),
+        supabase.from('products').select('*').ilike('sku',escaped).limit(1).abortSignal(controller.signal)
+      ]);
+      if(base.error)throw base.error;
+      if(alternates.error)throw alternates.error;
+      if(cross.error)throw cross.error;
+      if(exact.error)throw exact.error;
+      const rows=[...new Map([...(exact.data||[]),...(base.data||[])].map(row=>[String(row.id),row])).values()],known=new Set(rows.map(row=>String(row.id)));
+      const ids=[...new Set([...(alternates.data||[]),...(cross.data||[])].map(row=>row.product_id))].filter(id=>!known.has(String(id)));
+      if(ids.length){const extra=await supabase.from('products').select('*').in('id',ids).abortSignal(controller.signal);if(extra.error)throw extra.error;rows.push(...(extra.data||[]));}
+      if(remotePartInputs.get(input)!==state || session?.user?.id!==user)return;
+      const map=new Map((productMeta.products||[]).map(row=>[String(row.id),row]));
+      for(const row of rows){const old=map.get(String(row.id))||{};map.set(String(row.id),{...old,...row,_alternate_part_numbers:[...new Set([...(old._alternate_part_numbers||[]),...(alternates.data||[]).filter(a=>String(a.product_id)===String(row.id)).map(a=>a.alternate_sku)])],_cross_reference_numbers:[...new Set([...(old._cross_reference_numbers||[]),...(cross.data||[]).filter(a=>String(a.product_id)===String(row.id)).map(a=>a.reference_no)])]});}
+      productMeta.products=[...map.values()];
+      if(typeof purchaseContext!=='undefined' && purchaseContext)purchaseContext.products=productMeta.products;
+    }catch(error){if(remotePartInputs.get(input)===state)state.error='Part search failed. Change the search or focus the field again to retry.';}
+    finally{clearTimeout(timeout);state.loading=false;if(input.isConnected && document.activeElement===input && remotePartInputs.get(input)===state)showSuggestMenu(input);}
+  },250);
+}
+async function hydrateLineProducts(lines) {
+  const skus=[...new Set((lines||[]).map(row=>row.sku).filter(Boolean))];
+  const products=await workOrderScopedRows('products','sku',skus);
+  const map=new Map((productMeta.products||[]).map(row=>[String(row.id),row]));
+  products.forEach(row=>map.set(String(row.id),{...map.get(String(row.id)),...row}));
+  productMeta.products=[...map.values()];
+}
+async function loadListPartMatches(state) {
+  if(!state.query || state.relatedSearch)return;
+  const configs={purchasing:['purchase_order_lines','po_id',['sku','product_name'],'id'],orders:['sales_order_lines','order_id',['sku','product_name','description'],'id'],quotes:['quotation_lines','quote_id',['sku','product_name'],'id'],invoices:['invoice_lines','invoice_id',['sku','product_name','description'],'id'],repairs:['work_order_parts','wo_id',['sku','product_name','issue'],'id'],partsissues:['work_order_parts','wo_id',['sku','product_name','issue'],'id'],truckingrequests:['trucking_request_lines','request_no',['asset_tag','equipment_label','service','notes'],'request_no']};
+  const cfg=configs[state.view];if(!cfg)return;
+  state.dependencies.add(cfg[0]);
+  const ids=await getViewData('list-search:'+cfg[0]+':'+state.query,async signal=>{
+    const pattern=JSON.stringify('%'+state.query.replace(/[\\%_]/g,'\\$&')+'%'),ids=new Set();
+    for(let offset=0;;offset+=500){
+      const {data,error}=await supabase.from(cfg[0]).select('id,'+cfg[1]).or(cfg[2].map(field=>field+'.ilike.'+pattern).join(',')).order('id').range(offset,offset+499).abortSignal(signal);
+      if(error)throw error;
+      for(const row of data||[])if(row[cfg[1]]!=null)ids.add(row[cfg[1]]);
+      if(ids.size>500)throw new Error('This part search matches many documents. Enter a more specific part number or description.');
+      if((data||[]).length<500)return [...ids];
+    }
+  });
+  state.relatedSearch={field:cfg[3],ids};
+}
+
+const moduleListPages = new Map();
+let moduleListScope = null;
+let moduleListTimer;
+function moduleListSpec(view) {
+  const specs = {
+    fuel: ['fuel_logs','report_no','fuel_date',['report_no','jobsite','driver_name','fuel_truck','asset_tag','equipment_name','receiver_name']],
+    purchasing: ['purchase_orders','po_no','po_date',['po_no','vendor','vendor_invoice_no','jobsite_project']],
+    orders: ['sales_orders','order_no','order_date',['order_no','customer','customer_po','jobsite_location']],
+    repairs: ['work_orders','wo_no','wo_date',['wo_no','asset_tag','bill_to_customer','customer_po','jobsite_location']],
+    partsissues: ['work_orders','wo_no','wo_date',['wo_no','asset_tag','bill_to_customer','customer_po']],
+    invoices: ['invoices','invoice_no','invoice_date',['invoice_no','customer','source_ref','customer_po']],
+    quotes: ['quotations','quote_no','quote_date',['quote_no','customer']],
+    receipts: ['goods_receipts','gr_no','gr_date',['gr_no','po_no','vendor','sku','product_name']],
+    payments: ['customer_payments','receipt_no','payment_date',['receipt_no','invoice_no','customer','bank_reference']],
+    assets: ['assets','asset_tag','asset_tag',['asset_tag','name','type','general_type','make','model','vin_serial','plate','location','status']],
+    outsidefleet: ['outside_customer_fleet','reference','reference',['reference','description','customer_name','vin']],
+    customerforms: ['customer_equipment_forms','form_no','form_date',['form_no','customer_name','asset_tag']],
+    rentalbids: ['equipment_rental_bids','bid_no','bid_no',['bid_no','customer']],
+    rentals: ['rentals','rental_no','rental_no',['rental_no','customer','customer_po','item_ref']],
+    vendors: ['vendors','name','name',['name']], customers: ['customers','name','name',['name']],
+    truckingrequests: ['trucking_requests','request_no','request_date',['request_no','customer','project_jobsite','origin','destination','notes']],
+    truckingticketentry: ['trucking_moves','ticket_no','move_date',['ticket_no','customer','driver_name','origin','destination']],
+    equipmentrequests: ['equipment_requests','request_no','request_date',['request_no','asset_tag','asset_name','requested_by','customer_name','po_no']],
+    truckingtickets: ['trucking_moves','ticket_no','move_date',['ticket_no','customer','driver_name','origin','destination']],
+    trucking: ['trucking_moves','ticket_no','move_date',['ticket_no','customer','driver_name','origin','destination']],
+    mechanics: ['mechanics','reference','reference',['reference','name']],
+    propertymaster: ['property_maintenance_properties','property_no','property_no',['property_no']],
+    propertyrequests: ['property_maintenance_requests','request_no','request_no',['request_no']],
+    propertyworkorders: ['property_maintenance_work_orders','work_order_no','work_order_no',['work_order_no']],
+    equipmentrepairquotes: ['equipment_repair_quotes','quote_no','quote_no',['quote_no','customer_name']],
+    truckingquotes: ['trucking_quotations','quote_no','quote_date',['quote_no','customer','project_jobsite']],
+  };
+  // Personal portals retain their assignment filters, not the administrative list scope.
+  if (isMechanicUser() || isTruckingDriverUser() || (isFuelUser() && view !== "fuel") || isEquipmentRequestUser() || isTruckingRequestorUser() || isPropertyMaintenanceRequestUser() || isDualRequestPortalUser()) return null;
+  return specs[view] || null;
+}
+function openModuleListScope(view,options={}) {
+  clearTimeout(moduleListTimer);
+  const spec=moduleListSpec(view);if(!spec){moduleListScope=null;return null;}
+  const preferenceKey=session.user.id+':'+view;
+  const tab=moduleActiveTab(view);
+  const previous=moduleListPreferences.get(preferenceKey)||{};
+  const period=options.period ?? previous.period ?? moduleDefaultPeriod(view,tab);
+  const query=options.query ?? previous.query ?? '';
+  const range=moduleDateRange(period,options.from??previous.from,options.to??previous.to);
+  const cacheTab=['truckingtickets','truckingrequests','truckingticketentry'].includes(view)?tab:'local';
+  const cacheKey=JSON.stringify([session.user.id,view,cacheTab,period,range.from,range.to,query]);
+  moduleListPreferences.set(preferenceKey,{tab,period,query,...range,cacheKey});
+  moduleListPreferences.set(preferenceKey+':'+tab,{tab,period,query,...range,cacheKey});
+  let state=moduleListPages.get(cacheKey);
+  if(!state || state.dirty || state.generation!==viewReadGeneration) state={view,spec,query,tab,period,...range,cacheKey,rows:[],more:true,generation:viewReadGeneration,dependencies:new Set([spec[0]])};
+  state={...state,tab,rows:[...state.rows],memo:new Map(),append:Boolean(options.append)};
+  moduleListPages.set(cacheKey,state);moduleListScope=state;return state;
+}
+async function moduleListPrimary(state) {
+  if(state.rows.length && !state.append)return structuredClone(state.rows);
+  await loadListPartMatches(state);
+  const offset=state.rows.length,[table,,sort]=state.spec,pageSize=50;
+  const result=await getViewData('list-page:'+table+':'+state.cacheKey+':'+offset,async signal=>{
+    const columns=state.view==='fuel'?'id,report_no,fuel_date,company,jobsite,driver_name,fuel_truck,asset_source,asset_tag,equipment_name,time_in,time_out,gallons,mileage_hours,receiver_name,status,notes': ['truckingtickets','truckingticketentry'].includes(state.view)?truckingListColumns:'*';
+    const query=applyModuleListFilters(supabase.from(table).select(columns).order(sort,{ascending:false}).order('id'),state);
+    const {data,error}=await query.range(offset,offset+pageSize-1).abortSignal(signal);
+    if(error)throw error;
+    return (data||[]).map(row=>state.view==='fuel'?{...row,_listDetails:true}:['truckingtickets','truckingticketentry'].includes(state.view)?{...row,_listSigned:state.view==='truckingtickets',_listDetails:true}:row);
+  },60000);
+  state.rows.push(...result);state.more=result.length===pageSize;state.append=false;
+  return structuredClone(state.rows);
+}
+async function moduleListRelated(state, table) {
+  state.dependencies.add(table);
+  if (state.memo.has(table)) return structuredClone(await state.memo.get(table));
+  const promise = (async () => {
+    const primary = () => moduleListRelated(state, state.spec[0]);
+    const values = (rows, field) => [...new Set(rows.map(row => row[field]).filter(value => value != null && value !== ''))];
+    const fetchRows = async (column, list) => {
+      const rows = [];
+      for (let i=0;i<list.length;i+=100) rows.push(...await workOrderScopedRows(table, column, list.slice(i,i+100), state.view==='truckingrequests' && table==='trucking_moves' ? 'id,request_no,driver_name,status' : '*'));
+      return rows;
+    };
+    const link = async (source, sourceField, column) => fetchRows(column, values(source === state.spec[0] ? await primary() : await moduleListRelated(state, source), sourceField));
+    const merge = lists => [...new Map(lists.flat().map(row => [row.id,row])).values()];
+    if (table === state.spec[0]) return moduleListPrimary(state);
+    const view = state.view;
+    if (view === 'truckingrequests' && ['trucking_request_lines','trucking_moves'].includes(table)) return link('trucking_requests','request_no','request_no');
+    if (['trucking','truckingtickets'].includes(view) && table === 'trucking_requests') return link('trucking_moves','request_no','request_no');
+    if (view === 'purchasing') {
+      if (table === 'purchase_order_lines') return link('purchase_orders','id','po_id');
+      if (table === 'goods_receipts') return link('purchase_orders','po_no','po_no');
+      if (table === 'work_orders') return link('purchase_order_lines','wo_no','wo_no');
+      if (table === 'stock_movements') {
+        const refs = values(await moduleListRelated(state,'goods_receipts'),'gr_no');
+        return merge(await Promise.all([fetchRows('document_no',refs),fetchRows('reference_no',refs.map(ref=>'REV-'+ref))]));
+      }
+    }
+    if (view === 'orders') {
+      if (table === 'sales_order_lines') return link('sales_orders','id','order_id');
+      if (table === 'work_orders') return link('sales_orders','work_order_no','wo_no');
+    }
+    if (['repairs','partsissues'].includes(view)) {
+      if (['work_order_issues','work_order_parts','work_order_labor'].includes(table)) return link('work_orders','id','wo_id');
+      if (table === 'stock_movements') return link('work_orders','wo_no','document_no');
+      if (table === 'purchase_order_lines') return link('work_orders','wo_no','wo_no');
+      if (table === 'purchase_orders') return link('purchase_order_lines','po_id','id');
+    }
+    if (view === 'invoices') {
+      if (table === 'invoice_lines') return link('invoices','id','invoice_id');
+      if (table === 'customer_payments') return link('invoices','invoice_no','invoice_no');
+      if (table === 'sales_orders') return link('invoices','source_ref','order_no');
+      if (table === 'work_orders') return merge(await Promise.all([link('invoices','source_ref','wo_no'),link('invoices','invoice_no','invoice_no')]));
+      if (['work_order_issues','work_order_parts','work_order_labor'].includes(table)) return link('work_orders','id','wo_id');
+    }
+    if (view === 'quotes' && table === 'sales_orders') return link('quotations','sales_order_no','order_no');
+    if (view === 'receipts' && table === 'stock_movements') {
+      const refs = values(await primary(),'gr_no');
+      return merge(await Promise.all([fetchRows('document_no',refs),fetchRows('reference_no',refs.map(ref=>'REV-'+ref))]));
+    }
+    if (view === 'quotes' && table === 'quotation_lines') return link('quotations','id','quote_id');
+    if (view === 'payments') {
+      if (table === 'invoices') return link('customer_payments','invoice_no','invoice_no');
+      if (table === 'invoice_lines') return link('invoices','id','invoice_id');
+    }
+    if (view === 'assets' && table === 'work_orders') return link('assets','asset_tag','asset_tag');
+    if (view === 'rentalbids' && table === 'equipment_rental_bid_lines') return link('equipment_rental_bids','bid_no','bid_no');
+    if (view === 'truckingquotes' && table === 'trucking_quotation_lines') return link('trucking_quotations','quote_no','quote_no');
+    if (table === 'products') {
+      const sources = { orders:'sales_order_lines', repairs:'work_order_parts', partsissues:'work_order_parts', invoices:'invoice_lines', quotes:'quotation_lines', receipts:'goods_receipts' };
+      const source = sources[view];
+      if (source) {
+        const rows = source === state.spec[0] ? await primary() : await moduleListRelated(state,source);
+        return merge(await Promise.all([fetchRows('id',values(rows,'product_id')),fetchRows('sku',values(rows,'sku'))]));
+      }
+    }
+    return getPagedViewRows(table);
+  })();
+  state.memo.set(table,promise);
+  return structuredClone(await promise);
+}
+// Delegate list searches so replacing or retaining the input cannot lose its remote handler.
+let moduleSearchDebounce;
+function handleModuleListSearch(event) {
+  const input=event.target;
+  if(!input?.matches?.('#content input.searchbox') || !session || !moduleListSpec(currentView))return;
+  const view=currentView;
+  // Keep persistence listeners working; stop only the obsolete per-input filtering handler.
+  input.oninput=null;
+  prioritizeInteractiveRead();
+  clearTimeout(moduleSearchDebounce);clearTimeout(moduleListTimer);
+  if(event.isComposing)return;
+  moduleSearchDebounce=setTimeout(()=>{
+    if(currentView!==view || !input.isConnected)return;
+    void loadView(view,{query:input.value.trim(),focusSearch:true});
+  },400);
+}
+document.addEventListener('input',handleModuleListSearch,true);
+document.addEventListener('compositionend',handleModuleListSearch,true);
+
+function finishModuleListScope(state) {
+  if (!state || currentView !== state.view) return;
+  if (moduleListScope === state) moduleListScope = null;
+  state.generation = viewReadGeneration;
+  const latest = new Map((currentRows || []).filter(row=>row.id).map(row=>[row.id,row]));
+  state.rows = state.rows.map(row=>({...row,...(latest.get(row.id)||{})}));
+  document.getElementById('moduleListPaging')?.remove();
+  const bar = document.createElement('div'); bar.id='moduleListPaging'; bar.className='notice';
+  const label = document.createElement('span');
+  label.textContent = state.rows.length + ' records loaded' + (state.more ? ' — more will load while idle. Counts and exports cover loaded records.' : ' — all matching records loaded.');
+  const more = document.createElement('button'); more.textContent='Load more'; more.hidden=!state.more;
+  bar.append(label,' ',more);
+  const actions=$('logoutBtn')?.closest('.top-actions');
+  if(actions) {
+    let wrapper=$('compactLoadStatusHost');
+    if(!wrapper){wrapper=document.createElement('div');wrapper.id='compactLoadStatusHost';wrapper.style.cssText='display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:0;max-width:100%';actions.before(wrapper);wrapper.append(actions);}
+    bar.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:nowrap;width:365px;max-width:100%;height:38px;min-height:38px;max-height:38px;box-sizing:border-box;margin:0;padding:6px 10px;font-size:12px;line-height:1.4;white-space:nowrap;text-align:left;overflow:hidden';
+    label.style.cssText='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const updateTitle=()=>{bar.title=bar.textContent.trim();};
+    updateTitle();
+    new MutationObserver(updateTitle).observe(label,{childList:true,characterData:true,subtree:true});
+    bar.setAttribute('role','status');bar.setAttribute('aria-live','polite');
+    more.style.cssText='padding:4px 8px;font-size:12px;flex-shrink:0';
+    wrapper.append(bar);
+  } else $('content').prepend(bar);
+  installModulePeriodControls(state,bar);
+  void refreshModuleTabCounts(state);
+  bindModulePriorityTabs(state);
+  const search = $('content').querySelector('input.searchbox');
+  if (search) {
+    search.value=state.query;
+    search.oninput=null;
+    // Database results already match the search; do not filter them a second time.
+  }
+  const grow = async () => {
+    if(currentView!==state.view || !state.more || !bar.isConnected) return;
+    const reason = document.hidden ? 'tab is hidden' : Date.now()<bulkReadPauseUntil ? 'typing' : $('modal')?.style.display==='flex' ? 'a form is open' : $('content').querySelector('tbody input[type="checkbox"]:checked') ? 'rows are selected' : [...$('content').querySelectorAll('.column-filter')].some(input=>input.value) ? 'column filters are active' : '';
+    if(reason) {
+      label.textContent = state.rows.length + ' records loaded — automatic loading paused while ' + reason + '. Counts and exports cover loaded records.';
+      moduleListTimer=setTimeout(grow,2000);return;
+    }
+    label.textContent = state.rows.length + ' records loaded — loading the next batch…';
+    const focusedSearch = document.activeElement === search;
+    const selection = focusedSearch ? [search.selectionStart,search.selectionEnd] : null;
+    await loadView(state.view,{append:true,focusSearch:focusedSearch});
+    const updatedSearch = $('content').querySelector('input.searchbox');
+    // loadView preserves the live caret, including typing during the request.
+  };
+  more.onclick=()=>loadView(state.view,{append:true});
+  if(state.more) moduleListTimer=setTimeout(grow,2500);
+}
+async function ensureListEditorProducts() {
+  productMeta.products ||= [];
+  if(currentView==='orders') {
+    productMeta.workOrders=await getPagedViewRows('work_orders');
+    productMeta.openWorkOrders=productMeta.workOrders.filter(isOpenWorkOrder);
+  }
+}
+
+async function getViewRows(table, { columns = "*" } = {}) {
+  const requestedView = currentView;
+  const scope = moduleListScope?.view === currentView && columns === "*" ? moduleListScope : null;
+  const rows = await (scope ? moduleListRelated(scope, table) : getPagedViewRows(table, { columns }));
+  if (requestedView !== currentView || (scope && moduleListScope !== scope)) throw new Error("Module changed; data retained for your next visit.");
+  return rows;
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { fetch: appDatabaseFetch } });
 
 const modules = [
   { group: "Home", items: [["dashboard", "Dashboard"]] },
@@ -208,10 +831,11 @@ const ASSET_FILTER_STORAGE_KEY = "lms.assetFiltersCollapsed.v1";
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c]));
+const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const money = (n) => {
   const value = Number(n || 0);
   const accountingValue = Math.abs(value) <= 0.0050001 ? 0 : Math.round((value + Number.EPSILON) * 100) / 100;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(accountingValue);
+  return currencyFormatter.format(accountingValue);
 };
 const today = () => new Date().toISOString().slice(0, 10);
 const localToday = () => dateTimeLocalValue(new Date().toISOString()).slice(0, 10);
@@ -270,7 +894,7 @@ function bindChrome() {
   $("changePasswordBtn").onclick = openChangePasswordModal;
   $("mobileChangePasswordBtn").onclick = openChangePasswordModal;
   $("logoutBtn").onclick = logout;
-  $("refreshBtn").onclick = () => loadView(currentView);
+  $("refreshBtn").onclick = () => { invalidateViewReads(); return loadView(currentView); };
   $("columnSettingsBtn").onclick = openCurrentViewColumnSettings;
   $("exportBtn").onclick = () => adminOnly(exportCurrentCsv);
   $("cloneExportBtn").onclick = () => adminOnly(exportSystemClone);
@@ -1118,16 +1742,19 @@ function fitTruckingReportTable(table) {
 function applyTableHiddenColumns(table, hiddenLabels = []) {
   const hidden = new Set(hiddenLabels || []);
   const labels = tableColumnLabels(table);
+  const rows = [...table.querySelectorAll("tr")];
+  const isReport = !!table.closest?.("#truckingManagementReportHost");
   labels.forEach((label, index) => {
-    const shouldHide = hidden.has(label);
-    table.querySelectorAll("tr").forEach((row) => {
-      if (table.closest("#truckingManagementReportHost") && row.cells.length === 1 && (row.cells[0].colSpan > 1 || row.classList.contains("trucking-table-group-row"))) return;
+    const display = hidden.has(label) ? "none" : "";
+    rows.forEach(row => {
+      if (isReport && row.cells.length === 1 && (row.cells[0].colSpan > 1 || row.classList.contains("trucking-table-group-row"))) return;
       const cell = row.children[index];
-      if (cell) cell.style.display = shouldHide ? "none" : "";
+      if (cell && cell.style.display !== display) cell.style.display = display;
     });
   });
-  fitTruckingReportTable(table);
+  if (isReport) fitTruckingReportTable(table);
 }
+
 
 function applySavedColumnPreferences(root = $("content")) {
   if (!root) return;
@@ -1153,26 +1780,30 @@ function savedColumnWidths(table) {
 function applyResizableColumnWidths(table, widths = savedColumnWidths(table)) {
   if (!table || !Array.isArray(widths) || !widths.length) return;
   const heads = [...table.querySelectorAll("thead tr:first-child th")];
+  // Finish layout measurements before changing styles to avoid repeated reflows.
+  const measured = heads.map((head, index) => Number(widths[index]) || head.getBoundingClientRect().width || 0);
+  const rows = [...table.querySelectorAll("tbody tr")];
+  const setWidth = (cell, width) => {
+    if (!cell) return;
+    const value = width + "px";
+    for (const property of ["width", "minWidth", "maxWidth"]) {
+      if (cell.style[property] !== value) cell.style[property] = value;
+    }
+  };
   heads.forEach((head, index) => {
     const width = Number(widths[index] || 0);
     if (!(width > 0)) return;
-    head.style.width = `${width}px`;
-    head.style.minWidth = `${width}px`;
-    head.style.maxWidth = `${width}px`;
-    table.querySelectorAll("tbody tr").forEach((row) => {
-      const cell = row.children[index];
-      if (!cell) return;
-      cell.style.width = `${width}px`;
-      cell.style.minWidth = `${width}px`;
-      cell.style.maxWidth = `${width}px`;
-    });
+    setWidth(head, width);
+    rows.forEach(row => setWidth(row.children[index], width));
   });
-  const total = widths.reduce((sum, width, index) => sum + (Number(width) || heads[index]?.getBoundingClientRect().width || 0), 0);
+  const total = widths.reduce((sum, width, index) => sum + (Number(width) || measured[index] || 0), 0);
   if (total > 0) {
-    table.style.width = `${Math.ceil(total)}px`;
-    table.style.minWidth = `${Math.ceil(total)}px`;
+    const value = Math.ceil(total) + "px";
+    if (table.style.width !== value) table.style.width = value;
+    if (table.style.minWidth !== value) table.style.minWidth = value;
   }
 }
+
 
 function setupResizableColumns(root = document) {
   root?.querySelectorAll?.('table[data-resizable-columns]:not([data-column-resize-ready])').forEach((table) => {
@@ -1423,7 +2054,7 @@ function resetModalSaveButton() {
   save.disabled = false;
   save.classList.remove("modal-save-busy");
   if (save.textContent === "Saving…") save.textContent = save.dataset.normalText || "Save";
-  ["journalSaveOnlyBtn", "poSaveOnlyBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn"].forEach((id) => {
+  ["journalSaveOnlyBtn", "poSaveOnlyBtn", "poReceiveBtn", "poPdfBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn"].forEach((id) => {
     const button = document.getElementById(id);
     if (!button) return;
     button.disabled = false;
@@ -1438,7 +2069,7 @@ async function runExclusiveModalSave(trigger, action) {
   modalSaveInProgress = true;
   const saveButtons = [
     $("modalSave"),
-    ...["journalSaveOnlyBtn", "poSaveOnlyBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn"]
+    ...["journalSaveOnlyBtn", "poSaveOnlyBtn", "poReceiveBtn", "poPdfBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn"]
       .map((id) => document.getElementById(id)),
   ].filter(Boolean);
   saveButtons.forEach((button) => {
@@ -1494,6 +2125,7 @@ function columnFilterOptions(input) {
 }
 
 function suggestOptions(input) {
+  if (input?.dataset?.suggestSource === "trucking_debris") return truckingDebrisSuggestOptions(input);
   if (input?.dataset?.suggestSource === "rental_items") return rentalItemSuggestOptions(input);
   if (input?.dataset?.suggestSource === "fuel_drivers") return rankedTruckingSuggestOptions(input, productMeta.fuelDrivers, (row) => row.name, (row) => `${row.name || ""} ${row.email || ""} fuel driver`);
   if (input?.dataset?.suggestSource === "trucking_drivers") return truckingDriverSuggestOptions(input);
@@ -1528,6 +2160,7 @@ function rankedTruckingSuggestOptions(input, rows, valueFor, searchFor) {
 }
 
 function truckingDriverSuggestOptions(input) {
+  if (!String(input?.value || "").trim()) return [...new Set((productMeta.truckingDrivers || []).map(row => row.name).filter(Boolean))].sort((a,b)=>a.localeCompare(b)).slice(0,80);
   return rankedTruckingSuggestOptions(input, productMeta.truckingDrivers, (row) => row.name, (row) => `${row.name || ""} ${row.email || ""} trucking driver`);
 }
 
@@ -1541,7 +2174,7 @@ function truckingPeopleSuggestOptions(input) {
 }
 
 function isTruckingMasterSuggestInput(input) {
-  return ["trucking_drivers", "trucking_rate_equipment", "trucking_people"].includes(input?.dataset?.suggestSource);
+  return ["trucking_drivers", "trucking_rate_equipment", "trucking_people", "trucking_debris"].includes(input?.dataset?.suggestSource);
 }
 
 function rentalItemSuggestOptions(input) {
@@ -1550,7 +2183,7 @@ function rentalItemSuggestOptions(input) {
   const requestedType = String(input?.dataset?.rentalItemType || "");
   const rows = [
     ...(requestedType === "Product" ? [] : (productMeta.assets || []).map((row) => ({ type: "Asset", ref: row.asset_tag, name: row.name || row.description, detail: [row.make, row.model, row.serial_no, row.plate].filter(Boolean).join(" ") }))),
-    ...(requestedType === "Asset" ? [] : (productMeta.products || []).map((row) => ({ type: "Product", ref: row.sku, name: row.name || row.description, detail: [row.category, row.source_vendor].filter(Boolean).join(" ") }))),
+    ...(requestedType === "Asset" ? [] : (productMeta.products || []).filter(isSelectableProduct).map((row) => ({ type: "Product", ref: row.sku, name: row.name || row.description, detail: [row.category, row.source_vendor].filter(Boolean).join(" ") }))),
   ];
   return rows.map((row) => {
     const label = `${row.ref || ""} | ${row.name || ""} | ${row.type}${row.detail ? ` | ${row.detail}` : ""}`;
@@ -1708,8 +2341,8 @@ function accountSuggestOptions(input) {
 async function ensurePartyMasterSuggestRows(force = false) {
   if (partyMasterMeta.loaded && !force) return partyMasterMeta;
   const [customers, vendors] = await Promise.all([
-    getAll("customers").catch(() => []),
-    getAll("vendors").catch(() => []),
+    (force ? getAll("customers") : getViewRows("customers")),
+    (force ? getAll("vendors") : getViewRows("vendors")),
   ]);
   partyMasterMeta = {
     customers: customers.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" })),
@@ -1890,6 +2523,7 @@ function productSuggestOptions(input) {
   if (!terms.length) return [];
   const matches = [];
   for (const product of productMeta.products || []) {
+    if (!isSelectableProduct(product)) continue;
     const sku = String(product.sku || "").trim();
     const name = String(product.name || "").trim();
     const vendor = String(product.source_vendor || "No preferred vendor").trim();
@@ -1916,7 +2550,8 @@ function productSuggestOptions(input) {
       || compactQuery.includes(identityCompact)
     );
     if (!termMatch && !compactMatch) continue;
-    const rank = skuCompact === compactQuery ? 0
+    const rank = sku.toLowerCase() === rawQuery.toLowerCase() ? -1
+      : skuCompact === compactQuery ? 0
       : identityCompact === compactQuery ? 1
       : skuCompact.startsWith(compactQuery) ? 2
       : nameCompact.startsWith(compactQuery) ? 3
@@ -2233,13 +2868,14 @@ function invoiceSuggestOptionMarkup(value) {
 
 function showSuggestMenu(input) {
   if (!isSuggestPicker(input)) return;
+  queuePartSearch(input);
   activeSuggestInput = input;
   const menu = ensureSuggestMenu(input);
   const options = matchingSuggestOptions(input);
   positionSuggestMenu(input);
   const emptyMessage = (isProductSuggestInput(input) || isWorkOrderSuggestInput(input) || isLocationSuggestInput(input) || isTruckingJobsiteSuggestInput(input) || isPurchaseJobsiteSuggestInput(input) || isEquipmentSuggestInput(input) || isCustomerSuggestInput(input) || isVendorSuggestInput(input) || isAccountSuggestInput(input) || isInvoiceSuggestInput(input) || isTruckingMasterSuggestInput(input)) && !String(input.value || "").trim()
     ? isWorkOrderSuggestInput(input) ? "Start typing a work order number, asset, customer, or status" : isLocationSuggestInput(input) || isTruckingJobsiteSuggestInput(input) || isPurchaseJobsiteSuggestInput(input) ? "Start typing a jobsite, project, or location" : isEquipmentSuggestInput(input) ? "Start typing an asset number, equipment name, plate, serial, VIN, type, or location" : isCustomerSuggestInput(input) ? "Start typing a customer name, reference, email, or phone" : isVendorSuggestInput(input) ? "Start typing a vendor name, reference, email, or phone" : isAccountSuggestInput(input) ? "Start typing an account name, code, type, or report group" : isInvoiceSuggestInput(input) ? "Start typing an invoice number, customer, source, type, or balance" : ["fuel_drivers", "trucking_drivers"].includes(input?.dataset?.suggestSource) ? "Start typing a driver name or email" : input?.dataset?.suggestSource === "trucking_rate_equipment" ? "Start typing equipment, service, category, or rate type" : input?.dataset?.suggestSource === "trucking_people" ? "Start typing a requester name, email, or role; unlisted names are also allowed" : "Start typing a SKU, product name, or vendor"
-    : "No matching choices";
+    : (remotePartInputs.get(input)?.loading ? "Searching product master…" : remotePartInputs.get(input)?.error || "No matching choices");
   const isProductMenu = isProductSuggestInput(input);
   const isWorkOrderMenu = isWorkOrderSuggestInput(input);
   const isLocationMenu = isLocationSuggestInput(input);
@@ -2320,6 +2956,7 @@ function setupSeamlessDropdowns() {
     else hideSuggestMenu();
   }, true);
   document.addEventListener("focusin", (event) => {
+    if(remotePartInputs.get(event.target)?.error) remotePartInputs.delete(event.target);
     useLmsSuggestPicker(event.target);
     if (isSuggestPicker(event.target)) {
       event.target.dataset.suggestShowAll = "1";
@@ -2349,7 +2986,40 @@ function setupSeamlessDropdowns() {
   window.addEventListener("resize", refreshSuggestMenu);
 }
 
+function installActionButtonFeedback() {
+  if (window.__actionButtonFeedbackInstalled) return;
+  window.__actionButtonFeedbackInstalled = true;
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest?.("button");
+    if (!button || !button.closest(".rowactions, .row-actions, .row-action-menu, .action-menu, #modal")) return;
+    const handler = button.onclick;
+    if (typeof handler !== "function" || handler._actionFeedback) return;
+    const wrapped = function (...args) {
+      if (button._actionPending) return;
+      let result;
+      try { result = handler.apply(this, args); }
+      catch (error) { alert(error.message || String(error)); return; }
+      if (!result || typeof result.then !== "function") return result;
+      const label = button.innerHTML;
+      const wasDisabled = button.disabled;
+      button._actionPending = true;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = "Working…";
+      return Promise.resolve(result).catch((error) => alert(error.message || String(error))).finally(() => {
+        button._actionPending = false;
+        button.disabled = wasDisabled;
+        button.removeAttribute("aria-busy");
+        button.innerHTML = label;
+      });
+    };
+    wrapped._actionFeedback = true;
+    button.onclick = wrapped;
+  }, true);
+}
+
 function setupUiRecommendations() {
+  installActionButtonFeedback();
   if (window.__lmsUiRecommendationsBound) return;
   window.__lmsUiRecommendationsBound = true;
   document.addEventListener("toggle", (event) => {
@@ -2640,7 +3310,7 @@ function getTableDataRows(table) {
 
 function getExcelColumnValues(table, col) {
   const values = getTableDataRows(table).map((row) => excelFilterValue(row.children[col]?.textContent || ""));
-  return [...new Set(values)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  return [...new Set(values)].sort(compareTableValues);
 }
 
 function getHeaderLabel(th) {
@@ -2973,6 +3643,16 @@ function enhanceWorkflowBars() {
     const head = panel.querySelector(".panel-head");
     if (head) head.insertAdjacentElement("afterend", bar);
   });
+  const search=$('content')?.querySelector('input.searchbox');
+  const workflow=$('content')?.querySelector('.workflow-bar');
+  if(search && workflow && search.parentElement!==workflow) {
+    const previous=search.parentElement;
+    workflow.style.flexWrap='wrap';
+    search.style.cssText='flex:1 1 280px;width:auto;min-width:180px;max-width:600px;margin:0 0 0 auto;padding:8px 12px;min-height:36px;box-sizing:border-box';
+    workflow.append(search);
+    if(previous?.classList.contains('toolbar') && !previous.children.length)previous.remove();
+  }
+
 }
 
 function tableFilterRows(wrap) {
@@ -4033,6 +4713,7 @@ async function login() {
 async function logout() {
   await supabase.auth.signOut();
   session = null;
+  invalidateViewReads();
   profile = null;
   updateAuthView();
 }
@@ -4103,6 +4784,7 @@ async function saveCurrentUserPassword() {
   closeModal(true);
   await supabase.auth.signOut();
   session = null;
+  invalidateViewReads();
   profile = null;
   updateAuthView();
   if ($("email")) $("email").value = email;
@@ -4170,7 +4852,7 @@ function canAccess(view) {
   return mods.includes("all") || mods.includes(view) || view === "dashboard";
 }
 
-async function loadView(view) {
+async function loadView(view, listOptions = {}) {
   if (!session) return;
   if (isDualRequestPortalUser() && !["requestportal", "equipmentrequests", "truckingrequests", "equipmentrepairqueue", "propertyrequests"].includes(view)) view = "requestportal";
   const mechanicManagerCustomerForms = isMechanicManagerUser()
@@ -4189,15 +4871,29 @@ async function loadView(view) {
     $("content").innerHTML = `<div class="panel"><div class="empty">Your user does not have access to this module.</div></div>`;
     return;
   }
-  if (view !== currentView) clearTransientViewState();
+  const keepListScreen = view === currentView && Boolean($('moduleListPaging'));
+  const retainedPeriodControls = keepListScreen ? $('modulePeriodControls') : null;
+  const retainedSearch = keepListScreen ? $('content').querySelector('input.searchbox') : null;
+  const retainedScroll = keepListScreen ? {x:window.scrollX,y:window.scrollY} : null;
+  if (view !== currentView) { $('moduleListPaging')?.remove(); clearTransientViewState(); }
   currentView = view;
+  const savedRepairTab = listOptions.append ? $("repairTableHost")?.dataset.tab : null;
+  const pageScope = openModuleListScope(view, listOptions);
+  let pageFailed = false;
+  foregroundViewLoads += 1;
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   const activeNavButton = document.querySelector(`.nav-btn[data-view="${CSS.escape(view)}"]`);
   const activeMajor = activeNavButton?.closest(".nav-major");
   if (activeMajor) activeMajor.open = true;
-  $("content").innerHTML = `<div class="empty">Loading...</div>`;
+  if (!keepListScreen && !listOptions.append && listOptions.query == null) $('content').innerHTML = '<div class="empty">Loading the first records and their actions…</div>';
+  if(keepListScreen) {
+    $('moduleRefreshStatus')?.remove();
+    const status=document.createElement('span');status.id='moduleRefreshStatus';status.setAttribute('role','status');status.textContent=' Updating results…';
+    $('moduleListPaging').append(status);
+  }
   try {
-    await ensurePartyMasterSuggestRows();
+    if (view === "truckinglabor") return await renderTruckingLaborDetailsView();
+    void ensurePartyMasterSuggestRows().catch(error => console.warn("Party suggestions unavailable", error));
     if (view === "requestportal") return await renderRequestPortalHome();
     if (view === "dashboard") return await renderDashboard();
     if (view === "products") return await renderProductsView();
@@ -4236,7 +4932,6 @@ async function loadView(view) {
     if (view === "truckingassigned") return await renderAssignedDriverView();
     if (view === "truckingticketentry") return await renderTruckingTicketEntryView();
     if (view === "truckingtickets") return await renderTruckingTicketsView();
-    if (view === "truckinglabor") return await renderTruckingLaborDetailsView();
     if (view === "truckingreport") return await renderTruckingReportView();
     if (view === "truckingrates") return await renderTruckingRatesView();
     if (view === "propertymaster") return await renderPropertyMasterView();
@@ -4253,14 +4948,56 @@ async function loadView(view) {
     currentCfg = tableMap[view];
     $("viewTitle").textContent = currentCfg.title;
     $("viewSub").textContent = currentCfg.sub;
-    const { data, error } = await supabase.from(currentCfg.table).select("*").order(currentCfg.heads[0], { ascending: false }).limit(500);
-    if (error) throw error;
-    currentRows = data || [];
+    const cfg = currentCfg;
+    const loadedRows = pageScope ? await moduleListRelated(pageScope, cfg.table) : await getViewData("module:" + view, async signal => {
+      const { data, error } = await supabase.from(cfg.table).select("*").order(cfg.heads[0], { ascending: false }).limit(500).abortSignal(signal);
+      if (error) throw error;
+      return data || [];
+    });
+    if(currentView!==view || (pageScope && moduleListScope!==pageScope))return;
+    currentRows=loadedRows;
     renderTableModule();
   } catch (error) {
+    pageFailed = true;
+    if (currentView !== view || (pageScope && moduleListScope !== pageScope)) return;
     console.error(error);
+    if(keepListScreen) {
+      const message=$('moduleRefreshStatus') || document.createElement('span');message.id='moduleRefreshStatus';message.setAttribute('role','alert');
+      message.textContent=' Could not update. Previous results are still shown. '+(error.message || error);
+      $('moduleListPaging')?.append(message);
+      return;
+    }
     $("content").innerHTML = `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Could not load ${esc(tableMap[view]?.title || view)}</strong><span>The module stopped on a database or browser error.</span></div><div class="actions"><button id="retryLoadView">Retry</button></div></div><div class="empty">${esc(error.message || error)}</div></section>`;
     $("retryLoadView").onclick = () => loadView(view);
+  } finally {
+    if (!pageFailed && (!pageScope || moduleListScope === pageScope)) {
+      if (savedRepairTab && currentView === view) document.querySelector('[data-repair-tab="' + CSS.escape(savedRepairTab) + '"]')?.click();
+      const freshSearch = $('content').querySelector('input.searchbox');
+      const liveText = retainedSearch?.value;
+      const liveSelection = retainedSearch ? [retainedSearch.selectionStart,retainedSearch.selectionEnd] : null;
+      if(retainedSearch && freshSearch && retainedSearch!==freshSearch) {
+        retainedSearch.oninput=freshSearch.oninput;
+        freshSearch.replaceWith(retainedSearch);
+      }
+      finishModuleListScope(pageScope);
+      if(retainedSearch && retainedSearch.isConnected) {
+        retainedSearch.value=liveText;
+        if(liveSelection)retainedSearch.setSelectionRange(...liveSelection);
+        if(pageScope && liveText.trim()!==pageScope.query)retainedSearch.dispatchEvent(new Event('input',{bubbles:true}));
+      }
+      if(retainedPeriodControls && currentView===view) {
+        $('modulePeriodControls')?.replaceWith(retainedPeriodControls);
+        if(listOptions.period!=null) {
+          retainedPeriodControls.querySelector('[data-list-period]').value=pageScope.period;
+          retainedPeriodControls.querySelector('[data-list-from]').value=pageScope.from;
+          retainedPeriodControls.querySelector('[data-list-to]').value=pageScope.to;
+        }
+      }
+      if(retainedScroll && currentView===view)window.scrollTo(retainedScroll.x,retainedScroll.y);
+      if (listOptions.focusSearch && currentView === view) $("content").querySelector("input.searchbox")?.focus();
+    } else if (moduleListScope === pageScope) moduleListScope = null;
+    foregroundViewLoads = Math.max(0, foregroundViewLoads - 1);
+    scheduleSessionWarmup();
   }
 }
 
@@ -4272,7 +5009,7 @@ async function renderDashboard() {
     // Product Master commonly exceeds Supabase's 1,000-row response limit.
     // Use the paginated loader so Dashboard value/quantity exactly matches
     // the complete live Product Master instead of only its first page.
-    getAll("products"),
+    getViewRows("products"),
     getDashboardRows("sales_orders", "status"),
     getDashboardRows("purchase_orders", "payment_status,match_status"),
     getDashboardRows("assets", "id,status"),
@@ -4280,7 +5017,7 @@ async function renderDashboard() {
     getDashboardRows("rentals", "status"),
     getDashboardRows("invoices", "status"),
     getDashboardRows("general_ledger", "debit,credit"),
-    getAll("stock_movements")
+    getViewRows("stock_movements")
   ]);
   const inventoryValue = stockMovementLedgerValue(stockMovements, today());
   const inventoryQty = stockMovementLedgerQty(stockMovements, today());
@@ -4329,9 +5066,11 @@ async function renderDashboard() {
 
 async function getDashboardRows(table, columns = "*", limit = 1000) {
   try {
-    const { data, error } = await supabase.from(table).select(columns).limit(limit);
-    if (error) throw error;
-    return data || [];
+    return await getViewData(`dashboard:${table}:${columns}:${limit}`, async signal => {
+      const { data, error } = await supabase.from(table).select(columns).limit(limit).abortSignal(signal);
+      if (error) throw error;
+      return data || [];
+    });
   } catch (error) {
     console.warn(`Dashboard skipped ${table}`, error);
     return [];
@@ -4499,7 +5238,7 @@ async function renderFleetEquipmentReportView() {
   $("viewTitle").textContent = currentCfg.title;
   $("viewSub").textContent = currentCfg.sub;
   const [assets, equipmentRequests, fuelLogs, workOrders, truckingRequests, truckingRequestLines] = await Promise.all([
-    getAll("assets"), getAll("equipment_requests").catch(() => []), getAll("fuel_logs").catch(() => []), getAll("work_orders").catch(() => []), getAll("trucking_requests").catch(() => []), getAll("trucking_request_lines").catch(() => []),
+    getViewRows("assets"), getViewRows("equipment_requests").catch(() => []), getViewRows("fuel_logs").catch(() => []), getViewRows("work_orders").catch(() => []), getViewRows("trucking_requests").catch(() => []), getViewRows("trucking_request_lines").catch(() => []),
   ]);
   const data = { assets, equipmentRequests, fuelLogs, workOrders, truckingRequests, truckingRequestLines };
   data.events = buildFleetLocationEvents(data);
@@ -4545,35 +5284,37 @@ async function renderInventoryBalanceView() {
   currentCfg = { title: "Inventory Balance", sub: "On-hand stock and inventory value from live products.", readOnly: true, heads: ["as_of", "sku", "product", "vendor", "warehouse", "bin_shelf", "qty", "unit_cost", "value", "last_movement", "status"], labels: ["As Of", "SKU", "Product", "Vendor", "Warehouse", "Bin / Shelf", "Qty", "Unit Cost", "Value", "Last Movement", "Status"] };
   $("viewTitle").textContent = "Inventory Balance";
   $("viewSub").textContent = "Inventory balance as of a selected date, or current balance when blank.";
-  const [products, movements, receipts, salesOrders, salesLines, workOrders, workOrderParts] = await Promise.all([
-    getAll("products"),
-    getAll("stock_movements"),
-    getAll("goods_receipts"),
-    getAll("sales_orders"),
-    getAll("sales_order_lines"),
-    getAll("work_orders"),
-    getAll("work_order_parts"),
-  ]);
-  productMeta.products = products;
-  // Inventory valuation is an accounting control report. Use only persisted stock
-  // movements; reconstructed document rows are display aids for the Stock Ledger
-  // and must never change the inventory balance.
-  productMeta.movements = movements;
-  const rows = inventoryBalanceRows("", products, movements);
-  currentRows = rows;
+  let ready = false;
   $("content").innerHTML = `
-    <div class="toolbar">
-      <input class="searchbox" id="inventorySearch" placeholder="Search inventory balance by SKU, item, vendor, warehouse">
-    </div>
+    <div class="toolbar"><input class="searchbox" id="inventorySearch" placeholder="Search inventory balance by SKU, item, vendor, warehouse"></div>
     <section class="panel">
-      <div class="panel-head"><div class="panel-title"><strong>Inventory Balance As Of</strong><span>Leave blank for current live balance.</span></div><div class="actions"><label class="mini-filter">As of <input id="inventoryAsOf" placeholder="mm/dd/yyyy or yyyy-mm-dd"></label><button id="inventoryApplyAsOf">Apply date</button><button id="inventoryCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button></div></div>
-      <div id="inventoryNotice" class="notice">As of current: ${money(rows.reduce((sum, row) => sum + Number(row.value || 0), 0))}</div>
-      <div id="inventoryTableHost">${inventoryBalanceTableHtml(rows)}</div>
+      <div class="panel-head"><div class="panel-title"><strong>Inventory Balance As Of</strong><span>Leave blank for current live balance.</span></div><div class="actions"><label class="mini-filter">As of <input id="inventoryAsOf" placeholder="mm/dd/yyyy or yyyy-mm-dd"></label><button id="inventoryApplyAsOf">Apply date</button><button id="inventoryCsvBtn" disabled>Excel</button><button id="inventoryPrintBtn" disabled>PDF / Print</button></div></div>
+      <div id="inventoryNotice" class="notice" role="status">Loading the complete inventory ledger in batches. You can enter your search and date now; totals and exports will be ready when loading finishes.</div>
+      <div id="inventoryTableHost"><p>Loading inventory…</p></div>
     </section>`;
-  $("inventorySearch").oninput = renderFilteredInventoryBalance;
-  $("inventoryApplyAsOf").onclick = applyInventoryAsOf;
-  $("inventoryCsvBtn").onclick = exportCurrentCsv;
-  document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
+  const search = $("inventorySearch"), date = $("inventoryAsOf"), notice = $("inventoryNotice");
+  search.value = sessionStorage.getItem("lms.inventorySearch") || "";
+  date.value = sessionStorage.getItem("lms.inventoryAsOf") || "";
+  search.oninput = () => { sessionStorage.setItem("lms.inventorySearch", search.value); if (ready) renderFilteredInventoryBalance(); };
+  date.oninput = () => sessionStorage.setItem("lms.inventoryAsOf", date.value);
+  $("inventoryApplyAsOf").onclick = () => { if (ready) applyInventoryAsOf(); else notice.textContent = "Your selected date will apply when the inventory ledger finishes loading."; };
+  $("inventoryCsvBtn").onclick = () => { if (ready) exportCurrentCsv(); };
+  $("inventoryPrintBtn").onclick = () => { if (ready) window.print(); };
+  try {
+    const [products, movements] = await Promise.all([getViewRows("products"), getViewRows("stock_movements")]);
+    if (currentView !== "inventory" || !search.isConnected) return;
+    productMeta.products = products;
+    productMeta.movements = movements;
+    ready = true;
+    $("inventoryCsvBtn").disabled = false;
+    $("inventoryPrintBtn").disabled = false;
+    applyInventoryAsOf();
+  } catch (error) {
+    if (currentView !== "inventory" || !search.isConnected) return;
+    notice.textContent = "Inventory totals are not ready: " + (error.message || error);
+    const retry = document.createElement("button"); retry.textContent = "Resume loading";
+    retry.onclick = () => renderInventoryBalanceView(); notice.append(" ", retry);
+  }
 }
 
 function inventoryBalanceRows(asOfInput, products = productMeta.products || [], movements = productMeta.movements || []) {
@@ -4716,14 +5457,14 @@ async function renderAgingSummaryView() {
   $("viewTitle").textContent = "Aging Summary";
   $("viewSub").textContent = "AR/AP aging by customer/vendor as of a selected date.";
   const [invoices, invoiceLines, payments, purchaseOrders, poLines, receipts, gl, checkRuns] = await Promise.all([
-    getAll("invoices"),
-    getAll("invoice_lines"),
-    getAll("customer_payments"),
-    getAll("purchase_orders"),
-    getAll("purchase_order_lines"),
-    getAll("goods_receipts"),
-    getAll("general_ledger"),
-    getAll("check_runs"),
+    getViewRows("invoices"),
+    getViewRows("invoice_lines"),
+    getViewRows("customer_payments"),
+    getViewRows("purchase_orders"),
+    getViewRows("purchase_order_lines"),
+    getViewRows("goods_receipts"),
+    getViewRows("general_ledger"),
+    getViewRows("check_runs"),
   ]);
   productMeta.aging = { invoices, invoiceLines, payments, purchaseOrders, poLines, receipts, gl, checkRuns };
   currentRows = agingRows("ar", "summary", "");
@@ -4836,13 +5577,39 @@ async function prepareSelectedAgingDocuments(selected = []) {
   })));
 }
 
+let pdfMergeLibraryPromise = null;
+function ensurePdfMergeLibrary() {
+  if (window.PDFLib) return Promise.resolve();
+  if (!pdfMergeLibraryPromise) pdfMergeLibraryPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./vendor/pdf-lib.min.js";
+    script.onload = () => window.PDFLib ? resolve() : reject(new Error("PDF merge library unavailable."));
+    script.onerror = () => reject(new Error("Could not load PDF merging. Please retry."));
+    document.head.appendChild(script);
+  }).catch(error => { pdfMergeLibraryPromise = null; throw error; });
+  return pdfMergeLibraryPromise;
+}
+
+async function combineOriginalDocumentPdfs(documents) {
+  await ensurePdfMergeLibrary();
+  const combined = await window.PDFLib.PDFDocument.create();
+  for (const documentItem of documents) {
+    if (!documentItem.html) throw new Error("An invoice document could not be loaded.");
+    const blob = await printableHtmlToPdfBlob(documentItem.html, "invoice.pdf");
+    const original = await window.PDFLib.PDFDocument.load(await blob.arrayBuffer());
+    const pages = await combined.copyPages(original, original.getPageIndices());
+    pages.forEach(page => combined.addPage(page));
+  }
+  return new Blob([await combined.save()], { type: "application/pdf" });
+}
+
 async function downloadSelectedAgingPdfs(joint = false) {
   const selected = selectedAgingPdfDocuments();
   if (!selected.length) return alert("Select at least one invoice or purchase order.");
   try {
     const documents = await prepareSelectedAgingDocuments(selected);
     if (joint) {
-      const blob = await printableHtmlToPdfBlob(combinedSelectedDocumentHtml(documents), "selected-documents.pdf");
+      const blob = await combineOriginalDocumentPdfs(documents);
       savePdfBlob(blob, "selected-documents.pdf");
       return;
     }
@@ -5415,52 +6182,104 @@ async function reconcileLegacyWorkOrderInvoiceNumbers(invoices = []) {
   return repaired;
 }
 
-async function renderAccountingView() {
+let accountingLoadRequest = 0;
+function isLedgerOnlyAccountingTab(tab) {
+  return ["gl", "coa", "bs", "is"].includes(tab);
+}
+
+async function renderAccountingView({ complete = false } = {}) {
+  const request = ++accountingLoadRequest;
   currentCfg = tableMap.accounting;
   $("viewTitle").textContent = "Accounting";
   $("viewSub").textContent = "GL, AP, AR, customer payments, sales and purchase history, statements, and bank reconciliation.";
-  await loadAccountingCloseDate();
+  const host = $("accountingTableHost") || $("content");
+  host.innerHTML = '<div class="empty" role="status">Loading accounting records…</div>';
+  const started = Date.now();
+  try {
+    if (complete || !isLedgerOnlyAccountingTab(accountingTab)) return await renderCompleteAccountingView(request);
+    console.info("[Accounting] Loading ledger and chart of accounts");
+    const [gl, coa] = await Promise.all([
+      getViewRows("general_ledger"), getViewRows("chart_of_accounts"), loadAccountingCloseDate(),
+    ]);
+    if (request !== accountingLoadRequest || currentView !== "accounting") return;
+    const source = { gl, coa, invoices: [], invoiceLines: [], payments: [], pos: [], poLines: [],
+      receipts: [], salesOrders: [], salesLines: [], bankRows: [], products: [], movements: [],
+      checkRuns: [], customers: [], _ledgerOnly: true };
+    renderLoadedAccountingView(source);
+    console.info("[Accounting] Ledger displayed", Date.now() - started, "ms");
+  } catch (error) {
+    if (request !== accountingLoadRequest || currentView !== "accounting") return;
+    console.error("[Accounting] Load failed", error);
+    const target = $("accountingTableHost") || $("content");
+    target.innerHTML = '<div class="empty">Could not load accounting: ' + esc(error.message || error) + '<br><button type="button" id="retryAccountingLoad">Retry</button></div>';
+    $("retryAccountingLoad").onclick = () => renderAccountingView({complete});
+  }
+}
+
+async function renderCompleteAccountingView(request) {
+  const started = Date.now();
+  console.info("[Accounting] Loading report dependencies", accountingTab);
+  currentCfg = tableMap.accounting;
+  $("viewTitle").textContent = "Accounting";
+  $("viewSub").textContent = "GL, AP, AR, customer payments, sales and purchase history, statements, and bank reconciliation.";
+  const closeDateReady = loadAccountingCloseDate();
   const reportFrom = sessionStorage.getItem("lms.accountingReportFrom") || "";
   const reportTo = sessionStorage.getItem("lms.accountingReportTo") || today();
   let [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers] = await Promise.all([
-    getAll("general_ledger"),
-    getAll("chart_of_accounts"),
-    getAll("invoices"),
-    getAll("invoice_lines"),
-    getAll("customer_payments"),
-    getAll("purchase_orders"),
-    getAll("purchase_order_lines"),
-    getAll("goods_receipts"),
-    getAll("sales_orders"),
-    getAll("sales_order_lines"),
-    getAll("bank_transactions"),
-    getAll("products"),
-    getAll("stock_movements"),
-    getAll("check_runs").catch(() => []),
-    getAll("customers").catch(() => []),
+    getViewRows("general_ledger"),
+    getViewRows("chart_of_accounts"),
+    getViewRows("invoices"),
+    getViewRows("invoice_lines"),
+    getViewRows("customer_payments"),
+    getViewRows("purchase_orders"),
+    getViewRows("purchase_order_lines"),
+    getViewRows("goods_receipts"),
+    getViewRows("sales_orders"),
+    getViewRows("sales_order_lines"),
+    getViewRows("bank_transactions"),
+    getViewRows("products"),
+    getViewRows("stock_movements"),
+    getViewRows("check_runs").catch(() => []),
+    getViewRows("customers").catch(() => []),
+    closeDateReady,
   ]);
+  if (request !== accountingLoadRequest || currentView !== "accounting") return;
+  console.info("[Accounting] Report reads complete", Date.now() - started, "ms; checking reconciliations");
   const repairedWorkOrderInvoices = await reconcileLegacyWorkOrderInvoiceNumbers(invoices);
   if (repairedWorkOrderInvoices) {
-    [gl, invoices, payments] = await Promise.all([getAll("general_ledger"), getAll("invoices"), getAll("customer_payments")]);
+    [gl, invoices, payments] = await Promise.all([getViewRows("general_ledger"), getViewRows("invoices"), getViewRows("customer_payments")]);
   }
   const repairedCheckReversals = await reconcileMissingVoidedCheckRunReversals(checkRuns, gl);
   if (repairedCheckReversals) {
-    [gl, bankRows] = await Promise.all([getAll("general_ledger"), getAll("bank_transactions")]);
+    [gl, bankRows] = await Promise.all([getViewRows("general_ledger"), getViewRows("bank_transactions")]);
   }
   await reconcilePrintedCheckRunPaymentStatuses(checkRuns, pos);
   const repairedManualSubledgers = await syncPostedManualJournalSubledgers({ gl, invoices, invoiceLines, pos });
   if (repairedManualSubledgers) {
-    [invoices, invoiceLines, pos] = await Promise.all([getAll("invoices"), getAll("invoice_lines"), getAll("purchase_orders")]);
+    [invoices, invoiceLines, pos] = await Promise.all([getViewRows("invoices"), getViewRows("invoice_lines"), getViewRows("purchase_orders")]);
   }
   if (!coa.length) {
     await seedDefaultChartOfAccounts();
-    coa = await getAll("chart_of_accounts");
+    coa = await getViewRows("chart_of_accounts");
   }
   if (!coa.some((account) => /landed cost accrual/i.test(account.account || ""))) {
     await seedRequiredChartOfAccounts();
-    coa = await getAll("chart_of_accounts");
+    coa = await getViewRows("chart_of_accounts");
   }
-  const data = buildAccountingData({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers, reportFrom, reportTo, reportTab: accountingTab });
+  if (request !== accountingLoadRequest || currentView !== "accounting") return;
+  console.info("[Accounting] Report ready", Date.now() - started, "ms");
+  renderLoadedAccountingView({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers, reportFrom, reportTo, reportTab: accountingTab });
+}
+
+function renderLoadedAccountingView(source) {
+  if (source._ledgerOnly && !isLedgerOnlyAccountingTab(accountingTab)) {
+    return renderAccountingView({ complete: true });
+  }
+  // A fast tab switch invalidates any older report load still in flight.
+  accountingLoadRequest += 1;
+  const reportFrom = sessionStorage.getItem("lms.accountingReportFrom") || "";
+  const reportTo = sessionStorage.getItem("lms.accountingReportTo") || today();
+  const data = buildAccountingData({ ...source, gl: source.allGl || source.gl, reportFrom, reportTo, reportTab: accountingTab });
   const s = data.summary;
   const accountingSummaryCollapsed = localStorage.getItem(ACCOUNTING_SUMMARY_STORAGE_KEY) === "1";
   $("content").innerHTML = `
@@ -5597,6 +6416,21 @@ async function syncPostedManualJournalSubledgers({ gl = [], invoices = [], invoi
   return changed;
 }
 
+function accountingRelatedRows(rows, ...keys) {
+  const indexes = keys.map(() => new Map());
+  rows.forEach((row, position) => keys.forEach((key, index) => {
+    const value = row[key];
+    if (Number.isNaN(value)) return;
+    if (!indexes[index].has(value)) indexes[index].set(value, []);
+    indexes[index].get(value).push(position);
+  }));
+  return (...values) => {
+    const positions = new Set();
+    values.forEach((value, index) => (indexes[index].get(value) || []).forEach(position => positions.add(position)));
+    return [...positions].sort((a, b) => a - b).map(position => rows[position]);
+  };
+}
+
 function buildAccountingData(source) {
   const reportFrom = source.reportFrom || "";
   const reportTo = source.reportTo || "";
@@ -5609,19 +6443,24 @@ function buildAccountingData(source) {
     if (!isAsOfReport && reportFrom && date < reportFrom) return false;
     return true;
   };
+  const invoiceLines = accountingRelatedRows(source.invoiceLines, "invoice_id", "invoice_no");
+  const poLines = accountingRelatedRows(source.poLines, "po_id", "po_no");
+  const receiptRows = accountingRelatedRows(source.receipts, "po_no");
+  const salesLines = accountingRelatedRows(source.salesLines, "order_id", "order_no");
+  const payments = accountingRelatedRows(source.payments.filter(p => !/void|reverse/i.test(p.status || "")), "invoice_no");
   const invoices = source.invoices.map((inv) => ({
     ...inv,
-    _lines: source.invoiceLines.filter((line) => line.invoice_id === inv.id || line.invoice_no === inv.invoice_no),
-    _paid: source.payments.filter((p) => p.invoice_no === inv.invoice_no && !/void|reverse/i.test(p.status || "")).reduce((sum, p) => sum + Number(p.amount || 0), 0),
+    _lines: invoiceLines(inv.id, inv.invoice_no),
+    _paid: payments(inv.invoice_no).reduce((sum, p) => sum + Number(p.amount || 0), 0),
   }));
   const pos = source.pos.map((po) => ({
     ...po,
-    _lines: source.poLines.filter((line) => line.po_id === po.id || line.po_no === po.po_no),
-    _receipts: source.receipts.filter((gr) => gr.po_no === po.po_no),
+    _lines: poLines(po.id, po.po_no),
+    _receipts: receiptRows(po.po_no),
   }));
   const salesOrders = source.salesOrders.map((order) => ({
     ...order,
-    _lines: source.salesLines.filter((line) => line.order_id === order.id || line.order_no === order.order_no),
+    _lines: salesLines(order.id, order.order_no),
   }));
   const allGl = source.gl.map((row) => normalizeGlRow(row));
   const gl = allGl
@@ -5683,14 +6522,15 @@ function accountingPanelHtml(data, tab) {
   if (tab === "invoicehistory") return accountingInvoiceHistoryHtml(data);
   if (tab === "coa") return accountingTable(coaRows(data), ["Code", "Account", "Report", "Type", "Normal Balance", "Debit", "Credit", "Balance"], (r) => [r.account_code || "", r.account, r.report_group || "", r.type, r.normal_balance, money(r.debit), money(r.credit), money(r.balance)]);
   if (tab === "ap") {
-    const apRows = accountsPayableRowsForTab(accountsPayableRows(data), accountsPayableTab);
+    const allApRows = accountsPayableRows(data);
+    const apRows = accountsPayableRowsForTab(allApRows, accountsPayableTab);
     return `<div class="actions"><button id="postApFromPoBtn">Post AP from PO</button><button data-jump="checkrun">Open check run</button>${beginningQuickActionsHtml("ap")}</div>
       <div class="tabs">
-        <button class="${accountsPayableTab === "forcheck" ? "active" : ""}" data-ap-tab="forcheck">For Check Run ${accountsPayableRowsForTab(accountsPayableRows(data), "forcheck").length}</button>
-        <button class="${accountsPayableTab === "posted" ? "active" : ""}" data-ap-tab="posted">Posted AP ${accountsPayableRowsForTab(accountsPayableRows(data), "posted").length}</button>
-        <button class="${accountsPayableTab === "paid" ? "active" : ""}" data-ap-tab="paid">Paid ${accountsPayableRowsForTab(accountsPayableRows(data), "paid").length}</button>
-        <button class="${accountsPayableTab === "review" ? "active" : ""}" data-ap-tab="review">Needs Review ${accountsPayableRowsForTab(accountsPayableRows(data), "review").length}</button>
-        <button class="${accountsPayableTab === "all" ? "active" : ""}" data-ap-tab="all">All AP ${accountsPayableRowsForTab(accountsPayableRows(data), "all").length}</button>
+        <button class="${accountsPayableTab === "forcheck" ? "active" : ""}" data-ap-tab="forcheck">For Check Run ${accountsPayableRowsForTab(allApRows, "forcheck").length}</button>
+        <button class="${accountsPayableTab === "posted" ? "active" : ""}" data-ap-tab="posted">Posted AP ${accountsPayableRowsForTab(allApRows, "posted").length}</button>
+        <button class="${accountsPayableTab === "paid" ? "active" : ""}" data-ap-tab="paid">Paid ${accountsPayableRowsForTab(allApRows, "paid").length}</button>
+        <button class="${accountsPayableTab === "review" ? "active" : ""}" data-ap-tab="review">Needs Review ${accountsPayableRowsForTab(allApRows, "review").length}</button>
+        <button class="${accountsPayableTab === "all" ? "active" : ""}" data-ap-tab="all">All AP ${accountsPayableRowsForTab(allApRows, "all").length}</button>
       </div>
       ${accountingTable(apRows, ["Vendor", "PO", "PO Date", "Invoice #", "Invoice Date", "Due Date", "Invoice Amount", "Written Off", "Open Balance", "Match", "Payment", "Status", ""], (r) => [r.vendor, `${accountingPurchaseOrderLink(data, r.po_no)}${r.receipt_nos ? `<small class="cell-subtext">GR: ${esc(r.receipt_nos)}</small>` : ""}`, r.po_date, r.invoice_no, r.invoice_date, r.due_date, money(r.invoice_amount), money(r.written_off), money(r.balance), badge(r.match), apPaymentCell(r), badge(r.status), apRowActions(r)])}`;
   }
@@ -5941,7 +6781,7 @@ async function downloadCustomerStatementPdfs(data, names, combined = false) {
       html: await printCustomerInvoice(reference, { returnHtml: true }),
     })));
     if (combined) {
-      const blob = await printableHtmlToPdfBlob(combinedPrintableDocumentsHtml(documents.map((documentItem) => documentItem.html), "Selected Customer Invoices"), "selected-customer-invoices.pdf");
+      const blob = await combineOriginalDocumentPdfs(documents);
       savePdfBlob(blob, "selected-customer-invoices.pdf");
       return;
     }
@@ -6074,7 +6914,7 @@ async function renderChartOfAccountsView() {
   currentCfg = tableMap.coa;
   $("viewTitle").textContent = "Chart of Accounts";
   $("viewSub").textContent = "Account master and complete transaction history by account, period, or as-of date.";
-  const [coa, glRows] = await Promise.all([getAll("chart_of_accounts"), getAll("general_ledger")]);
+  const [coa, glRows] = await Promise.all([getViewRows("chart_of_accounts"), getViewRows("general_ledger")]);
   const normalizedGl = glRows.map(normalizeGlRow);
   const accountNames = [...new Set([...coa.map((row) => row.account), ...normalizedGl.map((row) => row.account)].filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
@@ -6253,7 +7093,7 @@ function accountsPayableRows(data) {
     const isBeginningAp = isBeginningBalanceApRecord(po);
     const isLandedAp = isLandedCostPayable(po);
     const isManualJournalAp = /manual journal ap/i.test(`${po.status || ""} ${po.notes || ""}`);
-    const apPosted = isBeginningAp || isManualJournalAp || data.gl.some((row) => row.reference === po.po_no
+    const apPosted = isBeginningAp || isManualJournalAp || (data.allGl || data.gl || []).some((row) => row.reference === po.po_no
       && ["Purchase Order", "Landed Cost Invoice", "Manual Journal"].includes(row.source)
       && !/reversed|void/i.test(row.status || "")
       && (!receiptGroup || normalizeCheckRunDocumentKey(row.invoice_no) === normalizeCheckRunDocumentKey(ap.invoice_no)));
@@ -6507,23 +7347,29 @@ function openArPaymentHistoryModal(data, invoiceNo) {
   $("modal").style.display = "flex";
 }
 
+function linkedAccountingEntryRows(ledger, invoiceNo = "", sourceRef = "") {
+  const keys = new Set([invoiceNo, sourceRef].map(value => String(value || "").trim()).filter(Boolean));
+  const direct = row => [row.invoice_no, row.reference, row.work_order_no, row.po_no, row.purchase_order_no]
+    .some(value => keys.has(String(value || "").trim()));
+  const batchKey = row => String(row.reference || "").trim()
+    ? JSON.stringify([String(row.reference).trim(), String(row.source || ""), String(row.posting_date || row.entry_date || "")]) : null;
+  const batches = new Set(ledger.filter(direct).map(batchKey).filter(Boolean));
+  return ledger.filter(row => direct(row) || (batchKey(row) && batches.has(batchKey(row))))
+    .sort((left, right) => String(left.posting_date || left.entry_date || "").localeCompare(String(right.posting_date || right.entry_date || ""))
+      || String(left.reference || "").localeCompare(String(right.reference || ""))
+      || String(left.account || "").localeCompare(String(right.account || "")));
+}
+
 function openAccountingEntriesModal(data, { invoiceNo = "", sourceRef = "" } = {}) {
-  const keys = new Set([invoiceNo, sourceRef].map((value) => String(value || "").trim()).filter(Boolean));
-  const rows = (data.allGl || data.gl || []).filter((row) => {
-    const candidates = [row.invoice_no, row.reference, row.work_order_no, row.po_no, row.purchase_order_no]
-      .map((value) => String(value || "").trim())
-      .filter(Boolean);
-    return candidates.some((value) => keys.has(value));
-  }).sort((left, right) => String(left.posting_date || left.entry_date || "").localeCompare(String(right.posting_date || right.entry_date || ""))
-    || String(left.account || "").localeCompare(String(right.account || "")));
+  const rows = linkedAccountingEntryRows(data.allGl || data.gl || [], invoiceNo, sourceRef);
   const debit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
   const credit = rows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
   const titleRef = sourceRef || invoiceNo || "transaction";
   $("modalTitle").textContent = `Accounting entries — ${titleRef}`;
-  $("modalBody").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Posting Date</th><th>Account</th><th>Description</th><th>Reference</th><th>Debit</th><th>Credit</th><th>Source</th><th>Status</th></tr></thead><tbody>
-      ${rows.length ? rows.map((row) => `<tr><td>${esc(formatDisplayDate(row.posting_date || row.entry_date))}</td><td>${esc(row.account || "")}</td><td>${esc(row.description || "")}</td><td>${esc(row.reference || row.invoice_no || "")}</td><td>${Number(row.debit || 0) ? money(row.debit) : ""}</td><td>${Number(row.credit || 0) ? money(row.credit) : ""}</td><td>${esc(row.source || "")}</td><td>${badge(row.status || "Posted")}</td></tr>`).join("") : '<tr><td colspan="8" class="empty">No accounting entries were found for this transaction.</td></tr>'}
-    </tbody><tfoot><tr><th colspan="4">Totals</th><th>${money(debit)}</th><th>${money(credit)}</th><th colspan="2">${Math.abs(debit - credit) <= 0.005 ? "Balanced" : `Difference ${money(debit - credit)}`}</th></tr></tfoot></table></div>
-    <p class="notice">This is a read-only view of the posted General Ledger entries linked to the invoice, payable, work order, or purchase order.</p>`;
+  $("modalBody").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Posting Date</th><th>Account</th><th>Description</th><th>Reference</th><th>Invoice</th><th>Debit</th><th>Credit</th><th>Source</th><th>Status</th></tr></thead><tbody>
+      ${rows.length ? rows.map((row) => `<tr><td>${esc(formatDisplayDate(row.posting_date || row.entry_date))}</td><td>${esc(row.account || "")}</td><td>${esc(row.description || "")}</td><td>${esc(row.reference || row.invoice_no || "")}</td><td>${esc(row.invoice_no || "—")}</td><td>${Number(row.debit || 0) ? money(row.debit) : ""}</td><td>${Number(row.credit || 0) ? money(row.credit) : ""}</td><td>${esc(row.source || "")}</td><td>${badge(row.status || "Posted")}</td></tr>`).join("") : '<tr><td colspan="9" class="empty">No accounting entries were found for this transaction.</td></tr>'}
+    </tbody><tfoot><tr><th colspan="5">Totals</th><th>${money(debit)}</th><th>${money(credit)}</th><th colspan="2">${Math.abs(debit - credit) <= 0.005 ? "Balanced" : `Difference ${money(debit - credit)}`}</th></tr></tfoot></table></div>
+    <p class="notice">This read-only view includes complete linked posting batches. A payment or write-off batch may cover multiple invoices; the Invoice column identifies each allocation. Totals include every displayed batch line.</p>`;
   $("modalSave").textContent = "Close";
   $("modalSave").onclick = () => closeModal(true);
   $("modal").style.display = "flex";
@@ -6662,6 +7508,31 @@ async function finalizeBatchArSettlement(data, rows) {
   await saveBatchArSettlement(data, rows, postingDate);
 }
 
+async function validateArSettlementAllocations(allocations, postingDate) {
+  const numbers = [...new Set(allocations.map(item => item.row.invoice_no).filter(Boolean))];
+  const invoices = [], ledger = new Map();
+  for (let i = 0; i < numbers.length; i += 100) {
+    const batch = numbers.slice(i, i + 100);
+    const results = await Promise.all([
+      supabase.from("invoices").select("invoice_no,customer,status").in("invoice_no", batch),
+      supabase.from("general_ledger").select("id,invoice_no,reference,customer,account,debit,credit,posting_date,entry_date,status").in("invoice_no", batch),
+      supabase.from("general_ledger").select("id,invoice_no,reference,customer,account,debit,credit,posting_date,entry_date,status").in("reference", batch),
+    ]);
+    for (const result of results) if (result.error) throw new Error("Cannot verify current invoice balances: " + result.error.message);
+    invoices.push(...(results[0].data || []));
+    results.slice(1).flatMap(result => result.data || []).forEach(row => ledger.set(row.id, row));
+  }
+  for (const item of allocations) {
+    const invoice = invoices.find(row => row.invoice_no === item.row.invoice_no);
+    if (!invoice || /void|revers|cancel|written off|paid/i.test(invoice.status || "")) throw new Error(item.row.invoice_no + " is no longer an open invoice. Refresh before posting.");
+    const key = value => canonicalPartyName(value || "").trim().toLowerCase();
+    if (key(invoice.customer) !== key(item.row.customer)) throw new Error(item.row.invoice_no + " customer changed. Refresh before posting.");
+    const support = [...ledger.values()].filter(row => (row.invoice_no === invoice.invoice_no || (!row.invoice_no && row.reference === invoice.invoice_no)) && key(row.customer) === key(invoice.customer) && subledgerAccountMatches(row.account, "Accounts Receivable") && !/draft|unposted/i.test(row.status || "") && String(row.posting_date || row.entry_date || "").slice(0, 10) <= postingDate);
+    const balance = roundCurrency(support.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
+    if (!support.length || item.amount > balance + 0.005) throw new Error(invoice.invoice_no + " has only " + money(balance) + " posted Accounts Receivable available on " + postingDate + ". Review its reversals, payments, and correction dates before posting this settlement.");
+  }
+}
+
 async function saveBatchArSettlement(data, rows, finalPostingDate = "") {
   const record = collectProductModalFields();
   const isWriteOff = record.batch_action === "Write Off";
@@ -6679,6 +7550,7 @@ async function saveBatchArSettlement(data, rows, finalPostingDate = "") {
   if (isLockedAccountingDate(postingDate)) return alert("This posting date is inside the closed accounting period.");
   const invalid = allocations.find((item) => item.amount > Number(item.row.balance || 0) + 0.005);
   if (invalid) return alert(`${invalid.row.invoice_no} cannot exceed its open balance of ${money(invalid.row.balance)}.`);
+  try { await validateArSettlementAllocations(allocations, postingDate); } catch (error) { return alert(error.message || error); }
   const payments = await getAll("customer_payments");
   if (payments.some((payment) => String(payment.receipt_no || "").startsWith(`${receiptNo}-`))) return alert(`Batch ${receiptNo} already exists.`);
   if (!isWriteOff && record.bank_reference && payments.some((payment) => String(payment.bank_reference || "").trim().toLowerCase() === String(record.bank_reference).trim().toLowerCase() && !/void|reversed/i.test(payment.status || ""))) return alert(`Bank/check reference ${record.bank_reference} is already used.`);
@@ -6788,6 +7660,9 @@ async function saveAccountingWriteOff(data, side, row) {
   if (isLockedAccountingDate(postingDate)) return alert("This write-off date is inside the closed accounting period.");
   const allowedAccounts = new Set(writeOffAccountOptions(data, side).map((account) => account.toLowerCase()));
   if (!allowedAccounts.has(offsetAccount.toLowerCase())) return alert("Choose an active account from the Chart of Accounts.");
+  if (isAr) {
+    try { await validateArSettlementAllocations([{ row, amount }], postingDate); } catch (error) { return alert(error.message || error); }
+  }
   const uniqueSuffix = `${Date.now()}`;
   const writeOffNo = `WOFF-${isAr ? "AR" : "AP"}-${uniqueSuffix}`;
   const documentReference = isAr ? row.invoice_no : row.po_no;
@@ -7352,24 +8227,24 @@ function bindAccountingView(data) {
   if (toggleAccountingSummaryBtn) toggleAccountingSummaryBtn.onclick = () => {
     const nextCollapsed = localStorage.getItem(ACCOUNTING_SUMMARY_STORAGE_KEY) !== "1";
     localStorage.setItem(ACCOUNTING_SUMMARY_STORAGE_KEY, nextCollapsed ? "1" : "0");
-    renderAccountingView();
+    renderLoadedAccountingView(data);
   };
   document.querySelectorAll("[data-accounting-tab]").forEach((btn) => btn.onclick = () => {
     accountingTab = btn.dataset.accountingTab;
-    renderAccountingView();
+    renderLoadedAccountingView(data);
   });
   document.querySelectorAll("[data-accounting-switch]").forEach((btn) => btn.onclick = () => {
     accountingTab = btn.dataset.accountingSwitch;
-    renderAccountingView();
+    renderLoadedAccountingView(data);
   });
   document.querySelectorAll("[data-ap-tab]").forEach((btn) => btn.onclick = () => {
     accountsPayableTab = btn.dataset.apTab;
-    renderAccountingView();
+    renderLoadedAccountingView(data);
   });
   document.querySelectorAll("[data-accounting-view-po]").forEach((btn) => btn.onclick = () => openAccountingPurchaseOrder(data, btn.dataset.accountingViewPo));
   document.querySelectorAll("[data-ar-invoice-tab]").forEach((btn) => btn.onclick = () => {
     accountsReceivableTab = btn.dataset.arInvoiceTab;
-    renderAccountingView();
+    renderLoadedAccountingView(data);
   });
   document.querySelectorAll("[data-ap-payment-reference]").forEach((btn) => btn.onclick = async () => {
     const searchValue = btn.dataset.apPaymentRun || btn.dataset.apPaymentReference || "";
@@ -7384,7 +8259,7 @@ function bindAccountingView(data) {
   $("accountingApplyDatesBtn").onclick = () => {
     sessionStorage.setItem("lms.accountingReportFrom", $("accountingReportFrom").value || "");
     sessionStorage.setItem("lms.accountingReportTo", $("accountingReportTo").value || today());
-    renderAccountingView();
+    renderLoadedAccountingView(data);
   };
   document.querySelectorAll("[data-jump]").forEach((btn) => btn.onclick = () => loadView(btn.dataset.jump));
   const postBtn = $("postApFromPoBtn");
@@ -7601,9 +8476,116 @@ async function loadBalancedJournalLookups(data = null) {
   ]);
 }
 
+function journalReferenceFromSnapshot(postingDate, rows = [], sequence = null) {
+  const { prefix } = journalSequenceParts(postingDate);
+  let next = Math.max(1, Number(sequence?.next_number || 0));
+  for (const row of rows) {
+    const ref = String(row.reference || "").trim();
+    if (!ref.toLowerCase().startsWith(prefix.toLowerCase())) continue;
+    const suffix = ref.slice(prefix.length);
+    if (/^\d{3,}$/.test(suffix)) next = Math.max(next, Number(suffix) + 1);
+  }
+  return prefix + String(next).padStart(3, "0");
+}
+
+function setupNewJournalLoading(data, coa) {
+  const body = $("modalBody");
+  const form = $("journalLineBody");
+  const active = () => $("journalLineBody") === form;
+  const field = name => body.querySelector(`[data-product-field="${name}"]`);
+  const pending = new Map();
+  const load = (key, tables, apply) => {
+    if (pending.has(key)) return pending.get(key);
+    const promise = Promise.all(tables.map(table => getViewRows(table))).then(rows => {
+      if (active()) apply(...rows);
+    }).catch(error => { pending.delete(key); throw error; });
+    pending.set(key, promise);
+    return promise;
+  };
+  const loaders = {
+    customer: () => load("customer", ["customers"], rows => {
+      productMeta.accountingCustomers = rows; partyMasterMeta.customers = rows;
+    }),
+    vendor: () => load("vendor", ["vendors"], rows => {
+      productMeta.accountingVendors = rows; partyMasterMeta.vendors = rows;
+    }),
+    work_order_no: () => load("work_orders", ["work_orders"], rows => {
+      productMeta.accountingWorkOrders = rows.map(row => ({ ...row,
+        wo_no: row.wo_no || row.work_order_no || row.number || "",
+        asset_tag: row.asset_tag || row.asset_no || "",
+        bill_to_customer: row.bill_to_customer || row.customer || "",
+        jobsite_location: row.jobsite_location || row.jobsite || "",
+        actual_location: row.actual_location || row.location || "",
+        equipment_name: row.equipment_name || row.asset_name || row.description || "",
+      }));
+      productMeta.workOrders = productMeta.accountingWorkOrders;
+    }),
+    jobsite: () => load("locations", ["asset_locations"], rows => {
+      productMeta.locations = rows.map(row => row.name || row.location || row.value).filter(Boolean);
+    }),
+    equipment: () => load("equipment", ["assets", "outside_customer_fleet"], (assets, fleet) => {
+      productMeta.assets = assets; productMeta.outsideFleet = fleet;
+    }),
+  };
+  for (const [name, loader] of Object.entries(loaders)) {
+    const input = field(name);
+    input?.addEventListener("focus", () => {
+      input.setAttribute("aria-busy", "true");
+      loader().then(() => {
+        input.setCustomValidity("");
+        if (active() && document.activeElement === input && input.value.trim()) showSuggestMenu(input);
+      }).catch(error => {
+        if (active()) { input.setCustomValidity("Could not load suggestions: " + error.message + ". Focus this field to retry."); input.reportValidity(); }
+      }).finally(() => input.removeAttribute("aria-busy"));
+    });
+  }
+  const accountsReady = () => coa.length ? Promise.resolve() : load("accounts", ["chart_of_accounts"], rows => {
+    coa.push(...rows); productMeta.journalAccounts = coa;
+  });
+  const reference = field("reference");
+  const date = field("posting_date");
+  let referenceRequest = 0;
+  const refreshReference = async () => {
+    const request = ++referenceRequest;
+    const postingDate = date.value || today();
+    const prior = reference.dataset.systemJournalReference || "";
+    if (reference.value.trim() && reference.value.trim() !== prior) return;
+    const { key } = journalSequenceParts(postingDate);
+    const result = await supabase.from("app_sequences").select("next_number").eq("key", key).maybeSingle();
+    if (result.error) throw result.error;
+    if (!active() || request !== referenceRequest || (date.value || today()) !== postingDate) return;
+    if (reference.value.trim() && reference.value.trim() !== prior) return;
+    reference.value = journalReferenceFromSnapshot(postingDate, data?.allGl || [], result.data);
+    reference.dataset.systemJournalReference = reference.value;
+  };
+  let referenceReady;
+  const beginReference = () => {
+    referenceReady = refreshReference();
+    referenceReady.catch(error => { if (active()) console.warn("Journal reference preview unavailable", error); });
+  };
+  date.addEventListener("change", beginReference);
+  beginReference();
+  accountsReady().catch(error => { if (active()) console.warn("Journal accounts unavailable", error); });
+  for (const button of [$("modalSave"), $("journalSaveOnlyBtn")]) {
+    const save = button.onclick;
+    button.onclick = async (...args) => {
+      try {
+        await Promise.all([accountsReady(), referenceReady,
+          ...(field("customer")?.value.trim() ? [loaders.customer()] : []),
+          ...(field("vendor")?.value.trim() ? [loaders.vendor()] : []),
+        ]);
+        if (active()) return save(...args);
+      } catch (error) { if (active()) alert("Could not prepare journal: " + error.message + ". Reopen the form to retry. Nothing was posted."); }
+    };
+  }
+}
+
 async function openBalancedJournalModal(data = null, editGroup = null, prefillGroup = null, lookups = null) {
-  const [coaRows, customers, vendors, workOrders, assets, outsideFleet, locations] = lookups || await loadBalancedJournalLookups(data);
-  const coa = coaRows || [];
+  const quickNew = !editGroup && !prefillGroup && !lookups;
+  const [coaRows, customers, vendors, workOrders, assets, outsideFleet, locations] = quickNew
+    ? [data?.coa || [], data?.customers || partyMasterMeta.customers || [], partyMasterMeta.vendors || [], productMeta.accountingWorkOrders || [], productMeta.assets || [], productMeta.outsideFleet || [], (productMeta.locations || []).map(name => ({name}))]
+    : lookups || await loadBalancedJournalLookups(data);
+  const coa = [...(coaRows || [])];
   const journalWorkOrders = (workOrders || []).map((row) => ({
     ...row,
     wo_no: row.wo_no || row.work_order_no || row.number || "",
@@ -7624,7 +8606,7 @@ async function openBalancedJournalModal(data = null, editGroup = null, prefillGr
   const accounts = journalAccountOptions(coa);
   const formGroup = editGroup || prefillGroup;
   const postingDate = editGroup?.posting_date || today();
-  const reference = formGroup?.reference || await nextJournalReferencePreview(postingDate);
+  const reference = formGroup?.reference || (quickNew ? journalReferenceFromSnapshot(postingDate, data?.allGl || []) : await nextJournalReferencePreview(postingDate));
   const invoiceDate = formGroup?.invoice_date || postingDate || today();
   const editLines = formGroup?.lines?.length ? formGroup.lines.map((line) => prefillGroup ? { ...line, id: null } : line) : [{}, {}];
   $("modalTitle").textContent = editGroup ? `Edit balanced journal ${reference}` : prefillGroup ? `Correct and repost journal ${reference}` : "New balanced journal entry";
@@ -7672,7 +8654,7 @@ async function openBalancedJournalModal(data = null, editGroup = null, prefillGr
       referenceInput.title = "The journal reference cannot be changed after posting.";
     }
   }
-  if (!editGroup && !prefillGroup && postingDateInput && referenceInput) {
+  if (!quickNew && !editGroup && !prefillGroup && postingDateInput && referenceInput) {
     postingDateInput.addEventListener("change", async () => {
       const priorSystemReference = referenceInput.dataset.systemJournalReference || "";
       const wasSystemGenerated = !referenceInput.value.trim() || referenceInput.value.trim() === priorSystemReference;
@@ -7703,6 +8685,7 @@ async function openBalancedJournalModal(data = null, editGroup = null, prefillGr
   });
   $("createJournalJobsiteBtn").onclick = quickCreateBalancedJournalJobsite;
   wireBalancedJournalLines(accounts);
+  if (quickNew) setupNewJournalLoading(data, coa);
 }
 
 async function quickCreateBalancedJournalJobsite() {
@@ -7778,7 +8761,7 @@ async function balancedJournalEditEligibility(group, paymentChecks = null) {
   if (!group?.reference) return { allowed: false, reason: "Journal reference is missing." };
   if (/manual journal accrual/i.test(group.source || "")) return { allowed: false, reason: "This journal belongs to a dated accrual pair. Post a separate correcting journal to preserve both entries." };
   if (/reversed|void|cancel/i.test(group.status || "")) return { allowed: false, reason: "Reversed or voided journals are read-only." };
-  if (isLockedAccountingDate(group.posting_date) || isLockedAccountingDate(group.invoice_date)) return { allowed: false, reason: "The posting or invoice date is in a closed accounting period." };
+  if (isLockedAccountingDate(group.posting_date)) return { allowed: false, reason: "The posting date is in a closed accounting period." };
   const reference = String(group.reference).trim();
   const [payments, checkRuns, invoices, bankTransactions] = await (paymentChecks || loadBalancedJournalPaymentChecks());
   const active = (row) => !/void|reversed|cancel/i.test(row.status || "");
@@ -7874,7 +8857,7 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
   const lines = readBalancedJournalLines();
   if (!header.posting_date || !header.invoice_date || !header.reference || !header.description) return alert("Posting date, invoice date, journal reference, and journal description are required.");
   if (isLockedAccountingDate(header.posting_date)) return alert("This journal date is inside the closed accounting period.");
-  if (isLockedAccountingDate(header.invoice_date)) return alert("This invoice date is inside the closed accounting period.");
+  // Invoice date records the document date; posting date controls the period.
   if (lines.length < 2) return alert("A journal must contain at least two completed lines.");
   const activeAccounts = new Set(journalAccountOptions(coa).map((account) => account.toLowerCase()));
   const invalidAccount = lines.find((line) => !activeAccounts.has(String(line.account || "").toLowerCase()));
@@ -8114,6 +9097,22 @@ function stockMovementLedgerQty(movements = [], asOf = today()) {
   }, 0);
 }
 
+function periodClosePoExceptions(data) {
+  const asOf = data.reportTo || today();
+  return (data.pos || []).filter(row => {
+    const date = String(row.po_date || "").slice(0, 10);
+    return (!date || date <= asOf) && !/void|cancel|revers/i.test(row.status || "");
+  }).map(row => {
+    const receipts = (row._receipts || []).filter(receipt => {
+      const date = String(receipt.gr_date || "").slice(0, 10);
+      return !date || date <= asOf;
+    });
+    const scoped = { ...row, _receipts: receipts };
+    const match = poMatchStatusFromAmounts(scoped);
+    return { ...scoped, match_status: /review/i.test(row.match_status || "") ? row.match_status : match };
+  }).filter(row => /mismatch|review/i.test((row.match_status || "") + " " + (row.payment_status || "")));
+}
+
 function periodCloseChecks(data) {
   const tb = trialBalanceRows(data);
   const tbDebit = tb.reduce((sum, row) => sum + Number(row.debit || 0), 0);
@@ -8130,7 +9129,7 @@ function periodCloseChecks(data) {
   const inventoryGl = accountingGlBalance(data, /parts inventory/i);
   const inventoryDetail = stockMovementLedgerValue(data.movements || [], asOf);
   const unmatchedBank = (data.bankRows || []).filter((row) => /unmatched|review/i.test(row.status || "")).length;
-  const unmatchedPo = (data.pos || []).filter((row) => /mismatch|review/i.test(`${row.match_status || ""} ${row.payment_status || ""}`)).length;
+  const unmatchedPo = periodClosePoExceptions(data).length;
   const unposted = (data.gl || []).filter((row) => !/posted|reversed|void/i.test(row.status || "Posted")).length;
   return [
     { name: "Trial balance", ok: Math.abs(tbDebit - tbCredit) <= 0.005, detail: `Debit ${money(tbDebit)} | Credit ${money(tbCredit)} | Difference ${money(tbDebit - tbCredit)}` },
@@ -8143,11 +9142,19 @@ function periodCloseChecks(data) {
   ];
 }
 
-async function accountingControlData(asOf = today()) {
-  const [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns] = await Promise.all([
-    getAll("general_ledger"), getAll("chart_of_accounts"), getAll("invoices"), getAll("invoice_lines"), getAll("customer_payments"), getAll("purchase_orders"), getAll("purchase_order_lines"), getAll("goods_receipts"), getAll("sales_orders"), getAll("sales_order_lines"), getAll("bank_transactions"), getAll("products"), getAll("stock_movements"),
-    getAll("check_runs"),
-  ]);
+async function accountingControlData(asOf = today(), onProgress = () => {}) {
+  const tables = ["general_ledger","chart_of_accounts","invoices","invoice_lines","customer_payments","purchase_orders","purchase_order_lines","goods_receipts","sales_orders","sales_order_lines","bank_transactions","products","stock_movements","check_runs"];
+  const rows = [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    for (let i = 0; i < tables.length; i += 2) {
+      onProgress("Checking records " + (i + 1) + "–" + Math.min(i + 2, tables.length) + " of " + tables.length + "…");
+      const batch = await Promise.all(tables.slice(i, i + 2).map(table => getAll(table, { strict: true, signal: controller.signal, beforePage: async signal => { if (signal.aborted) throw new Error("Accounting checks timed out. Please try again."); } })));
+      rows.push(...batch);
+    }
+  } finally { clearTimeout(timer); controller.abort(); }
+  const [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns] = rows;
   return buildAccountingData({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, reportFrom: "", reportTo: asOf, reportTab: "tb" });
 }
 
@@ -8206,6 +9213,8 @@ function openPeriodCloseChecklist(data) {
   const ready = checks.every((check) => check.ok);
   $("modalTitle").textContent = "Accounting period-close checklist";
   $("modalBody").innerHTML = `<div class="notice"><strong>${ready ? "Ready for accounting review" : "Period close is blocked"}</strong><br>${ready ? "All automated checks passed. Accounting should still review supporting documents before closing." : "Resolve every failed control before changing the closed-through date."}</div><div class="control-checklist">${checks.map((check) => `<div class="control-check ${check.ok ? "good" : "bad"}"><strong>${check.ok ? "✓" : "!"}</strong><div><strong>${esc(check.name)}</strong><span>${esc(check.detail)}</span></div></div>`).join("")}</div>`;
+  const poExceptions = periodClosePoExceptions(data);
+  $("modalBody").innerHTML += `<h3>Accounts Receivable reconciliation</h3>${agingControlReviewHtml("ar")}<h3>Accounts Payable reconciliation</h3>${agingControlReviewHtml("ap")}${poExceptions.length ? `<h3>POs requiring review through ${esc(data.reportTo || today())}</h3><div class="table-wrap"><table><thead><tr><th>PO #</th><th>Vendor</th><th>PO date</th><th>Matching status</th><th>Payment status</th></tr></thead><tbody>${poExceptions.map(row => `<tr>${[row.po_no,row.vendor,row.po_date,row.match_status,row.payment_status].map(value => `<td>${esc(value || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : ""}`;
   $("modalSave").textContent = ready ? "Open Period Settings" : "Close";
   $("modalSave").onclick = () => { closeModal(true); if (ready) loadView("settings"); };
   $("modalCancel").textContent = "Close";
@@ -8732,11 +9741,11 @@ async function ensureTrialBalanceAccounts(entries, rawRows) {
 
 async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGroupKey = "") {
   const [assets, outsideFleet, workOrders, assetLocations, locations] = await Promise.all([
-    getAll("assets").catch(() => []),
-    getAll("outside_customer_fleet").catch(() => []),
-    getAll("work_orders").catch(() => []),
-    getAll("asset_locations").catch(() => []),
-    getAll("locations").catch(() => []),
+    getViewRows("assets").catch(() => []),
+    getViewRows("outside_customer_fleet").catch(() => []),
+    getViewRows("work_orders").catch(() => []),
+    getViewRows("asset_locations").catch(() => []),
+    getViewRows("locations").catch(() => []),
   ]);
   productMeta.assets = assets;
   productMeta.outsideFleet = outsideFleet;
@@ -8750,7 +9759,7 @@ async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGro
   const scopedPo = receiptGroup ? { ...po, _receipts: receiptGroup.rows, _receipt_invoice_scope: true } : po;
   const ap = scopedPo ? poApSummary(scopedPo) : {};
   const support = scopedPo ? poSupportDetails(data, scopedPo) : {};
-  const ref = await nextRefPreview("ap", "AP-", "general_ledger", "reference");
+  const ref = "";
   $("modalTitle").textContent = po ? `Post AP from ${po.po_no}` : "Post AP from PO";
   $("modalBody").innerHTML = `
     <div class="form-grid">
@@ -8797,6 +9806,7 @@ async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGro
     const selected = resolveEquipmentSuggestLookup(equipmentInput.value, equipmentInput);
     if (selected) equipmentInput.value = [selected.assetTag, selected.name].filter(Boolean).join(" | ");
   };
+  prepareOrderReference("reference", () => orderReferencePreview("ap", "AP-", "general_ledger", "reference"));
 }
 
 async function openPostedApReadView(data, poNo, invoiceNo = "", receiptGroupKey = "") {
@@ -9036,8 +10046,9 @@ async function savePostApFromPo(data) {
     alert("Receive goods before posting Accounts Payable. If the goods receipt was reversed, post a new goods receipt first.");
     return;
   }
+  let postingConfirmed=false;
   try {
-    await supabase.from("purchase_orders").update({
+    const { data: savedPo, error: saveError } = await supabase.from("purchase_orders").update({
       vendor_invoice_no: record.vendor_invoice_no,
       vendor_invoice_date: record.vendor_invoice_date,
       vendor_invoice_amount: invoiceAmount,
@@ -9050,7 +10061,9 @@ async function savePostApFromPo(data) {
       payment_status: record.payment_status || "Ready to Pay",
       status: record.status || "Matched",
       notes: record.notes || po.notes || null,
-    }).eq("id", po.id);
+    }).eq("id", po.id).select("id");
+    if(saveError) throw saveError;
+    if(!savedPo?.length) throw new Error("Purchase order update was not confirmed. Posting stopped.");
     await syncGoodsReceiptInvoiceFromAp(scopedPo, {
       invoice_no: record.vendor_invoice_no,
       invoice_date: record.vendor_invoice_date,
@@ -9063,11 +10076,12 @@ async function savePostApFromPo(data) {
     } else {
       await postPurchaseOrderLedger(scopedPo, record);
     }
+    postingConfirmed=true;
     closeModal();
     accountingTab = "ap";
-    renderAccountingView();
+    await refreshPostedAccounting(data, po.po_no);
   } catch (error) {
-    alert(error.message || error);
+    alert(postingConfirmed ? "Posting succeeded, but the refreshed view could not load. Use Refresh; do not post it again. " + (error.message || error) : (error.message || error));
   }
 }
 
@@ -9100,7 +10114,7 @@ async function syncGoodsReceiptInvoiceFromAp(po, invoice = {}, corrections = [])
     allocatedCents += lineCents;
     const baseUnitCost = (lineCents / 100) / receivedQty;
     const oldQty = Number(receipt.received_qty || 0);
-    const oldBaseUnitCost = Number(receipt.base_unit_cost || receipt.unit_cost || 0);
+    const oldBaseUnitCost = Number(receipt.base_unit_cost ?? receipt.unit_cost ?? 0);
     const oldLandedUnitCost = Number(receipt.landed_unit_cost || receipt.unit_cost || oldBaseUnitCost);
     const landedAddOnPerUnit = Math.max(0, oldLandedUnitCost - oldBaseUnitCost);
     const landedUnitCost = baseUnitCost + landedAddOnPerUnit;
@@ -9114,51 +10128,18 @@ async function syncGoodsReceiptInvoiceFromAp(po, invoice = {}, corrections = [])
       vendor_invoice_date: invoice.invoice_date || null,
       vendor_invoice_amount: lineCents / 100,
     };
-    const { data: updatedRows, error } = await supabase.from("goods_receipts").update(update).eq("id", receipt.id).select("id");
-    if (error) throw error;
-    if (!(updatedRows || []).length) throw new Error(`Could not update goods receipt ${receipt.gr_no || receipt.id}.`);
-    const correctedReceipt = { ...receipt, ...update };
-    Object.assign(receipt, update);
-    correctedReceipts.push(correctedReceipt);
-    const poLineId = correction.po_line_id || receipt.po_line_id;
-    if (poLineId) {
-      const { error: poLineError } = await supabase.from("purchase_order_lines").update({ unit_cost: baseUnitCost }).eq("id", poLineId);
-      if (poLineError) throw poLineError;
-      const localPoLine = (po._lines || []).find((line) => String(line.id || "") === String(poLineId));
-      if (localPoLine) localPoLine.unit_cost = baseUnitCost;
-    }
-    if (receipt.product_id) {
-      const { data: productRows, error: productReadError } = await supabase.from("products").select("id,qty,cost").eq("id", receipt.product_id).limit(1);
-      if (productReadError) throw productReadError;
-      const product = (productRows || [])[0];
-      if (product) {
-        const { data: updatedProducts, error: productUpdateError } = await supabase.from("products").update({ qty: Number(product.qty || 0) + receivedQty - oldQty, cost: landedUnitCost }).eq("id", product.id).select("id");
-        if (productUpdateError) throw productUpdateError;
-        if (!(updatedProducts || []).length) throw new Error(`Could not correct inventory for ${receipt.sku || receipt.product_name}.`);
-      }
-    }
-    if (receipt.gr_no) {
-      const { error: movementError } = await supabase.from("stock_movements").update({ qty: receivedQty, unit_fifo_cost: landedUnitCost, total_fifo_cost: receivedQty * landedUnitCost }).eq("reference_no", `SM-${receipt.gr_no}`).eq("type", "Goods Receipt");
-      if (movementError) throw movementError;
-    }
-    await postGoodsReceiptSupplementalCorrection(po, originalReceipt, correctedReceipt, invoice);
-    await postConsumedInventoryCostCorrection(receipt, {
-      sold_qty: soldQty,
-      old_unit_cost: oldLandedUnitCost,
-      new_unit_cost: landedUnitCost,
-      posting_date: invoice.posting_date || today(),
-      invoice_no: invoice.invoice_no || "",
-      invoice_date: invoice.invoice_date || null,
-      po_no: po.po_no,
-      posting_reference: invoice.posting_reference || "",
-    });
+    correctedReceipts.push({id:receipt.id,old_qty:receipt.received_qty,old_cost:receipt.unit_cost,...update,po_line_id:correction.po_line_id || ''});
   }
-  await writeAuditLog({
-    tableName: "goods_receipts",
-    action: "Receipt invoice corrected from AP posting",
-    beforeData: beforeReceipts.map((receipt) => ({ id: receipt.id, gr_no: receipt.gr_no, received_qty: receipt.received_qty, unit_cost: receipt.unit_cost, base_unit_cost: receipt.base_unit_cost, vendor_invoice_no: receipt.vendor_invoice_no, vendor_invoice_date: receipt.vendor_invoice_date, vendor_invoice_amount: receipt.vendor_invoice_amount })),
-    afterData: { po_no: po.po_no, invoice_no: invoice.invoice_no, invoice_date: invoice.invoice_date, invoice_amount: Number(invoice.invoice_amount || 0), receipt_ids: receipts.map((receipt) => receipt.id) },
+  const {data:saved,error}=await supabase.rpc('correct_receipts_atomic',{
+    p_changes:correctedReceipts,p_posting_date:invoice.posting_date || today(),p_invoice_no:invoice.invoice_no || null,
+    p_invoice_date:invoice.invoice_date || null,p_actor:profile?.full_name || profile?.username || session?.user?.email || 'Accounting'
   });
+  if(error)throw error;
+  for(const row of saved || []){
+    const receipt=receipts.find(item=>item.id===row.id);if(receipt)Object.assign(receipt,row);
+    const change=correctedReceipts.find(item=>item.id===row.id);
+    const line=(po._lines || []).find(item=>item.id===change?.po_line_id);if(line)line.unit_cost=row.base_unit_cost;
+  }
 }
 
 function signedSupplementalLedgerRow(common, account, netDebit, description) {
@@ -9171,8 +10152,8 @@ async function postGoodsReceiptSupplementalCorrection(po, before, after, invoice
   if (!before?.gr_no) return;
   const oldQty = Number(before.received_qty || 0);
   const newQty = Number(after.received_qty || 0);
-  const oldBase = Number(before.base_unit_cost || before.unit_cost || 0);
-  const newBase = Number(after.base_unit_cost || after.unit_cost || 0);
+  const oldBase = Number(before.base_unit_cost ?? before.unit_cost ?? 0);
+  const newBase = Number(after.base_unit_cost ?? after.unit_cost ?? 0);
   const oldLanded = Number(before.landed_unit_cost || before.unit_cost || oldBase);
   const newLanded = Number(after.landed_unit_cost || after.unit_cost || newBase);
   const partsAccrualDelta = roundCurrency(newQty * newBase - oldQty * oldBase);
@@ -9200,30 +10181,49 @@ async function postGoodsReceiptSupplementalCorrection(po, before, after, invoice
   await upsertMany("general_ledger", rows, "id");
 }
 
-async function fifoConsumedQuantityForReceipt(receipt) {
-  if (!receipt?.gr_no || (!receipt.product_id && !receipt.sku)) return 0;
-  let query = supabase.from("stock_movements").select("id,reference_no,movement_date,created_at,qty,type,product_id,sku");
-  query = receipt.product_id ? query.eq("product_id", receipt.product_id) : query.eq("sku", receipt.sku);
-  const { data, error } = await query;
-  if (error) throw error;
+function fifoReceiptConsumption(receipt, movements) {
+  const layers = [], consumed = [];
   const targetReference = `SM-${receipt.gr_no}`;
-  const layers = [];
-  (data || []).slice().sort((a, b) => `${a.movement_date || ""}|${a.created_at || ""}|${a.id || ""}`.localeCompare(`${b.movement_date || ""}|${b.created_at || ""}|${b.id || ""}`)).forEach((movement) => {
+  (movements || []).slice().sort((a, b) => `${a.movement_date || ""}|${a.created_at || ""}|${a.id || ""}`.localeCompare(`${b.movement_date || ""}|${b.created_at || ""}|${b.id || ""}`)).forEach((movement) => {
+    // Location transfers do not create or consume inventory cost layers.
+    if (movement.type === "Inventory Revaluation" || (/transfer/i.test(movement.type || "") && movement.from_warehouse && movement.to_warehouse)) return;
     const qty = Number(movement.qty || 0);
     if (qty > 0) {
-      layers.push({ reference: movement.reference_no, remaining: qty, original: qty });
+      layers.push({ reference: movement.reference_no, remaining: qty });
       return;
     }
-    let toConsume = Math.abs(qty);
+    let remaining = Math.abs(qty);
     for (const layer of layers) {
-      if (toConsume <= 0) break;
-      const consumed = Math.min(layer.remaining, toConsume);
-      layer.remaining -= consumed;
-      toConsume -= consumed;
+      if (remaining <= 0) break;
+      const used = Math.min(layer.remaining, remaining);
+      layer.remaining -= used;
+      remaining -= used;
+      if (used > 0 && layer.reference === targetReference) consumed.push({ movement, quantity: used });
     }
   });
-  const target = layers.find((layer) => layer.reference === targetReference);
-  return target ? Math.max(0, target.original - target.remaining) : 0;
+  return consumed;
+}
+
+async function loadReceiptConsumption(receipt) {
+  if(!receipt?.id)return [];
+  const {data,error}=await supabase.rpc('receipt_fifo_consumption',{p_receipt_id:receipt.id});
+  if(error)throw error;
+  return (data || []).map(row=>({quantity:Number(row.quantity),movement:{id:row.movement_id}}));
+}
+
+async function fifoConsumedQuantityForReceipt(receipt) {
+  return (await loadReceiptConsumption(receipt)).reduce((sum, row) => sum + row.quantity, 0);
+}
+
+function consumedInventoryCostUpdates(consumption, adjustment) {
+  const total = consumption.reduce((sum, row) => sum + row.quantity, 0);
+  if (!(total > 0)) throw new Error("The issued inventory cost could not be traced. Refresh before correcting this receipt.");
+  let allocated = 0;
+  return consumption.map(({ movement, quantity }, index) => {
+    const amount = index === consumption.length - 1 ? roundCurrency(adjustment - allocated) : roundCurrency(adjustment * quantity / total);
+    allocated = roundCurrency(allocated + amount);
+    return { id: movement.id, qty: Number(movement.qty), old_unit_cost: Number(movement.unit_fifo_cost || 0), new_unit_cost: Number(movement.unit_fifo_cost || 0) + amount / Math.abs(Number(movement.qty)) };
+  });
 }
 
 async function postConsumedInventoryCostCorrection(receipt, correction = {}) {
@@ -9254,7 +10254,15 @@ async function postConsumedInventoryCostCorrection(receipt, correction = {}) {
       { ...common, account: "COGS - Parts", description: `Reduce cost of sold inventory ${receipt.sku || ""} from ${correction.po_no || receipt.po_no || ""}`.trim(), debit: 0, credit: amount },
     ];
   assertBalancedLedgerRows(rows, `Inventory cost correction ${receipt.gr_no}`);
-  await upsertMany("general_ledger", rows, "id");
+  const consumption = await loadReceiptConsumption(receipt);
+  const tracedQty = consumption.reduce((sum, row) => sum + row.quantity, 0);
+  if (Math.abs(tracedQty - soldQty) > 0.000001) throw new Error("Inventory changed while correcting costs. Refresh and retry.");
+  const { error } = await supabase.rpc("apply_consumed_inventory_cost", {
+    p_gr_no: receipt.gr_no,
+    p_updates: consumedInventoryCostUpdates(consumption, adjustment),
+    p_ledger: rows,
+  });
+  if (error) throw error;
 }
 
 async function openResolveApMismatchModal(data, poNo) {
@@ -9536,38 +10544,41 @@ async function postGoodsReceiptLedger(receipts) {
   for (const gr of receipts) {
     if (!poCache.has(gr.po_no)) poCache.set(gr.po_no, await purchaseOrderForReceipt(gr));
     const po = poCache.get(gr.po_no);
-    const inventoryAmount = Number(gr.received_qty || 0) * Number(gr.unit_cost || 0);
-    const productVendorAmount = goodsReceiptBaseAmount(po, gr);
-    const landedAccrualAmount = Math.max(0, inventoryAmount - productVendorAmount);
+    const { inventoryAmount, productVendorAmount, landedAccrualAmount } = goodsReceiptPostingAmounts(po, gr);
     if (!inventoryAmount) continue;
     rows.push(
       { entry_date: gr.gr_date, posting_date: gr.gr_date, account: "Parts Inventory", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Goods receipt ${gr.sku}`, reference: gr.gr_no, debit: inventoryAmount, credit: 0, source: "Goods Receipt", status: "Posted" },
-      { entry_date: gr.gr_date, posting_date: gr.gr_date, account: "Parts Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Accrued product receipt ${gr.sku}`, reference: gr.gr_no, debit: 0, credit: productVendorAmount || inventoryAmount, source: "Goods Receipt", status: "Posted" },
+      { entry_date: gr.gr_date, posting_date: gr.gr_date, account: "Parts Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Accrued product receipt ${gr.sku}`, reference: gr.gr_no, debit: 0, credit: productVendorAmount, source: "Goods Receipt", status: "Posted" },
     );
     if (landedAccrualAmount) {
       rows.push({ entry_date: gr.gr_date, posting_date: gr.gr_date, account: "Landed Cost Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Estimated landed cost ${gr.sku}`, reference: gr.gr_no, debit: 0, credit: landedAccrualAmount, source: "Goods Receipt", status: "Posted" });
     }
   }
-  for (const gr of receipts) {
-    await supabase.from("general_ledger").delete().eq("reference", gr.gr_no).eq("source", "Goods Receipt");
-  }
-  if (rows.length) await upsertMany("general_ledger", rows, "id");
+  for (const gr of receipts) assertBalancedLedgerRows(rows.filter(row => row.reference === gr.gr_no), gr.gr_no);
+  const { error } = await supabase.rpc("replace_goods_receipt_ledger", {
+    p_references: receipts.map(gr => gr.gr_no), p_source: "Goods Receipt", p_rows: rows,
+  });
+  if (error) throw error;
+  invalidateViewReads();
 }
 
 async function postGoodsReceiptReversalLedger(gr) {
   const po = await purchaseOrderForReceipt(gr);
-  const amount = Number(gr.received_qty || 0) * Number(gr.unit_cost || 0);
-  const productVendorAmount = goodsReceiptBaseAmount(po, gr);
-  const landedAccrualAmount = Math.max(0, amount - productVendorAmount);
+  const { inventoryAmount: amount, productVendorAmount, landedAccrualAmount } = goodsReceiptPostingAmounts(po, gr);
   if (!amount) return;
   const reference = `REV-${gr.gr_no}`;
-  await supabase.from("general_ledger").delete().eq("reference", reference).eq("source", "Goods Receipt Reversal");
+
   const rows = [
-    { entry_date: today(), posting_date: today(), account: "Parts Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse product accrual ${gr.gr_no}`, reference, debit: productVendorAmount || amount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" },
+    { entry_date: today(), posting_date: today(), account: "Parts Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse product accrual ${gr.gr_no}`, reference, debit: productVendorAmount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" },
     { entry_date: today(), posting_date: today(), account: "Parts Inventory", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse inventory ${gr.gr_no}`, reference, debit: 0, credit: amount, source: "Goods Receipt Reversal", status: "Posted" },
   ];
   if (landedAccrualAmount) rows.push({ entry_date: today(), posting_date: today(), account: "Landed Cost Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse landed cost accrual ${gr.gr_no}`, reference, debit: landedAccrualAmount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" });
-  await upsertManyWithOptionalColumns("general_ledger", rows, "id", ["bank_reference"]);
+  assertBalancedLedgerRows(rows, reference);
+  const { error } = await supabase.rpc("replace_goods_receipt_ledger", {
+    p_references: [reference], p_source: "Goods Receipt Reversal", p_rows: rows,
+  });
+  if (error) throw error;
+  invalidateViewReads();
 }
 
 function collectProductModalFields() {
@@ -9606,18 +10617,18 @@ async function renderCheckRunView() {
   $("viewTitle").textContent = "Check Run";
   $("viewSub").textContent = "Select approved payables, filter by vendor, issue checks, and post payments.";
   const [pos, poLines, receipts, runs, coa, gl, workOrders, assets] = await Promise.all([
-    getAll("purchase_orders"),
-    getAll("purchase_order_lines"),
-    getAll("goods_receipts"),
-    getAll("check_runs"),
-    getAll("chart_of_accounts"),
-    getAll("general_ledger"),
-    getAll("work_orders"),
-    getAll("assets"),
+    getViewRows("purchase_orders"),
+    getViewRows("purchase_order_lines"),
+    getViewRows("goods_receipts"),
+    getViewRows("check_runs"),
+    getViewRows("chart_of_accounts"),
+    getViewRows("general_ledger"),
+    getViewRows("work_orders"),
+    getViewRows("assets"),
   ]);
   const repairedCheckReversals = await reconcileMissingVoidedCheckRunReversals(runs, gl);
   if (repairedCheckReversals) {
-    const refreshedGl = await getAll("general_ledger");
+    const refreshedGl = await getViewRows("general_ledger");
     gl.splice(0, gl.length, ...refreshedGl);
   }
   await reconcilePrintedCheckRunPaymentStatuses(runs, pos);
@@ -10416,7 +11427,7 @@ async function printCheckRun(checkRunNo, draftOnly = false) {
     try { await loadAccountingCloseDate(); validateCheckRunDates(row); }
     catch (error) { return alert(error.message); }
   }
-  const vendors = await getAll("vendors").catch(() => []);
+  const vendors = await workOrderScopedRows("vendors", "name", [row.vendor].filter(Boolean));
   const vendor = vendors.find((v) => String(v.name || "").trim().toLowerCase() === String(row.vendor || "").trim().toLowerCase());
   const detail = parseCheckRunNotes(row.notes);
   const invoices = detail.invoices.length ? detail.invoices : [{
@@ -10630,8 +11641,8 @@ async function renderBankReconciliationView() {
   $("viewTitle").textContent = "Bank / Credit Card / Intercompany Reconciliation";
   $("viewSub").textContent = "Statement format per bank, credit card payable, or intercompany account.";
   const [gl, bankRows, coa, beginningBalances, reconciliations] = await Promise.all([
-    getAll("general_ledger"), getAll("bank_transactions"), getAll("chart_of_accounts"),
-    getAll("bank_beginning_balances").catch(() => []), getAll("bank_reconciliations").catch(() => []),
+    getViewRows("general_ledger"), getViewRows("bank_transactions"), getViewRows("chart_of_accounts"),
+    getViewRows("bank_beginning_balances").catch(() => []), getViewRows("bank_reconciliations").catch(() => []),
   ]);
   const banks = reconciliationAccountOptions(coa, gl);
   const savedBank = localStorage.getItem("lms.bankRecBank") || "";
@@ -11490,17 +12501,36 @@ async function renderSettingsView() {
       <div class="panel-head"><div class="panel-title"><strong>Period Close History</strong><span>Previously closed and reopened periods.</span></div></div>
       ${accountingPeriodHistoryTable(periodRows)}
     </section>`;
-  $("saveCloseDateBtn").onclick = async () => {
-    const saved = await setAccountingCloseDate($("closePostingDate").value);
-    if (saved !== false) renderSettingsView();
-  };
-  $("openPeriodBtn").onclick = async () => {
-    if (!confirm("Open prior accounting periods? This allows older transactions to be changed again.")) return;
-    await setAccountingCloseDate("");
-    renderSettingsView();
-  };
+  $("saveCloseDateBtn").onclick = () => submitAccountingPeriodChange(false);
+  $("openPeriodBtn").onclick = () => submitAccountingPeriodChange(true);
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
   enhanceColumnFilters();
+}
+
+async function submitAccountingPeriodChange(reopen = false) {
+  const save = $("saveCloseDateBtn"), open = $("openPeriodBtn");
+  if (save.disabled || open.disabled) return;
+  const value = reopen ? "" : $("closePostingDate").value;
+  if (!reopen && !value) { alert("Choose a closed-through posting date first."); return; }
+  if (reopen && !confirm("Open prior accounting periods? This allows older transactions to be changed again.")) return;
+  const button = reopen ? open : save;
+  const original = button.textContent;
+  save.disabled = open.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  let saved = false;
+  try {
+    button.textContent = reopen ? "Opening period…" : "Checking accounting controls…";
+    saved = await setAccountingCloseDate(value, message => { button.textContent = message; });
+    if (saved === false) return;
+    await renderSettingsView();
+    alert(reopen ? "Accounting period reopened." : "Accounting closed through " + formatDisplayDate(value) + ".");
+  } catch (error) {
+    alert((saved ? "The period change was saved, but the screen could not refresh. " : "Could not save the accounting period. ") + (error.message || error));
+  } finally {
+    save.disabled = open.disabled = false;
+    button.textContent = original;
+    button.removeAttribute("aria-busy");
+  }
 }
 
 function accountingPeriodHistoryTable(rows) {
@@ -11530,33 +12560,35 @@ async function loadAccountingCloseDate() {
   return getAccountingCloseDate();
 }
 
-async function setAccountingCloseDate(value) {
+async function setAccountingCloseDate(value, onProgress = () => {}) {
+  if (!session || !/admin/i.test(profile?.role || "")) throw new Error("An administrator must be signed in to change accounting periods.");
   const closeDate = value || "";
+  if (closeDate && !/^\d{4}-\d{2}-\d{2}$/.test(closeDate)) throw new Error("Choose a valid posting date.");
   if (closeDate) {
-    const checks = periodCloseChecks(await accountingControlData(closeDate));
-    const failed = checks.filter((check) => !check.ok);
+    const data = await accountingControlData(closeDate, onProgress);
+    const checks = periodCloseChecks(data);
+    const failed = checks.filter(check => !check.ok);
     if (failed.length) {
-      alert(`Accounting period cannot be closed through ${closeDate}. Resolve these controls first:\n\n${failed.map((check) => `${check.name}: ${check.detail}`).join("\n")}`);
+      openPeriodCloseChecklist(data);
       return false;
     }
     if (!confirm(`All automated close controls passed. Close accounting through ${closeDate}?`)) return false;
   }
-  accountingCloseDateCache = closeDate;
-  localStorage.setItem("lms.accountingCloseDate", closeDate);
-  if (!session) return true;
-  if (!closeDate) {
-    await supabase.from("accounting_periods").update({ status: "Open", reopened_by: profile?.username || profile?.email || "Admin", reopened_at: new Date().toISOString() }).eq("status", "Closed");
+  onProgress("Saving accounting period…");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const actor = profile?.username || profile?.email || "Admin";
+    const query = closeDate
+      ? supabase.from("accounting_periods").upsert({ period_name: closeDate.slice(0, 7), closed_through_date: closeDate, status: "Closed", closed_by: actor, closed_at: new Date().toISOString() }, { onConflict: "period_name" }).select("closed_through_date,status")
+      : supabase.from("accounting_periods").update({ status: "Open", reopened_by: actor, reopened_at: new Date().toISOString() }).eq("status", "Closed").select("closed_through_date,status");
+    const { data, error } = await query.abortSignal(controller.signal);
+    if (error) throw new Error(error.message || "The database rejected the period change.");
+    if (closeDate && !data?.some(row => row.status === "Closed" && row.closed_through_date === closeDate)) throw new Error("The database did not confirm the closed period. Refresh and try again.");
+    accountingCloseDateCache = closeDate;
+    localStorage.setItem("lms.accountingCloseDate", closeDate);
     return true;
-  }
-  const periodName = closeDate.slice(0, 7);
-  await supabase.from("accounting_periods").upsert({
-    period_name: periodName,
-    closed_through_date: closeDate,
-    status: "Closed",
-    closed_by: profile?.username || profile?.email || "Admin",
-    closed_at: new Date().toISOString(),
-  }, { onConflict: "period_name" });
-  return true;
+  } finally { clearTimeout(timer); }
 }
 
 function isLockedAccountingDate(value) {
@@ -11619,33 +12651,164 @@ function productAcquisitionForDate(history = [], date = "") {
     || {};
 }
 
+async function ensureProductToolMetadata() {
+  const tables = ["vendors", "categories", "units", "warehouses"];
+  const lists = await Promise.all(tables.map((table) => getViewRows(table)));
+  tables.forEach((table, index) => { productMeta[table] = lists[index].map((row) => row.name).filter(Boolean).sort(); });
+}
+
+function installProductQuickToolbar(host) {
+  const bar = document.createElement("div");
+  bar.className = "toolbar product-management-tools";
+  bar.innerHTML = `<button id="addWarehouseBtn">Add warehouse</button><button id="createMotherPartBtn">Create mother part</button><button class="primary" id="addProductBtn">Add product</button><button id="inventoryCountSheetBtn">Inventory count sheet</button><button id="productMassMarkupBtn">Mass markup %</button><button id="productTemplateBtn">Download product template</button><button id="productUploadBtn">Upload product list</button><button id="productQtyCostTemplateBtn">Download qty/cost template</button><button id="productQtyCostUploadBtn">Upload qty/cost update</button><button id="productsCsvBtn">Excel</button><button id="productsQuickPrintBtn">PDF / Print</button>`;
+  host.prepend(bar);
+  const bind = (id, action, { metadata = false, products = false } = {}) => {
+    const button = bar.querySelector(`#${id}`);
+    button.onclick = async () => {
+      if (button.disabled) return;
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = "Loading…";
+      try {
+        const [rows] = await Promise.all([products ? getViewRows("products") : Promise.resolve(null), metadata ? ensureProductToolMetadata() : Promise.resolve()]);
+        if (currentView !== "products" || !host.isConnected) {
+          // The full Products view may replace this toolbar while loading.
+          if (currentView !== "products") return;
+        }
+        if (rows && host.isConnected) { currentRows = rows; productMeta.products = rows; }
+        await action();
+      } catch (error) { alert(error.message || String(error)); }
+      finally { button.disabled = false; button.textContent = label; }
+    };
+  };
+  bind("addProductBtn", () => openProductModal(), { metadata: true });
+  bind("addWarehouseBtn", () => quickCreateMaster("warehouses", "Warehouse"), { metadata: true });
+  bind("createMotherPartBtn", openCreateMotherPartModal, { metadata: true });
+  bind("inventoryCountSheetBtn", openInventoryCountSheet, { products: true });
+  bind("productMassMarkupBtn", openMassMarkupModal, { products: true });
+  bind("productsCsvBtn", exportProductMasterCsv, { products: true });
+  bar.querySelector("#productTemplateBtn").onclick = downloadProductImportTemplate;
+  bar.querySelector("#productQtyCostTemplateBtn").onclick = downloadProductQtyCostUpdateTemplate;
+  bar.querySelector("#productUploadBtn").onclick = () => $("productFileImport").click();
+  bar.querySelector("#productQtyCostUploadBtn").onclick = () => $("productQtyCostFileImport").click();
+  $("productFileImport").onchange = importProductTemplateFile;
+  $("productQtyCostFileImport").onchange = importProductQtyCostUpdateFile;
+  bar.querySelector("#productsQuickPrintBtn").onclick = () => window.print();
+}
+
+function startProductQuickView() {
+  const host = document.createElement("section");
+  host.className = "panel";
+  host.innerHTML = `<div class="toolbar"><input class="searchbox" id="productQuickSearch" placeholder="Search SKU, name, supplier, location" aria-label="Search products"><button id="productQuickMore" hidden>Load more</button></div><p id="productQuickStatus" role="status">Loading products…</p><div id="productQuickRows"></div><p id="productQuickDetails" role="status">Inventory totals, histories, and editing tools are loading…</p>`;
+  $("content").replaceChildren(host);
+  installProductQuickToolbar(host);
+  const search = host.querySelector("#productQuickSearch");
+  const more = host.querySelector("#productQuickMore");
+  const status = host.querySelector("#productQuickStatus");
+  const rowsHost = host.querySelector("#productQuickRows");
+  let rows = [], request = 0, timer, controller;
+  const active = () => host.isConnected && currentView === "products";
+  async function load(reset = false) {
+    if (!active()) return;
+    const version = ++request;
+    controller?.abort();
+    controller = new AbortController();
+    if (reset) { rows = []; rowsHost.innerHTML = ""; }
+    more.hidden = true;
+    status.textContent = "Loading products…";
+    const queryText = search.value.trim();
+    try {
+      let query = supabase.from("products")
+        .select("id,sku,name,source_vendor,category,warehouse,bin_shelf,status")
+        .order("sku").order("id");
+      if (queryText) {
+        const pattern = "%" + queryText.replace(/[\\%_]/g, "\\$&") + "%";
+        const value = JSON.stringify(pattern);
+        query = query.or(["sku", "name", "source_vendor", "category", "warehouse", "bin_shelf"].map(field => `${field}.ilike.${value}`).join(","));
+      }
+      const cachedProducts = viewReadCache.get(String(session?.user?.id || "") + ":products:*");
+      let data, error;
+      if (cachedProducts?.loaded && !viewWritesInProgress) {
+        const all = await cachedProducts.promise;
+        const fields = ["sku", "name", "source_vendor", "category", "warehouse", "bin_shelf"];
+        const matching = all.filter(row => !queryText || fields.some(field => String(row[field] || "").toLowerCase().includes(queryText.toLowerCase())))
+          .sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || "")) || String(a.id || "").localeCompare(String(b.id || "")));
+        data = matching.slice(rows.length, rows.length + 100);
+      } else {
+        ({ data, error } = await query.range(rows.length, rows.length + 99).abortSignal(controller.signal));
+      }
+      if (!active() || version !== request) return;
+      if (error) throw error;
+      rows.push(...(data || []));
+      rowsHost.innerHTML = `<div class="table-wrap"><table><thead><tr>${["SKU", "Name", "Supplier", "Category", "Warehouse", "Bin / Shelf", "Status"].map(label => `<th>${label}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${["sku", "name", "source_vendor", "category", "warehouse", "bin_shelf", "status"].map(key => `<td>${esc(row[key] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+      status.textContent = rows.length ? `${rows.length.toLocaleString()} products shown${queryText ? " matching your search" : ""}.` : "No matching products.";
+      more.textContent = "Load more";
+      more.hidden = (data || []).length < 100;
+    } catch (error) {
+      if (!active() || version !== request) return;
+      status.textContent = `Could not load products: ${error.message || error}`;
+      more.textContent = "Retry";
+      more.hidden = false;
+    }
+  }
+  search.oninput = () => {
+    clearTimeout(timer);
+    ++request;
+    controller?.abort();
+    more.hidden = true;
+    rows = [];
+    rowsHost.innerHTML = "";
+    status.textContent = "Searching…";
+    timer = setTimeout(() => { if (active()) void load(true); }, 250);
+  };
+  more.onclick = () => void load();
+  return {
+    active, ready: load(true),
+    finish() { clearTimeout(timer); ++request; controller?.abort(); return search.value; },
+    fail(error) {
+      if (active()) host.querySelector("#productQuickDetails").textContent = `Products can still be searched. Inventory details could not load: ${error.message || error}. Refresh to retry.`;
+    },
+  };
+}
+
 async function renderProductsView() {
   currentCfg = tableMap.products;
   $("viewTitle").textContent = "Products";
   $("viewSub").textContent = "Manage SKUs, pricing, locations, reorder points, and batches.";
+  const quickView = startProductQuickView();
+  await quickView.ready;
+  if (!quickView.active()) return;
+  try {
   const [products, vendors, categories, units, warehouses, productBins, motherPartComponents, purchaseOrders, purchaseReceipts, salesOrders, salesOrderLines, workOrderParts, workOrders, stockMovements, invoices, invoiceLines] = await Promise.all([
-    getAll("products"),
-    getAll("vendors"),
-    getAll("categories"),
-    getAll("units"),
-    getAll("warehouses"),
-    getAll("product_bins").catch(() => []),
-    getAll("product_mother_components").catch(() => []),
-    getAll("purchase_orders"),
-    getAll("goods_receipts"),
-    getAll("sales_orders"),
-    getAll("sales_order_lines").catch(() => []),
-    getAll("work_order_parts").catch(() => []),
-    getAll("work_orders").catch(() => []),
-    getAll("stock_movements").catch(() => []),
-    getAll("invoices").catch(() => []),
-    getAll("invoice_lines").catch(() => []),
+    getViewRows("products"),
+    getViewRows("vendors"),
+    getViewRows("categories"),
+    getViewRows("units"),
+    getViewRows("warehouses"),
+    getViewRows("product_bins").catch(() => []),
+    getViewRows("product_mother_components").catch(() => []),
+    getViewRows("purchase_orders"),
+    getViewRows("goods_receipts"),
+    getViewRows("sales_orders"),
+    getViewRows("sales_order_lines").catch(() => []),
+    getViewRows("work_order_parts").catch(() => []),
+    getViewRows("work_orders").catch(() => []),
+    getViewRows("stock_movements").catch(() => []),
+    getViewRows("invoices").catch(() => []),
+    getViewRows("invoice_lines").catch(() => []),
   ]);
   // Reserved and Issued are inventory-control totals, so read their final
   // values from one database-side aggregation.  The local calculations below
   // remain as a compatibility fallback, but a partial browser relation load
   // must never make Product Master incorrectly show zero.
-  const { data: inventoryControlRows, error: inventoryControlError } = await supabase.rpc("get_product_inventory_control_totals");
+  if (!quickView.active()) return;
+  let inventoryControlError;
+  const inventoryControlRows = await getViewData("product_inventory_control_totals", async signal => {
+    const { data, error } = await supabase.rpc("get_product_inventory_control_totals").abortSignal(signal);
+    if (error) throw error;
+    return data || [];
+  }).catch(error => { inventoryControlError = error; return []; });
+  if (!quickView.active()) return;
   const inventoryControlBySku = new Map((inventoryControlError ? [] : (inventoryControlRows || [])).map((row) => [
     String(row.sku || "").trim().toLowerCase(),
     { reserved_qty: Number(row.reserved_qty || 0), issued_qty: Number(row.issued_qty || 0) },
@@ -11969,6 +13132,9 @@ async function renderProductsView() {
   const awaitingMatch = purchaseOrders.filter((po) => ["Goods Received", "Partially Received"].includes(po.status) && po.match_status !== "Matched").length;
   const issuableOrders = salesOrders.filter((o) => !["Quotation", "Fulfilled", "Paid", "Cancelled"].includes(o.status)).length;
 
+  if (!quickView.active()) return;
+  const pendingSearch = quickView.finish();
+  productVisibleLimit = 100;
   $("content").innerHTML = `
     <div class="toolbar product-toolbar">
       <input class="searchbox" id="productSearch" placeholder="Search SKU, name, supplier, location">
@@ -12000,6 +13166,13 @@ async function renderProductsView() {
       <div id="productTableHost">${productTableHtml(currentRows)}</div>
     </section>`;
 
+  $("productSearch").value = pendingSearch;
+  document.querySelectorAll("[data-product-tab]").forEach((button) => button.onclick = () => {
+    productMasterTab = button.dataset.productTab;
+    $("productStatusFilter").value = "";
+    renderFilteredProducts();
+  });
+  renderFilteredProducts();
   $("productSearch").oninput = renderFilteredProducts;
   $("productCategoryFilter").oninput = renderFilteredProducts;
   $("productWarehouseFilter").oninput = renderFilteredProducts;
@@ -12020,6 +13193,7 @@ async function renderProductsView() {
   document.querySelectorAll("[data-product-column]").forEach((box) => box.onchange = saveProductColumnChoice);
   document.querySelectorAll("[data-flow-view]").forEach((b) => b.onclick = () => loadView(b.dataset.flowView));
   bindProductRows();
+  } catch (error) { quickView.fail(error); }
 }
 
 function productStats(rows) {
@@ -12047,18 +13221,28 @@ function flowCard(view, title, text, note) {
   return `<button class="quick-card" data-flow-view="${view}"><strong>${esc(title)}</strong><span>${esc(text)}</span><small>${esc(note)}</small></button>`;
 }
 
-function renderFilteredProducts() {
+let productVisibleLimit = 100;
+
+function renderFilteredProducts(append = false) {
+  if (append !== true) productVisibleLimit = 100;
+  document.querySelectorAll("[data-product-tab]").forEach((button) => {
+    const selected = button.dataset.productTab === productMasterTab;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
   const rows = filteredProductRows();
   $("productTableHost").innerHTML = productTableHtml(rows);
   bindProductRows();
 }
 
+let productMasterTab = "active";
 function filteredProductRows() {
-  const q = ($("productSearch")?.value || "").toLowerCase();
+  const q = ($("productSearch")?.value || $("productQuickSearch")?.value || "").toLowerCase();
   const category = $("productCategoryFilter")?.value || "";
   const warehouse = $("productWarehouseFilter")?.value || "";
   const status = $("productStatusFilter")?.value || "";
   return currentRows.filter((p) => {
+    if (isSelectableProduct(p) !== (productMasterTab === "active")) return false;
     const searchOk = !q || [p.sku, p.name, p.source_vendor, p.category, p.warehouse, p.bin_shelf, p.compatible_with, p.issued_to_work_order].join(" ").toLowerCase().includes(q);
     return searchOk && (!category || p.category === category) && (!warehouse || p.warehouse === warehouse) && (!status || p.status === status);
   });
@@ -12125,8 +13309,8 @@ function productTableHtml(rows) {
   const columns = productVisibleColumns();
   const heads = [...columns.map((col) => col[1]), ""];
   const matchingRows = productRowsMatchingColumnFilters(rows, columns);
-  const visibleRows = matchingRows.slice(0, PRODUCT_RENDER_LIMIT);
-  const notice = matchingRows.length > PRODUCT_RENDER_LIMIT ? `<div class="notice">Showing first ${PRODUCT_RENDER_LIMIT.toLocaleString()} of ${matchingRows.length.toLocaleString()} matching products. Product column filters search all ${rows.length.toLocaleString()} loaded products; Excel export still uses all loaded rows.</div>` : "";
+  const visibleRows = matchingRows.slice(0, productVisibleLimit);
+  const notice = matchingRows.length > productVisibleLimit ? `<div class="notice">Showing first ${productVisibleLimit.toLocaleString()} of ${matchingRows.length.toLocaleString()} matching products. <button id="productLoadMore">Load more</button> Product column filters search all ${rows.length.toLocaleString()} loaded products; Excel export still uses all loaded rows.</div>` : "";
   return `${notice}<div class="table-wrap"><table data-product-master-table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-product-column-filter="${esc(columns[i][0])}" data-col="${i}" value="${esc(productColumnFilterState[columns[i][0]] || "")}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${visibleRows.length ? visibleRows.map((p) => productRowHtml(p, columns)).join("") : `<tr><td colspan="${heads.length}" class="empty">No products match the current filters.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -12254,7 +13438,7 @@ function saveProductColumnChoice() {
 }
 
 function productStatus(p) {
-  if (/inactive|discontinued/i.test(p.status || "")) return p.status;
+  if (!isSelectableProduct(p)) return p.status;
   if (Number(p.qty || 0) <= 0) return "Out";
   if (Number(p.available_qty ?? p.qty ?? 0) <= 0) return "Reserved";
   if (Number(p.available_qty ?? p.qty ?? 0) <= Number(p.reorder_point || 0)) return "Low";
@@ -12262,8 +13446,9 @@ function productStatus(p) {
 }
 
 function bindProductRows() {
-  document.querySelectorAll("[data-product-edit]").forEach((b) => b.onclick = () => openProductModal(currentRows.find((p) => p.sku === b.dataset.productEdit)));
+  if ($("productLoadMore")) $("productLoadMore").onclick = () => { productVisibleLimit += 100; renderFilteredProducts(true); };
   document.querySelectorAll("[data-product-copy]").forEach((b) => b.onclick = () => openProductCopyModal(currentRows.find((p) => p.sku === b.dataset.productCopy)));
+  document.querySelectorAll("[data-product-edit]").forEach((b) => b.onclick = () => openProductModal(currentRows.find((p) => p.sku === b.dataset.productEdit)));
   document.querySelectorAll("[data-product-photo]").forEach((b) => b.onclick = () => openEquipmentRequestPhoto(b.dataset.productPhoto, b.dataset.productPhotoTitle || "Product photo"));
   document.querySelectorAll("[data-product-issuance]").forEach((b) => b.onclick = () => openProductIssuanceHistory(b.dataset.productIssuance));
   document.querySelectorAll("[data-product-reservation]").forEach((b) => b.onclick = () => openProductReservationHistory(b.dataset.productReservation));
@@ -12464,7 +13649,7 @@ function openInventoryCountSheet() {
 }
 
 function inventoryCountSourceRows() {
-  const query = String($("productSearch")?.value || "").trim().toLowerCase();
+  const query = String($("productSearch")?.value || $("productQuickSearch")?.value || "").trim().toLowerCase();
   const category = $("productCategoryFilter")?.value || "";
   const warehouse = $("productWarehouseFilter")?.value || "";
   return (currentRows || []).filter((product) => {
@@ -12660,21 +13845,21 @@ async function renderStockMovementView() {
   $("viewTitle").textContent = "Stock Movement";
   $("viewSub").textContent = "Receive, sell, adjust, transfer, reserve, and audit stock.";
   const [movements, products, receipts, purchaseOrders, purchaseLines, salesOrders, salesLines, workOrders, workOrderParts, warehouses, assets, outsideFleet] = await Promise.all([
-    getAll("stock_movements"),
-    getAll("products"),
-    getAll("goods_receipts"),
-    getAll("purchase_orders"),
-    getAll("purchase_order_lines"),
-    getAll("sales_orders"),
-    getAll("sales_order_lines"),
-    getAll("work_orders"),
-    getAll("work_order_parts"),
-    getAll("warehouses"),
-    getAll("assets"),
-    getAll("outside_customer_fleet"),
+    getViewRows("stock_movements"),
+    getViewRows("products"),
+    getViewRows("goods_receipts"),
+    getViewRows("purchase_orders"),
+    getViewRows("purchase_order_lines"),
+    getViewRows("sales_orders"),
+    getViewRows("sales_order_lines"),
+    getViewRows("work_orders"),
+    getViewRows("work_order_parts"),
+    getViewRows("warehouses"),
+    getViewRows("assets"),
+    getViewRows("outside_customer_fleet"),
   ]);
   currentRows = buildLinkedStockMovements({ movements, products, receipts, salesOrders, salesLines, workOrders, workOrderParts, assets, outsideFleet });
-  productMeta.products = products.sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
+  productMeta.products = (products.length ? products : productMeta.products || []).sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
   productMeta.purchaseCostHistory = buildPurchaseCostHistory(purchaseOrders, purchaseLines, receipts);
   productMeta.warehouses = warehouses.map((v) => v.name).filter(Boolean).sort();
   $("content").innerHTML = `
@@ -12985,26 +14170,32 @@ async function postStockCorrectionLedger(record, product, qty, unitCost) {
   await upsertMany("general_ledger", rows, "id");
 }
 
+function preparePurchaseCatalog() {
+  const ready=async()=>{};
+  return ready;
+}
+
 async function renderPurchasingView() {
+  if (!moduleListScope && currentView === "purchasing" && moduleListSpec(currentView)) return loadView(currentView);
   currentCfg = tableMap.purchasing;
   $("viewTitle").textContent = "Purchasing";
   $("viewSub").textContent = "Issue POs, receive goods, match invoices, and release payments.";
   const [pos, lines, receipts, vendors, customers, products, workOrders, terms, incoterms, standardNotes, warehouses, fleet, locations, assetLocations, stockMovements] = await Promise.all([
-    getAll("purchase_orders"),
-    getAll("purchase_order_lines"),
-    getAll("goods_receipts"),
-    getAll("vendors"),
-    getAll("customers"),
-    getAll("products"),
-    getAll("work_orders"),
-    getAll("master_terms"),
-    getAll("incoterms"),
-    getAll("standard_po_notes"),
-    getAll("warehouses"),
-    getAll("assets").catch(() => []),
-    getAll("locations").catch(() => []),
-    getAll("asset_locations").catch(() => []),
-    getAll("stock_movements").catch(() => []),
+    getViewRows("purchase_orders"),
+    getViewRows("purchase_order_lines"),
+    getViewRows("goods_receipts"),
+    getViewRows("vendors"),
+    getViewRows("customers"),
+    Promise.resolve([]), // The PO list does not need the product catalog.
+    getViewRows("work_orders"),
+    getViewRows("master_terms"),
+    getViewRows("incoterms"),
+    getViewRows("standard_po_notes"),
+    getViewRows("warehouses"),
+    getViewRows("assets").catch(() => []),
+    getViewRows("locations").catch(() => []),
+    getViewRows("asset_locations").catch(() => []),
+    getViewRows("stock_movements").catch(() => []),
   ]);
   const reversedReceiptRefs = new Set((stockMovements || []).filter((row) => /goods receipt reversal/i.test(row.type || "") || /^REV-GR-/i.test(row.reference_no || "")).map((row) => String(row.reference_no || "").replace(/^REV-/, "")));
   receipts.forEach((gr) => { gr._has_reversal_movement = reversedReceiptRefs.has(String(gr.gr_no || "")); });
@@ -13304,10 +14495,20 @@ function landedClearAmountForInvoice(po, invoiceAmount, receivedAmount = poRecei
   return Math.max(0, Math.min(landedReceived, invoiceExtra));
 }
 
+function goodsReceiptPostingAmounts(po, gr) {
+  const inventoryAmount = roundCurrency(Number(gr.received_qty ?? 0) * Number(gr.unit_cost ?? 0));
+  const productVendorAmount = roundCurrency(goodsReceiptBaseAmount(po, gr));
+  if (![inventoryAmount, productVendorAmount].every(Number.isFinite)
+      || inventoryAmount < 0 || productVendorAmount < 0 || productVendorAmount > inventoryAmount) {
+    throw new Error((gr.gr_no || gr.sku || "Receipt") + ": inventory cost must include the full vendor cost. Review the vendor and landed costs before saving.");
+  }
+  return { inventoryAmount, productVendorAmount, landedAccrualAmount: roundCurrency(inventoryAmount - productVendorAmount) };
+}
+
 function goodsReceiptBaseAmount(po, gr) {
   const receiptKey = purchaseOrderReceiptKey(po, gr);
   const line = (po?._lines || []).find((row) => purchaseOrderLineReceiptKey(row) === receiptKey);
-  const baseUnit = Number(gr.base_unit_cost || (line ? poLineVendorUnitCost(line) : gr.unit_cost) || 0);
+  const baseUnit = Number(gr.base_unit_cost ?? (line ? poLineVendorUnitCost(line) : gr.unit_cost) ?? 0);
   return Number(gr.received_qty || 0) * baseUnit;
 }
 
@@ -13493,14 +14694,8 @@ function isBlanketPurchaseOrder(po) {
 }
 
 function poMatchStatusFromAmounts(po) {
-  const received = poReceivedTotal(po);
-  const receiptInvoiceAmount = activeReceipts(po).reduce((sum, gr) => sum + Number(gr.vendor_invoice_amount || gr.received_amount || goodsReceiptBaseAmount(po, gr)), 0);
-  const invoice = Number(po.vendor_invoice_amount || receiptInvoiceAmount || 0);
-  const landedClear = landedClearAmountForInvoice(po, invoice, received);
-  const expectedInvoice = received + landedClear;
-  if (!received) return "Awaiting Goods";
-  if (!invoice) return "Pending";
-  return Math.abs(invoice - expectedInvoice) <= 0.005 ? "Matched" : "Mismatch";
+  // Use the same receipt-invoice totals as the AP workbench, including split invoices.
+  return poApSummary(po).match;
 }
 
 function landedCostAllocationBase(po, method = "By Value") {
@@ -13687,14 +14882,71 @@ async function closePurchaseOrder(poNo) {
   }
 }
 
+async function orderReferenceRows(table, column, prefix = null) {
+  const rows = [];
+  for (let offset = 0; ; offset += 1000) {
+    let query = supabase.from(table).select(column).order(column).range(offset, offset + 999);
+    if (prefix) query = query.ilike(column, prefix + "%");
+    const { data, error } = await query;
+    if (error) throw error;
+    rows.push(...(data || []));
+    if ((data || []).length < 1000) return rows;
+  }
+}
+
+async function orderReferencePreview(key, prefix, table, column) {
+  const { data, error } = await supabase.from("app_sequences").select("prefix,next_number").eq("key", key).maybeSingle();
+  if (error && key === "po") throw error;
+  if (data) return `${data.prefix}${data.next_number}`;
+  const rows = await orderReferenceRows(table, column);
+  return prefix + (rows.reduce((max, row) => Math.max(max, Number(String(row[column] || "").replace(/\D/g, "")) || 0), 1000) + 1);
+}
+
+function prepareOrderReference(fieldName, loader) {
+  const field = $("modalBody").querySelector(`[data-product-field="${fieldName}"]`);
+  if (!field) return;
+  const active = () => $("modalBody").querySelector(`[data-product-field="${fieldName}"]`) === field && $("modal").style.display !== "none";
+  field.placeholder = "Checking number…";
+  let pending;
+  const ready = () => pending || (pending = Promise.resolve().then(loader).then(value => {
+    if (active() && !field.value.trim()) field.value = value;
+    if (active()) field.placeholder = "";
+  }).catch(error => { pending = null; throw error; }));
+  ready().catch(error => {
+    if (active()) { field.placeholder = "Number check failed—Save to retry"; console.warn("Order number check failed", error); }
+  });
+  for (const id of ["modalSave", "poSaveOnlyBtn", "salesOrderSaveOnlyBtn", "poReceiveBtn", "poPdfBtn"]) {
+    const button = $(id);
+    if (!button?.onclick) continue;
+    const save = button.onclick;
+    button.onclick = async function (...args) {
+      try { await ready(); if (active()) return await save.apply(this, args); }
+      catch (error) { if (active()) alert("Could not prepare the document number: " + (error.message || error) + ". Please try Save again."); }
+    };
+  }
+}
+
+async function salesPurchaseOpeningData() {
+  const [purchaseOrders, purchaseLines, receipts] = await Promise.all([
+    getViewRows("purchase_orders"), getViewRows("purchase_order_lines"), getViewRows("goods_receipts"),
+  ]);
+  return { purchaseOrders, purchaseLines, receipts };
+}
+
 async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
-  productMeta.products = await getAll("products");
-  const purchaseWorkOrders = await getAll("work_orders");
+  await hydrateLineProducts(po?._lines || []);
+  let purchaseWorkOrders, poNo;
+  try {
+    purchaseWorkOrders = await getPagedViewRows("work_orders");
+    poNo = po?.po_no || "";
+  } catch (error) {
+    alert(`Could not open the purchase order. ${error.message || error}\n\nRefresh and try again. If your session expired, sign out and sign in again.`);
+    return;
+  }
   productMeta.workOrders = purchaseWorkOrders;
   productMeta.openWorkOrders = purchaseWorkOrders.filter(isOpenWorkOrder);
   const readOnly = Boolean(po && (forceReadOnly || isClosedPurchaseOrder(po)));
   editing = po;
-  const poNo = po?.po_no || await nextRefPreview("po", "PO-", "purchase_orders", "po_no");
   const lines = po?._lines?.length ? po._lines : [{ sku: "", product_name: "", unit: "", qty: 1, unit_cost: 0, wo_no: "", _last_cost_source: null }];
   const purpose = purchaseOrderPurpose(po || {});
   const shopIssuanceDetail = purchaseOrderShopIssuanceDetail(po || {});
@@ -13720,7 +14972,11 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
       <div class="field" id="poFreightInvoiceField" ${/^Inland Freight and Other Cost invoice #:/m.test(po?.notes || "") ? "" : "hidden"}><label for="poFreightInvoiceNumber">Inland Freight and Other Cost invoice #</label><input id="poFreightInvoiceNumber" value="${esc(String(po?.notes || "").match(/^Inland Freight and Other Cost invoice #:\s*(.*)$/m)?.[1] || "")}"></div>
       ${productSelect("Use landed cost for inventory", "landed_cost_enabled", ["No", "Yes"], po?.landed_cost_enabled ? "Yes" : "No")}
       <div class="field" id="poWaybillField" ${po?.landed_cost_enabled ? "" : "hidden"}><label for="poWaybillNumber">Waybill #</label><input id="poWaybillNumber" value="${esc(String(po?.notes || "").match(/^PO Waybill #:\s*(.*)$/m)?.[1] || "")}" autocomplete="off"></div>
-      ${Object.entries({ landed_cost_method: po?.landed_cost_method || "By Value", duty_amount: po?.duty_amount ?? 0, other_landed_cost_amount: po?.other_landed_cost_amount ?? 0, foreign_order: po?.foreign_order ? "Yes" : "No", foreign_country: po?.foreign_country || "", currency_code: po?.currency_code || "USD", exchange_rate: po?.exchange_rate ?? 1 }).map(([field, value]) => `<input type="hidden" data-product-field="${field}" value="${esc(value)}">`).join("")}
+      ${productSelect("Foreign currency purchase", "foreign_order", ["No", "Yes"], po?.foreign_order ? "Yes" : "No")}
+      ${productInput("Supplier country", "foreign_country", po?.foreign_country || "")}
+      ${productInput("Currency code (e.g. PHP, EUR)", "currency_code", po?.currency_code || "USD")}
+      <div class="field"><label>Exchange rate — USD per 1 foreign currency unit</label><input type="number" min="0.00000001" step="any" data-product-field="exchange_rate" value="${esc(po?.exchange_rate ?? 1)}"><small>USD unit cost = Foreign Cost × exchange rate. Enter your agreed rate; it is not downloaded automatically.</small></div>
+      ${Object.entries({ landed_cost_method: po?.landed_cost_method || "By Value", duty_amount: po?.duty_amount ?? 0, other_landed_cost_amount: po?.other_landed_cost_amount ?? 0 }).map(([field, value]) => `<input type="hidden" data-product-field="${field}" value="${esc(value)}">`).join("")}
       ${productInput("Vendor invoice #", "vendor_invoice_no", po?.vendor_invoice_no || "")}
       ${productInput("Vendor invoice amount", "vendor_invoice_amount", po?.vendor_invoice_amount ?? 0, "number")}
       ${productSelect("Payment status", "payment_status", ["Not Ready", "Ready to Pay", "Hold", "Paid"], po?.payment_status || "Not Ready")}
@@ -13732,7 +14988,12 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes">${esc(purchaseOrderVisibleNotes(po?.notes || ""))}</textarea></div>
     </div>
     <p class="notice"><strong>Destination control:</strong> Inventory Stock sends the full receipt to stock. Customer Order requires a Sales Order and reserves only the entered customer quantity. Work Order and Shop Issuance also require a destination quantity; any ordered balance remains stock inventory. Standard POs require at least one item line. No accounting entry is created until goods are received.</p>`;
+  resetModalSaveButton();
+  $("modalSave").style.display = "";
+  $("modalCancel").textContent = "Cancel";
+  $("modalCancel").onclick = () => closeModal();
   $("modalSave").onclick = savePurchaseOrderModal;
+  $("modalBody").querySelector('[data-product-field="vendor"]').required = true;
   const syncFreightInvoiceField = () => {
     const separate = $("poFreightSeparateInvoice").checked;
     $("poFreightInvoiceField").hidden = !separate;
@@ -13747,6 +15008,16 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
   document.querySelector('[data-product-field="landed_cost_enabled"]')?.addEventListener("change", syncPoWaybillField);
   document.querySelector('[data-product-field="landed_cost_enabled"]')?.addEventListener("input", syncPoWaybillField);
   syncPoWaybillField();
+  const syncForeignFields = () => {
+    const foreign = $("modalBody").querySelector('[data-product-field="foreign_order"]').value === "Yes";
+    for (const name of ["foreign_country", "currency_code", "exchange_rate"]) {
+      const field = $("modalBody").querySelector('[data-product-field="' + name + '"]');
+      field.closest(".field").hidden = !foreign;
+      field.disabled = !foreign; field.required = foreign;
+    }
+  };
+  $("modalBody").querySelector('[data-product-field="foreign_order"]').addEventListener("change", syncForeignFields);
+  syncForeignFields();
   $("modalSave").textContent = "Save and Close";
   document.getElementById("poSaveOnlyBtn")?.remove();
   const saveOnlyButton = document.createElement("button");
@@ -13759,14 +15030,14 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
   document.getElementById("poReceiveBtn")?.remove();
   document.getElementById("poCloseBlanketBtn")?.remove();
   document.getElementById("poCreateSalesBtn")?.remove();
-  if (po) {
+  {
     const receiveButton = document.createElement("button");
     receiveButton.id = "poReceiveBtn";
     receiveButton.type = "button";
     receiveButton.className = "primary";
     receiveButton.textContent = "Receive";
     receiveButton.title = "Save this PO and open Goods Receipt";
-    receiveButton.onclick = () => savePurchaseOrderModal({ receiveAfterSave: true });
+    receiveButton.onclick = () => runExclusiveModalSave(receiveButton, () => savePurchaseOrderModal({ receiveAfterSave: true }));
     $("modalSave").before(receiveButton);
   }
   if (po && isBlanketPurchaseOrder(po) && activeReceipts(po).length) {
@@ -13796,6 +15067,13 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
     salesButton.onclick = () => savePurchaseOrderModal({ salesOrderAfterSave: true });
     $("modalSave").before(salesButton);
   }
+  document.getElementById("poPdfBtn")?.remove();
+  const pdfButton = document.createElement("button");
+  pdfButton.id = "poPdfBtn"; pdfButton.type = "button";
+  pdfButton.textContent = readOnly ? "PDF / Print" : "Save & PDF";
+  pdfButton.onclick = readOnly ? () => printPurchaseOrder(po.po_no, { purchaseOrder: po })
+    : () => runExclusiveModalSave(pdfButton, () => savePurchaseOrderModal({ keepOpen: true, printAfterSave: true }));
+  $("modalSave").before(pdfButton);
   $("modal").style.display = "flex";
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => handlePurchaseQuickCreate(b.dataset.productQuick, po));
   const addLineBtn = $("addPoLineBtn");
@@ -13846,6 +15124,8 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
     $("modalSave").style.display = "none";
     $("modalCancel").textContent = "Close";
   }
+  if (!po) prepareOrderReference("po_no", () => orderReferencePreview("po", "PO-", "purchase_orders", "po_no"));
+  preparePurchaseCatalog();
 }
 
 function purchaseReceiptProgressHtml(po, lines) {
@@ -13926,7 +15206,9 @@ function routePurchaseReceiptDestinationQuantities(po = {}, receiptRows = [], pr
     const key = keyFor(line);
     const receivedBefore = Number(priorReceived.get(key) || 0);
     const receivedNow = Math.max(0, Number(receipt.received_qty || 0));
-    const destinationTarget = purchaseOrderLineDestinationQty(po, line);
+    const destinationTarget = isWorkOrderPurchaseOrder(po)
+      ? (po._lines || []).filter((candidate) => keyFor(candidate) === key).reduce((sum, candidate) => sum + purchaseOrderLineDestinationQty(po, candidate), 0)
+      : purchaseOrderLineDestinationQty(po, line);
     const destinationReceivedQty = Math.max(0, Math.min(receivedNow, destinationTarget - receivedBefore));
     priorReceived.set(key, receivedBefore + receivedNow);
     return { ...receipt, destination_received_qty: destinationReceivedQty, stock_received_qty: Math.max(0, receivedNow - destinationReceivedQty) };
@@ -13991,7 +15273,7 @@ function purchaseLineRowHtml(line = {}, index = 0) {
   const label = sku ? `${sku} - ${line.product_name || product.name || ""}` : "";
   const woLabel = line.wo_no ? workOrderOptionLabel((productMeta.openWorkOrders || []).find((wo) => wo.wo_no === line.wo_no) || { wo_no: line.wo_no, asset_tag: "", bill_to_customer: "", status: "" }) : "";
   const destinationQty = purchaseOrderLineDestinationQty(editing || {}, line);
-  return `<tr>
+  return `<tr data-po-line-id="${esc(line.id || crypto.randomUUID())}">
     <td data-label="Product"><input class="suggest-input" list="poProductOptions" data-suggest-source="products" data-po-line="sku" data-line-index="${index}" value="${esc(label)}" placeholder="Type SKU, product name, or vendor" autocomplete="off" inputmode="search"></td>
     <td data-label="WO #"><input class="suggest-input" data-suggest-source="open_work_orders" data-po-line="wo_no" data-line-index="${index}" value="${esc(woLabel)}" placeholder="Type open WO, asset, or customer" autocomplete="off" inputmode="search"></td>
     <td data-label="UOM"><input data-po-line="unit" data-line-index="${index}" value="${esc(line.unit || product.unit || "")}" readonly></td>
@@ -14019,6 +15301,17 @@ function workOrderOptionLabel(wo) {
     .join(" | ");
 }
 
+function canReceiveIntoWorkOrder(wo) {
+  return Boolean(wo && !wo.invoice_no && isOpenWorkOrder(wo));
+}
+
+function canKeepPurchaseWorkOrder(po, wo) {
+  if (!po?.id || !wo) return false;
+  const key = String(wo.wo_no || "").toLowerCase();
+  return String(po.ap_support_wo_no || "").toLowerCase() === key
+    || (po._lines || []).some(line => String(line.wo_no || "").toLowerCase() === key);
+}
+
 function isOpenWorkOrder(wo) {
   return !/closed|invoiced|complete|void|cancel/i.test(wo?.status || "");
 }
@@ -14038,8 +15331,12 @@ function resolveProductLookup(value) {
   const compact = compactProductLookupText(text);
   const directSku = text.split(/\s+-\s+/)[0].trim();
   const directSkuCompact = compactProductLookupText(directSku);
-  let product = (productMeta.products || []).find((p) => compactProductLookupText(p.sku) === directSkuCompact);
-  if (product) return product;
+  // Keep distinct SKUs distinct when punctuation-free searches match both.
+  // Suggestion labels carry the original SKU, so resolve that exact identity first.
+  let product = (productMeta.products || []).find((p) => productLookupQuery(p.sku).toLowerCase() === directSku.toLowerCase());
+  if (product) return isSelectableProduct(product) ? product : null;
+  product = (productMeta.products || []).find((p) => compactProductLookupText(p.sku) === directSkuCompact);
+  if (product) return isSelectableProduct(product) ? product : null;
   product = (productMeta.products || []).find((p) => {
     const sku = compactProductLookupText(p.sku);
     const name = compactProductLookupText(p.name);
@@ -14051,7 +15348,7 @@ function resolveProductLookup(value) {
       || aliases.includes(compact)
       || aliases.includes(directSkuCompact);
   });
-  return product || null;
+  return isSelectableProduct(product) ? product : null;
 }
 
 function isCommittedProductLookup(value) {
@@ -14324,7 +15621,18 @@ function bindPurchaseLineLookups() {
   });
 }
 
-async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAfterSave = false, salesOrderAfterSave = false, keepOpen = false } = {}) {
+let purchaseOrderSaveInProgress = false;
+async function savePurchaseOrderModal(options = {}) {
+  if (purchaseOrderSaveInProgress) return;
+  purchaseOrderSaveInProgress = true;
+  try {
+    return await performPurchaseOrderSave(options);
+  } finally {
+    purchaseOrderSaveInProgress = false;
+  }
+}
+
+async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanketAfterSave = false, salesOrderAfterSave = false, keepOpen = false, printAfterSave = false } = {}) {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
   const separateFreightInvoice = $("poFreightSeparateInvoice")?.checked;
@@ -14341,7 +15649,8 @@ async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAf
   if (poWaybill) record.notes = [record.notes, `PO Waybill #: ${poWaybill}`].filter(Boolean).join("\n");
   record.foreign_order = record.foreign_order === "Yes" || record.foreign_order === true;
   record.landed_cost_enabled = record.landed_cost_enabled === "Yes" || record.landed_cost_enabled === true;
-  record.exchange_rate = Number(record.exchange_rate || 1);
+  record.exchange_rate = record.foreign_order ? Number(record.exchange_rate) : 1;
+  record.currency_code = String(record.currency_code || "USD").trim().toUpperCase();
   record.freight_amount = Number(record.freight_amount || 0);
   record.duty_amount = Number(record.duty_amount || 0);
   record.other_landed_cost_amount = Number(record.other_landed_cost_amount || 0);
@@ -14370,7 +15679,7 @@ async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAf
     record.linked_customer = customer.name;
     record.ap_support_wo_no = null;
   } else if (record.purchase_purpose === "Work Order") {
-    if (!headerWorkOrder || !isOpenWorkOrder(headerWorkOrder)) {
+    if (!headerWorkOrder || (!canReceiveIntoWorkOrder(headerWorkOrder) && !canKeepPurchaseWorkOrder(editing, headerWorkOrder))) {
       alert("Choose an open Work Order for this Work Order PO.");
       return;
     }
@@ -14411,7 +15720,7 @@ async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAf
     alert("Please complete PO number, vendor, date, payment terms, and status.");
     return;
   }
-  if (record.foreign_order && (!record.foreign_country || !record.currency_code || record.exchange_rate <= 0)) {
+  if (record.foreign_order && (!record.foreign_country || !record.currency_code || !Number.isFinite(record.exchange_rate) || record.exchange_rate <= 0)) {
     alert("Foreign orders need country, currency, and a positive exchange rate.");
     return;
   }
@@ -14523,11 +15832,7 @@ async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAf
       await updateOneWithOptionalColumns("purchase_orders", record, "id", editing.id, optionalPoColumns, "PO saved, but run the Purchase Order Destination SQL update so its Customer/Work Order destination is stored.");
       saved = { ...editing, ...record, id: editing.id };
     }
-    await supabase.from("purchase_order_lines").delete().eq("po_id", saved.id);
-    await upsertManyWithOptionalColumns("purchase_order_lines", lineRows.map((line) => {
-      const { _allocation_weight, ...cleanLine } = line;
-      return { ...cleanLine, po_id: saved.id };
-    }), "id", ["destination_qty"], "PO saved. Run the Purchase Order destination quantity SQL update so the customer, work-order, or shop reservation can be stored.");
+    await savePurchaseOrderLines(saved.id, lineRows, editing?._lines || []);
     await syncPurchaseOrderWorkOrderReservations(saved, lineRows);
     await writeAuditLog({ tableName: "purchase_orders", action: closeBlanketAfterSave ? "Blanket PO Closed" : wasNew ? "Created" : "Updated", beforeData: editing, afterData: { ...saved, lines: lineRows } });
     if (wasNew) await incrementSequence("po");
@@ -14538,7 +15843,7 @@ async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAf
       await renderPurchasingView();
       const refreshed = currentRows.find((row) => row.po_no === saved.po_no) || savedForReceipt;
       await openPurchaseOrderModal(refreshed);
-      if (wasNew) printPurchaseOrder(saved.po_no, { purchaseOrder: savedForReceipt });
+      if (wasNew || printAfterSave) printPurchaseOrder(saved.po_no, { purchaseOrder: savedForReceipt });
       return;
     }
     if (returnSalesOrderNo && !receiveAfterSave && !salesOrderAfterSave) {
@@ -14575,6 +15880,20 @@ async function savePurchaseOrderModal({ receiveAfterSave = false, closeBlanketAf
   }
 }
 
+async function savePurchaseOrderLines(poId, lines, previousLines = []) {
+  // Keep row identities across saves and retries; never delete/reinsert the PO.
+  const rows = lines.map(({ _allocation_weight, amount, ...line }) => ({ ...line, po_id: poId }));
+  if (rows.some((line) => !line.id)) throw new Error("PO line identity is missing. Reopen the PO before saving.");
+  await upsertManyWithOptionalColumns("purchase_order_lines", rows, "id", ["destination_qty"], "PO saved. Run the Purchase Order destination quantity SQL update so the customer, work-order, or shop reservation can be stored.");
+  const retainedIds = new Set(rows.map((line) => line.id));
+  const removedIds = previousLines.filter((line) => line.id && !retainedIds.has(line.id)).map((line) => line.id);
+  if (removedIds.length) {
+    const { data, error } = await supabase.from("purchase_order_lines").delete().eq("po_id", poId).in("id", removedIds).select("id");
+    if (error) throw error;
+    if ((data || []).length !== removedIds.length) throw new Error("Some removed PO lines could not be deleted. Reload the PO and check your permissions.");
+  }
+}
+
 function parsePurchaseLineRows() {
   const rows = [];
   const invalidWorkOrders = [];
@@ -14584,14 +15903,16 @@ function parsePurchaseLineRows() {
   trList.forEach((tr) => {
     const get = (field) => tr.querySelector(`[data-po-line="${field}"]`)?.value || "";
     const product = resolveProductLookup(get("sku"));
-    if (!product) return;
+    if (!product) { if(get("sku").trim()) throw new Error("Select a matching product before saving: " + get("sku")); return; }
     const woText = get("wo_no");
-    const workOrder = woText ? resolveOpenWorkOrderLookup(woText) : null;
+    const resolvedWo = woText ? resolveWorkOrderLookup(woText) : null;
+    const workOrder = resolvedWo && (canReceiveIntoWorkOrder(resolvedWo) || canKeepPurchaseWorkOrder(editing, resolvedWo)) ? resolvedWo : null;
     if (woText && !workOrder) invalidWorkOrders.push(woText);
     const sku = product.sku;
     const foreignUnitCost = Number(get("foreign_unit_cost") || 0);
     const unitCost = foreignOrder && foreignUnitCost > 0 ? foreignUnitCost * exchangeRate : Number(get("unit_cost") || 0);
-    rows.push({ product_id: product?.id || null, sku, product_name: product?.name || get("sku"), unit: product?.unit || get("unit") || null, wo_no: workOrder?.wo_no || null, qty: Number(get("qty") || 0), destination_qty: Number(get("destination_qty") || 0), _allocation_weight: Number(get("weight") || 0), foreign_unit_cost: foreignUnitCost, unit_cost: unitCost, allocated_landed_cost: 0, landed_unit_cost: unitCost });
+    const id = tr.dataset.poLineId || (tr.dataset.poLineId = crypto.randomUUID());
+    rows.push({ id, product_id: product?.id || null, sku, product_name: product?.name || get("sku"), unit: product?.unit || get("unit") || null, wo_no: workOrder?.wo_no || null, qty: Number(get("qty") || 0), destination_qty: Number(get("destination_qty") || 0), _allocation_weight: Number(get("weight") || 0), foreign_unit_cost: foreignUnitCost, unit_cost: unitCost, allocated_landed_cost: 0, landed_unit_cost: unitCost });
   });
   if (invalidWorkOrders.length) {
     throw new Error(`Choose only open work orders from the WO # dropdown: ${invalidWorkOrders.join(", ")}`);
@@ -14631,6 +15952,7 @@ function planWorkOrderPoReservations(po, lines, parts, workOrders) {
     if (!line.wo_no || qty <= 0) continue;
     const wo = workOrders.find((row) => String(row.wo_no).toLowerCase() === String(line.wo_no).toLowerCase());
     if (!wo) throw new Error(`Work order ${line.wo_no} was not found.`);
+    if (!canReceiveIntoWorkOrder(wo)) continue;
     const sku = String(line.sku || '').trim().toLowerCase();
     const key = `${wo.id}|${sku}`;
     const ordinal = (occurrences.get(key) || 0) + 1;
@@ -14658,7 +15980,8 @@ function planWorkOrderPoReservations(po, lines, parts, workOrders) {
   }
   // Preserve history: never delete reservations or reset accepted quantities.
   for (const part of parts) {
-    if (workOrderPartOriginPo(part) === poKey && !claimed.has(part.id)
+    if (canReceiveIntoWorkOrder(workOrders.find(wo => wo.id === part.wo_id))
+      && workOrderPartOriginPo(part) === poKey && !claimed.has(part.id)
       && Number(part.accepted_qty || 0) <= 0 && !/accepted|issued|complete|released|void|cancel/i.test(part.status || '')) {
       rows.push({id:part.id, wo_id:part.wo_id, product_id:part.product_id, sku:part.sku, product_name:part.product_name,
         qty_needed:part.qty_needed, accepted_qty:part.accepted_qty || 0, unit_cost:part.unit_cost,
@@ -14677,9 +16000,11 @@ async function syncPurchaseOrderWorkOrderReservations(po, lineRows) {
 async function refreshOpenPartRequestAvailability(product, onHandQty = product?.qty || 0, requestRows = null) {
   if (!product?.id && !product?.sku) return;
   const requests = requestRows || await getAll("work_order_parts");
+  const workOrders = await getAll("work_orders");
   const matching = (requests || [])
     .filter((part) => (part.product_id === product.id || String(part.sku || "").toLowerCase() === String(product.sku || "").toLowerCase())
-      && !/accepted|released|removed|cancel/i.test(part.status || ""))
+      && (!part.wo_id || canReceiveIntoWorkOrder(workOrders.find(wo => wo.id === part.wo_id)))
+      && !/accepted|issued|complete|void|released|removed|cancel/i.test(part.status || ""))
     .sort((a, b) => String(a.id || "").localeCompare(String(b.id || ""), undefined, { numeric: true }));
   let available = Number(onHandQty || 0);
   for (const part of matching) {
@@ -14703,14 +16028,14 @@ async function renderPartsRequestsView() {
   currentCfg = tableMap.partsrequests;
   $("viewTitle").textContent = currentCfg.title;
   $("viewSub").textContent = currentCfg.sub;
-  const [products, requests] = await Promise.all([getAll("products"), getAll("work_order_parts")]);
+  const [products, requests] = await Promise.all([getViewRows("products"), getViewRows("work_order_parts")]);
   productMeta.products = products.sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || "")));
   for (const product of productMeta.products) {
     if ((requests || []).some((part) => part.product_id === product.id || String(part.sku || "").toLowerCase() === String(product.sku || "").toLowerCase())) {
       await refreshOpenPartRequestAvailability(product, Number(product.qty || 0), requests);
     }
   }
-  currentRows = await getAll("work_order_parts");
+  currentRows = await getViewRows("work_order_parts");
   $("content").innerHTML = `
     <div class="toolbar">
       <input class="searchbox" id="partsRequestSearch" placeholder="Search SKU, product, status, availability, or notes">
@@ -14878,7 +16203,7 @@ async function reversePurchaseOrder(poNo) {
 }
 
 async function nextLandedCostRef() {
-  const rows = await getAll("purchase_orders");
+  const rows = await orderReferenceRows("purchase_orders", "po_no", "LC-");
   const nums = rows.map((row) => Number(String(row.po_no || "").match(/^LC-(\d+)/i)?.[1] || 0)).filter(Boolean);
   return `LC-${Math.max(1000, ...nums) + 1}`;
 }
@@ -14896,7 +16221,7 @@ async function openLandedCostInvoiceModal(sourcePo) {
     alert("No product POs with landed cost are available. Turn on landed cost or enter freight/duty/other landed cost on the product PO first.");
     return;
   }
-  const refNo = editingLandedPo?.po_no || await nextLandedCostRef();
+  const refNo = editingLandedPo?.po_no || "";
   const sourceSet = new Set(editingLandedPo ? linkedSourceNos : primarySourcePo?.po_no ? [primarySourcePo.po_no] : []);
   const existingAllocations = editingLandedPo ? landedAllocationMap(editingLandedPo) : new Map();
   const estimatedRemaining = primarySourcePo ? Math.max(0, poLandedAddOn(primarySourcePo) - landedCostApTotalForSource(primarySourcePo.po_no)) : 0;
@@ -15029,6 +16354,7 @@ async function openLandedCostInvoiceModal(sourcePo) {
     }
   };
   $("modal").style.display = "flex";
+  if (!editingLandedPo) prepareOrderReference("po_no", nextLandedCostRef);
 }
 
 async function syncAllocatedLandedCostToReceipts(po, targetTotal, invoice = {}) {
@@ -15038,6 +16364,7 @@ async function syncAllocatedLandedCostToReceipts(po, targetTotal, invoice = {}) 
   const weights = receipts.map((receipt) => Math.max(0, goodsReceiptBaseAmount(po, receipt)));
   const weightTotal = weights.reduce((sum, value) => sum + value, 0);
   let allocatedCents = 0;
+  const changes=[];
   for (let index = 0; index < receipts.length; index += 1) {
     const receipt = receipts[index];
     const before = { ...receipt };
@@ -15048,7 +16375,7 @@ async function syncAllocatedLandedCostToReceipts(po, targetTotal, invoice = {}) 
       ? targetCents - allocatedCents
       : Math.round(targetCents * (weightTotal > 0 ? weights[index] / weightTotal : 1 / receipts.length));
     allocatedCents += lineCents;
-    const baseUnitCost = Number(receipt.base_unit_cost || receipt.unit_cost || 0);
+    const baseUnitCost = Number(receipt.base_unit_cost ?? receipt.unit_cost ?? 0);
     const landedAmount = lineCents / 100;
     const landedUnitCost = baseUnitCost + landedAmount / qty;
     const update = {
@@ -15057,37 +16384,14 @@ async function syncAllocatedLandedCostToReceipts(po, targetTotal, invoice = {}) 
       landed_unit_cost: landedUnitCost,
       landed_cost_amount: landedAmount,
     };
-    const { data: updatedRows, error } = await supabase.from("goods_receipts").update(update).eq("id", receipt.id).select("id");
-    if (error) throw error;
-    if (!(updatedRows || []).length) throw new Error(`Could not allocate landed cost to ${receipt.gr_no || receipt.id}.`);
-    Object.assign(receipt, update);
-    const { error: movementError } = await supabase.from("stock_movements")
-      .update({ unit_fifo_cost: landedUnitCost, total_fifo_cost: qty * landedUnitCost })
-      .eq("reference_no", `SM-${receipt.gr_no}`).eq("type", "Goods Receipt");
-    if (movementError) throw movementError;
-    if (receipt.product_id) {
-      const { error: productError } = await supabase.from("products").update({ cost: landedUnitCost }).eq("id", receipt.product_id);
-      if (productError) throw productError;
-    }
-    const after = { ...receipt, ...update };
-    await postGoodsReceiptSupplementalCorrection(po, before, after, invoice);
-    await postConsumedInventoryCostCorrection(before, {
-      sold_qty: await fifoConsumedQuantityForReceipt(before),
-      old_unit_cost: Number(before.landed_unit_cost || before.unit_cost || baseUnitCost),
-      new_unit_cost: landedUnitCost,
-      posting_date: invoice.posting_date || today(),
-      invoice_no: invoice.invoice_no || "",
-      invoice_date: invoice.invoice_date || null,
-      po_no: po.po_no,
-      posting_reference: invoice.posting_reference || "",
-    });
+    changes.push({id:receipt.id,old_qty:receipt.received_qty,old_cost:receipt.unit_cost,received_qty:qty,...update});
   }
-  await writeAuditLog({
-    tableName: "goods_receipts",
-    action: "Landed cost allocated",
-    beforeData: { po_no: po.po_no },
-    afterData: { po_no: po.po_no, landed_cost_total: targetCents / 100, invoice_no: invoice.invoice_no || "" },
+  const {data:saved,error}=await supabase.rpc('correct_receipts_atomic',{
+    p_changes:changes,p_posting_date:invoice.posting_date || today(),p_invoice_no:null,p_invoice_date:null,
+    p_actor:profile?.full_name || profile?.username || session?.user?.email || 'Accounting'
   });
+  if(error)throw error;
+  for(const row of saved || []){const receipt=receipts.find(item=>item.id===row.id);if(receipt)Object.assign(receipt,row);}
 }
 
 function filterLandedCostAllocationRows() {
@@ -15199,13 +16503,14 @@ async function postLandedCostInvoiceLedger(landedPo, sourcePoNo, costType = "Oth
 }
 
 async function openGoodsReceiptModal(po) {
+  await hydrateLineProducts(po?._lines || []);
   if (!po) return;
   const poWaybill = String(po.notes || "").match(/^PO Waybill #:\s*(.*)$/m)?.[1]?.trim() || "";
   const freightInvoice = String(po.notes || "").match(/^Inland Freight and Other Cost invoice #:\s*(.*)$/m)?.[1]?.trim() || "";
   const initialFreight = activeReceipts(po).length ? 0 : Number(po.freight_amount || 0);
   editing = po;
   productMeta.receiptInvoiceColumns = await goodsReceiptInvoiceColumnsReady();
-  const grNo = await nextRefPreview("gr", "GR-", "goods_receipts", "gr_no");
+  const grNo = "";
   $("modalTitle").textContent = `Goods receipt for ${po.po_no}`;
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   $("modalBody").innerHTML = `
@@ -15229,7 +16534,7 @@ async function openGoodsReceiptModal(po) {
       <div class="field"><label>Override reason</label><input id="blanketLimitOverrideReason" placeholder="Reason for exceeding blanket PO limit"></div>` : ""}
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes"></textarea></div>
     </div>
-    <p class="notice">${isBlanketPurchaseOrder(po) ? "Blanket PO: add the actual Product Master items received. The system blocks receipts above the spending limit unless a Manager/Admin records an override reason." : "Received quantity cannot be more than the remaining ordered quantity."} Inland Freight and Other Cost are spread proportionally across the received parts and become part of inventory cost; they remain separate from the later landed-cost invoice allocation. The Vendor Invoice # and Invoice Date${po.landed_cost_enabled ? ", plus the required Waybill #," : ""} entered above apply automatically to every item in this receipt. A later receipt against the same PO may use a different invoice${po.landed_cost_enabled ? " and waybill" : ""}.${productMeta.receiptInvoiceColumns ? "" : " Run the goods receipt invoice reference SQL migration so invoice references save as separate columns."}</p>`;
+    <p class="notice">${isWorkOrderPurchaseOrder(po) ? "Receipts for completed or invoiced work orders stay in stock and do not change the work order. Open work orders receive their reserved parts automatically. " : ""}${isBlanketPurchaseOrder(po) ? "Blanket PO: add the actual Product Master items received. The system blocks receipts above the spending limit unless a Manager/Admin records an override reason." : "Received quantity cannot be more than the remaining ordered quantity."} Inland Freight and Other Cost are spread proportionally across the received parts and become part of inventory cost; they remain separate from the later landed-cost invoice allocation. The Vendor Invoice # and Invoice Date${po.landed_cost_enabled ? ", plus the required Waybill #," : ""} entered above apply automatically to every item in this receipt. A later receipt against the same PO may use a different invoice${po.landed_cost_enabled ? " and waybill" : ""}.${productMeta.receiptInvoiceColumns ? "" : " Run the goods receipt invoice reference SQL migration so invoice references save as separate columns."}</p>`;
   $("modalSave").onclick = saveGoodsReceiptModal;
   $("grSeparateFreightInvoice").onchange = () => {
     $("grFreightInvoiceField").hidden = !$("grSeparateFreightInvoice").checked;
@@ -15247,6 +16552,8 @@ async function openGoodsReceiptModal(po) {
   };
   bindBlanketGoodsReceiptRows();
   bindGoodsReceiptFormControls();
+  prepareOrderReference("gr_no", () => orderReferencePreview("gr", "GR-", "goods_receipts", "gr_no"));
+  preparePurchaseCatalog();
 }
 
 async function goodsReceiptInvoiceColumnsReady() {
@@ -15566,6 +16873,8 @@ async function saveGoodsReceiptModalOnce() {
     Math.max(0, Number(header.receipt_inland_freight || 0)),
     Math.max(0, Number(header.receipt_other_cost || 0)),
   );
+  try { rows.forEach(row => goodsReceiptPostingAmounts(po, row)); }
+  catch (error) { alert(error.message); return; }
   if (isBlanketPurchaseOrder(po)) {
     const newAmount = rows.reduce((sum, row) => sum + Number(row.received_qty || 0) * Number(row.base_unit_cost || row.unit_cost || 0), 0);
     const projected = poReceivedTotal(po) + newAmount;
@@ -15605,6 +16914,10 @@ async function saveGoodsReceiptModalOnce() {
     header.notes = [header.notes, `Duplicate invoice warning acknowledged for ${header.vendor_invoice_no}; previous receipts: ${references.join(', ')}`].filter(Boolean).join('\n');
   }
   try {
+    if (isWorkOrderPurchaseOrder(po)) {
+      const workOrders = await ensureGoodsReceiptWorkOrderReservations(po, rows);
+      await ensureWorkOrderAccountingAccounts(workOrders.some((wo) => wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)));
+    }
     const grNo = header.gr_no;
     const grDate = header.gr_date || today();
     const receiptRows = rows.map((row, index) => {
@@ -15689,7 +17002,6 @@ async function saveGoodsReceiptModalOnce() {
       if (missing.length) throw new Error(`Goods Receipt inventory posting is incomplete. Missing stock movement: ${missing.join(", ")}. The receipt must be reconciled before continuing.`);
     }
     if (isShopIssuancePurchaseOrder(po)) await postAutomaticPurchaseShopIssuance(po, routedReceiptRows, grNo, grDate);
-    if (isWorkOrderPurchaseOrder(po)) await ensureGoodsReceiptWorkOrderReservations(po, routedReceiptRows);
     if (isCustomerPurchaseOrder(po) && po.linked_sales_order_no) await refreshLinkedSalesOrderReservations(po.linked_sales_order_no);
     await incrementSequence("gr");
     const invoiceSummary = receiptInvoiceSummary(rows, grDate);
@@ -15708,13 +17020,14 @@ async function saveGoodsReceiptModalOnce() {
     }
     await refreshPurchaseOrderFlow(po.po_no, { keepPaid: true });
     for (const receiptRow of receiptRows) await writeAuditLog({ tableName: "goods_receipts", action: "Received", beforeData: null, afterData: receiptRow });
+    if (isWorkOrderPurchaseOrder(po) && !await acceptReceivedWorkOrderParts(po, receiptRows)) return;
     closeModal();
     if (po.landed_cost_enabled && !isLandedCostAllocationComplete(po)) purchasingTab = "landed";
     await renderPurchasingView();
     const closedLandedCostCount = await promptCloseCompletedLandedCostPos(po.po_no);
     if (closedLandedCostCount) await renderPurchasingView();
     if (isWorkOrderPurchaseOrder(po)) {
-      alert(`Goods Receipt posted. The received parts are reserved to ${po.ap_support_wo_no} and remain in inventory until the mechanic accepts them.`);
+      alert(`Goods Receipt posted. Received quantities allocated to the work order were automatically issued and accepted. Any balance remains in inventory.`);
     } else if (isShopIssuancePurchaseOrder(po)) {
       const detail = purchaseOrderShopIssuanceDetail(po);
       alert(`Goods Receipt posted and automatically issued to ${detail.issued_to || "General Shop"}.`);
@@ -15803,17 +17116,73 @@ async function postAutomaticPurchaseShopIssuance(po, receiptRows = [], grNo = ""
   await writeAuditLog({ tableName: "stock_movements", action: "Automatic PO Shop Issuance Posted", afterData: { po_no: po.po_no, gr_no: grNo, ...record, lines: savedLines.map((line) => ({ sku: line.product.sku, qty: line.qty, unit_cost: line.unit_cost })) } });
 }
 
+async function acceptReceivedWorkOrderParts(po, receiptRows) {
+  try {
+    const { data, error } = await supabase.rpc('accept_work_order_receipts', { p_po_id: po.id, p_gr_nos: receiptRows.map(row => row.gr_no) });
+    if (error) throw error;
+    // RPC changes inventory on the server; discard the receipt form's pre-issue quantities.
+    productMeta.products = [];
+    invalidateViewReads();
+    return true;
+  } catch (error) {
+    $('modalSave').textContent = 'Retry WO acceptance';
+    $('modalSave').onclick = async () => {
+      const button = $('modalSave'); button.disabled = true;
+      try {
+        if (await acceptReceivedWorkOrderParts(po, receiptRows)) {
+          closeModal(); await renderPurchasingView();
+          alert('Work-order parts accepted. The receipt was not posted again.');
+        }
+      } finally { button.disabled = false; }
+    };
+    alert('Goods Receipt is already posted. Automatic work-order acceptance needs attention. Do not receive these goods again. Use Retry WO acceptance after resolving the issue.\n\n' + (error.message || error));
+    return false;
+  }
+}
+
 async function ensureGoodsReceiptWorkOrderReservations(po, receiptRows = []) {
   const workOrders = await getAll("work_orders");
-  const wo = workOrders.find((row) => String(row.wo_no || "").toLowerCase() === String(po.ap_support_wo_no || "").toLowerCase());
-  if (!wo || !isOpenWorkOrder(wo)) throw new Error(`The linked work order ${po.ap_support_wo_no || ""} is not open. The Goods Receipt was posted, but its work-order reservation needs review.`);
-  // PO rows, not a SKU lookup against the first receipt, identify reservations.
-  // Repeated/partial receipts update the same requests without resetting issuance.
-  await syncPurchaseOrderWorkOrderReservations(po, (po._lines || []).map((line) => ({...line, wo_no: line.wo_no || wo.wo_no})));
-  const touched = new Set(receiptRows.map((row) => String(row.sku || "").toLowerCase()));
-  for (const product of (productMeta.products || []).filter((row) => touched.has(String(row.sku || "").toLowerCase()))) {
-    await refreshOpenPartRequestAvailability(product, Number(product.qty || 0));
+  const lines = (po._lines || []).map((line) => ({ ...line, wo_no: line.wo_no || po.ap_support_wo_no }));
+  const linked = [...new Set(lines.filter((line) => purchaseOrderLineDestinationQty(po, line) > 0).map((line) => line.wo_no))];
+  for (const number of linked) {
+    const wo = workOrders.find((row) => String(row.wo_no || "").toLowerCase() === String(number || "").toLowerCase());
+    if (!wo) throw new Error("The linked work order " + (number || "(missing)") + " was not found.");
   }
+  await syncPurchaseOrderWorkOrderReservations(po, lines);
+  return workOrders.filter((wo) => canReceiveIntoWorkOrder(wo) && linked.some((number) => String(number).toLowerCase() === String(wo.wo_no).toLowerCase()));
+}
+
+async function automaticallyIssueGoodsReceiptWorkOrderParts(po, receiptRows = []) {
+  const workOrders = await ensureGoodsReceiptWorkOrderReservations(po, receiptRows);
+  if (!workOrders.length) return 0; // Completed WO receipts remain in stock.
+  await ensureWorkOrderAccountingAccounts(workOrders.some((wo) => wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)));
+  const poKey = String(po.po_no || "").trim().toUpperCase();
+  const actor = profile?.full_name || profile?.username || session?.user?.email || "Receiving";
+  let issuedQty = 0;
+  for (const receipt of receiptRows) {
+    const qty = Number(receipt.destination_received_qty || 0);
+    if (!(qty > 0)) continue;
+    const parts = await getAll("work_order_parts");
+    const candidates = parts.filter((part) => workOrderPartOriginPo(part) === poKey
+      && workOrders.some((wo) => wo.id === part.wo_id)
+      && String(part.product_id || "") === String(receipt.product_id || "")
+      && !/void|cancel|returned|released|removed/i.test(part.status || ""));
+    if (!candidates.length) {
+      const targetsOpenWorkOrder = (po._lines || []).some(line =>
+        String(line.product_id || "") === String(receipt.product_id || "")
+        && workOrders.some(wo => wo.wo_no === (line.wo_no || po.ap_support_wo_no)));
+      if (!targetsOpenWorkOrder) continue;
+      throw new Error("No linked work-order reservation was found for " + receipt.sku + ". Receipt " + receipt.gr_no + " needs review.");
+    }
+    const { data, error } = await supabase.rpc("auto_issue_work_order_receipt", {
+      p_gr_no: receipt.gr_no, p_part_ids: candidates.map((part) => part.id), p_quantity: qty, p_actor: actor,
+    });
+    if (error) throw new Error("Receipt " + receipt.gr_no + " was received, but automatic work-order issuance failed: " + error.message);
+    issuedQty += Number(data || 0);
+  }
+  productMeta.products = await getAll("products");
+  for (const wo of workOrders) await refreshWorkOrderWaitingPartsStatus(wo);
+  return issuedQty;
 }
 
 async function appendBlanketPurchaseOrderLines(po, rows) {
@@ -15974,13 +17343,28 @@ function resolvePreparedPurchaseOrder(poNo) {
   };
 }
 
+async function printScopedPurchaseOrder(poNo) {
+  const win = openInAppDocumentWindow(poNo);
+  if (win) { win.document.write("<p>Preparing purchase order…</p>"); win.document.close(); }
+  try {
+    const [po] = await workOrderScopedRows("purchase_orders", "po_no", [poNo]);
+    if (!po) throw new Error("Purchase order not found.");
+    const [lines, vendors] = await Promise.all([
+      workOrderScopedRows("purchase_order_lines", "po_id", [po.id]),
+      workOrderScopedRows("vendors", "name", [po.vendor].filter(Boolean)),
+    ]);
+    po._lines = lines; po._printVendor = vendors[0] || {};
+    return printPurchaseOrder(poNo, { purchaseOrder: po, targetWindow: win });
+  } catch (error) { if (win && !win.closed) win.close(); throw error; }
+}
+
 function printPurchaseOrder(poNo, { returnHtml = false, targetWindow = null, purchaseOrder = null } = {}) {
   const po = purchaseOrder || resolvePreparedPurchaseOrder(poNo);
   if (!po) return;
   const lines = po._lines || [];
   const title = String(po.status || "").toLowerCase() === "quotation" ? "Purchase Quote" : "Purchase Order";
   const logoUrl = new URL("assets/lms-imports-logo.jpg", window.location.href).href;
-  const vendor = (purchaseContext.vendorRows || []).find((row) => String(row.name || "").toLowerCase() === String(po.vendor || "").toLowerCase()) || {};
+  const vendor = po._printVendor || (purchaseContext.vendorRows || []).find((row) => String(row.name || "").toLowerCase() === String(po.vendor || "").toLowerCase()) || {};
   const vendorDetails = [
     po.vendor || vendor.name || "",
     vendor.address || "",
@@ -16183,8 +17567,29 @@ function sharedDocumentLink(documentType, reference) {
   return url.toString();
 }
 
+let pdfLibraryPromise = null;
+function ensurePdfLibrary() {
+  if (window.html2pdf) return Promise.resolve();
+  if (pdfLibraryPromise) return pdfLibraryPromise;
+  pdfLibraryPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./vendor/html2pdf.bundle.min.js";
+    script.onload = () => {
+      if (window.html2pdf) resolve();
+      else { script.remove(); pdfLibraryPromise = null; reject(new Error("The PDF generator could not load. Please try again.")); }
+    };
+    script.onerror = () => {
+      script.remove();
+      pdfLibraryPromise = null;
+      reject(new Error("The PDF generator could not load. Please try again."));
+    };
+    document.head.appendChild(script);
+  });
+  return pdfLibraryPromise;
+}
+
 async function printableHtmlToPdfBlob(html, fileName = "document.pdf") {
-  if (!window.html2pdf) throw new Error("The PDF generator is not available. Refresh the page and try again.");
+  html = partNumberWording(positionDocumentTotalsAboveSignatures(html));
   const frame = document.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
   frame.style.cssText = "position:fixed;left:-10000px;top:0;width:816px;height:1056px;border:0;opacity:0;pointer-events:none;";
@@ -16194,7 +17599,13 @@ async function printableHtmlToPdfBlob(html, fileName = "document.pdf") {
     frameDocument.open();
     frameDocument.write(html);
     frameDocument.close();
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve, reject) => {
+      const script = frameDocument.createElement("script");
+      script.src = new URL("./vendor/html2pdf.bundle.min.js", window.location.href).href;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Could not load the PDF generator. Please retry."));
+      frameDocument.head.appendChild(script);
+    });
     await frameDocument.fonts?.ready?.catch(() => {});
     const images = [...frameDocument.images];
     await Promise.all(images.map((image) => image.complete ? Promise.resolve() : new Promise((resolve) => {
@@ -16202,15 +17613,19 @@ async function printableHtmlToPdfBlob(html, fileName = "document.pdf") {
       image.addEventListener("error", resolve, { once: true });
     })));
     frameDocument.querySelectorAll(".print-btn,.sig-actions,.sig-save-actions").forEach((element) => element.remove());
+    const exportStyle = frameDocument.createElement("style");
+    exportStyle.textContent = '.boxes,.signatures{display:flex!important;gap:0!important}.boxes>.box{width:50%;min-width:0}.boxes>.box+ .box{margin-left:12px}.compact-header .boxes>.box:first-child{width:35.65%}.compact-header .boxes>.box:last-child{width:64.35%}.signatures>.sig-box{width:50%;min-width:0}.signatures>.sig-box+ .sig-box{margin-left:26px}.sig-input{box-sizing:border-box}.work-photo-grid{display:flex!important;flex-wrap:wrap}.sig-pad,.saved-signature{border:0;border-bottom:1px solid #0f172a;border-radius:0}';
+    frameDocument.head.appendChild(exportStyle);
     const element = frameDocument.querySelector(".pdf-export-root") || frameDocument.querySelector(".sheet") || frameDocument.body;
-    return await window.html2pdf().set({
-      margin: 0,
+    const pdfBlob = await frame.contentWindow.html2pdf().set({
+      margin: 0.45,
       filename: fileName,
       image: { type: "jpeg", quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true, logging: false, windowWidth: 816 },
       jsPDF: { unit: "in", format: "letter", orientation: "portrait" },
       pagebreak: { mode: ["css", "legacy"] },
     }).from(element).outputPdf("blob");
+    return new Blob([await pdfBlob.arrayBuffer()], { type: "application/pdf" });
   } finally {
     frame.remove();
   }
@@ -16265,10 +17680,11 @@ function exportPurchaseOrdersCsv() {
 }
 
 async function renderGoodsReceiptsView() {
+  if (!moduleListScope && currentView === "receipts" && moduleListSpec(currentView)) return loadView(currentView);
   currentCfg = tableMap.receipts;
   $("viewTitle").textContent = "Goods Receipts";
   $("viewSub").textContent = "Receive ordered goods only and track partial/full receipt.";
-  const [receipts, products, stockMovements] = await Promise.all([getAll("goods_receipts"), getAll("products"), getAll("stock_movements").catch(() => [])]);
+  const [receipts, products, stockMovements] = await Promise.all([getViewRows("goods_receipts"), getViewRows("products"), getViewRows("stock_movements").catch(() => [])]);
   const reversedReceiptRefs = new Set((stockMovements || []).filter((row) => /goods receipt reversal/i.test(row.type || "") || /^REV-GR-/i.test(row.reference_no || "")).map((row) => String(row.reference_no || "").replace(/^REV-/, "")));
   receipts.forEach((gr) => { gr._has_reversal_movement = reversedReceiptRefs.has(String(gr.gr_no || "")); });
   productMeta.products = products;
@@ -16425,15 +17841,16 @@ async function reverseGoodsReceiptRecord(gr, { reason = "" } = {}) {
 }
 
 async function renderQuotationsView() {
+  if (!moduleListScope && currentView === "quotes" && moduleListSpec(currentView)) return loadView(currentView);
   currentCfg = tableMap.quotes;
   $("viewTitle").textContent = "Quotations";
   $("viewSub").textContent = "Create customer quotes and convert accepted quotes to sales orders.";
   const [quotes, lines, customers, products, salesOrders] = await Promise.all([
-    getAll("quotations"),
-    getAll("quotation_lines"),
-    getAll("customers"),
-    getAll("products"),
-    getAll("sales_orders").catch(() => []),
+    getViewRows("quotations"),
+    getViewRows("quotation_lines"),
+    getViewRows("customers"),
+    getViewRows("products"),
+    getViewRows("sales_orders").catch(() => []),
   ]);
   const inactiveSalesOrders = new Set(salesOrders.filter((order) => /void|reversed|cancel/i.test(String(order.status || ""))).map((order) => order.order_no));
   const staleLinks = [...new Set(quotes.map((quote) => quote.sales_order_no).filter((orderNo) => orderNo && inactiveSalesOrders.has(orderNo)))];
@@ -16527,6 +17944,7 @@ function bindQuotationRows() {
 }
 
 async function openQuotationModal(quote = null, options = {}) {
+  await ensureListEditorProducts();
   const forceReadOnly = Boolean(options.forceReadOnly);
   const readOnly = Boolean(quote && (forceReadOnly || quote.sales_order_no || /converted|cancelled/i.test(quote.status || "")));
   if (quote && !forceReadOnly && (quote.sales_order_no || /converted|cancelled/i.test(quote.status || ""))) {
@@ -17017,7 +18435,7 @@ async function renderSalesPricingRatesView() {
   currentCfg = tableMap.salesrates;
   $("viewTitle").textContent = "Pricing Rates";
   $("viewSub").textContent = "Maintain optional cost-multiplier selling-price rules for Sales Orders.";
-  currentRows = (await getAll("sales_pricing_rates")).sort((a, b) => String(a.rate_type || "").localeCompare(String(b.rate_type || "")) || String(a.rate_name || "").localeCompare(String(b.rate_name || "")));
+  currentRows = (await getViewRows("sales_pricing_rates")).sort((a, b) => String(a.rate_type || "").localeCompare(String(b.rate_type || "")) || String(a.rate_name || "").localeCompare(String(b.rate_name || "")));
   productMeta.salesPricingRates = currentRows;
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="salesRateSearch" placeholder="Search rate type, name, multiplier, description, or status"></div>
@@ -17116,7 +18534,7 @@ async function renderLaborPricingRatesView() {
   currentCfg = tableMap.laborrates;
   $("viewTitle").textContent = "Labor Pricing Rates";
   $("viewSub").textContent = "Maintain reusable customer-billing labor rates for Work Orders.";
-  currentRows = (await getAll("labor_pricing_rates")).sort((a, b) => String(a.rate_type || "").localeCompare(String(b.rate_type || "")) || String(a.rate_name || "").localeCompare(String(b.rate_name || "")));
+  currentRows = (await getViewRows("labor_pricing_rates")).sort((a, b) => String(a.rate_type || "").localeCompare(String(b.rate_type || "")) || String(a.rate_name || "").localeCompare(String(b.rate_name || "")));
   productMeta.laborPricingRates = currentRows;
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="laborRateSearch" placeholder="Search rate type, name, multiplier, description, or status"></div>
@@ -17205,21 +18623,31 @@ async function deactivateLaborPricingRate(id) {
   await renderLaborPricingRatesView();
 }
 
+async function salesListReservationContext(products) {
+  const lines = [];
+  const skus = [...new Set(products.map(row=>row.sku).filter(Boolean))];
+  for(let i=0;i<skus.length;i+=100) lines.push(...await workOrderScopedRows("sales_order_lines","sku",skus.slice(i,i+100)));
+  const ids = [...new Set(lines.map(row=>row.order_id).filter(Boolean))], orders=[];
+  for(let i=0;i<ids.length;i+=100) orders.push(...await workOrderScopedRows("sales_orders","id",ids.slice(i,i+100)));
+  return { orders, lines };
+}
+
 async function renderSalesOrdersView() {
+  if (!moduleListScope && currentView === "orders" && moduleListSpec(currentView)) return loadView(currentView);
   currentCfg = tableMap.orders;
   $("viewTitle").textContent = "Sales Orders";
   $("viewSub").textContent = "Track customer demand and committed inventory.";
   const [orders, lines, customers, products, productAlternates, salesPricingRates, workOrders, locations, assets, outsideFleet] = await Promise.all([
-    getAll("sales_orders"),
-    getAll("sales_order_lines"),
-    getAll("customers"),
-    getAll("products"),
-    getAll("product_alternates").catch(() => []),
-    getAll("sales_pricing_rates").catch(() => []),
-    getAll("work_orders").catch(() => []),
-    getAll("asset_locations").catch(() => []),
-    getAll("assets").catch(() => []),
-    getAll("outside_customer_fleet").catch(() => []),
+    getViewRows("sales_orders"),
+    getViewRows("sales_order_lines"),
+    getViewRows("customers"),
+    getViewRows("products"),
+    getViewRows("product_alternates").catch(() => []),
+    getViewRows("sales_pricing_rates").catch(() => []),
+    getViewRows("work_orders").catch(() => []),
+    getViewRows("asset_locations").catch(() => []),
+    getViewRows("assets").catch(() => []),
+    getViewRows("outside_customer_fleet").catch(() => []),
   ]);
   currentRows = orders.sort((a, b) => String(b.order_date || "").localeCompare(String(a.order_date || "")));
   currentRows.forEach((order) => {
@@ -17227,8 +18655,9 @@ async function renderSalesOrdersView() {
     order._workOrder = workOrders.find((wo) => String(wo.wo_no || "") === String(order.work_order_no || "")) || null;
     order._assetDetails = order._workOrder ? workOrderAssetDetailsFromLists(order._workOrder, assets, outsideFleet) : null;
   });
-  const activeOrderIds = new Set(orders.filter((order) => !/fulfilled|delivered|paid|void|reversed|cancel/i.test(String(order.status || ""))).map((order) => String(order.id || "")));
-  const reservedBySku = lines.reduce((map, line) => {
+  const reservations = moduleListScope?.view === "orders" ? await salesListReservationContext(products) : { orders, lines };
+  const activeOrderIds = new Set(reservations.orders.filter((order) => !/fulfilled|delivered|paid|void|reversed|cancel/i.test(String(order.status || ""))).map((order) => String(order.id || "")));
+  const reservedBySku = reservations.lines.reduce((map, line) => {
     if (!activeOrderIds.has(String(line.order_id || ""))) return map;
     const sku = String(line.sku || "").trim().toLowerCase();
     if (!sku) return map;
@@ -17285,6 +18714,34 @@ function salesOrdersForTab(rows, tab = salesOrderTab) {
   });
 }
 
+function salesOrderPostedLinesPreserved(order, lines) {
+  const totals = (rows) => {
+    const result = new Map();
+    for (const line of rows || []) {
+      const key = String(line.product_id || line.sku || "");
+      const total = result.get(key) || { qty: 0, shipped: 0, invoiced: 0 };
+      total.qty += Number(line.qty || 0);
+      total.shipped += Number(line.shipped_qty || 0);
+      total.invoiced += Number(line.invoiced_qty || 0);
+      result.set(key, total);
+    }
+    return result;
+  };
+  const before = totals(order?._lines);
+  const after = totals(lines);
+  return [...before].every(([key, old]) => {
+    if (!old.shipped && !old.invoiced) return true;
+    const next = after.get(key);
+    return next && next.shipped === old.shipped && next.invoiced === old.invoiced && next.qty >= Math.max(old.shipped, old.invoiced);
+  }) && (lines || []).every((line) => Number(line.qty || 0) >= Math.max(Number(line.shipped_qty || 0), Number(line.invoiced_qty || 0)));
+}
+
+function salesOrderCanEdit(order = {}) {
+  if (/^(paid|void|reversed|cancelled)$/i.test(order.status || "")) return false;
+  if (!order.invoice_no && !/^invoiced$/i.test(order.status || "")) return true;
+  return (order._lines || []).some((line) => Number(line.qty || 0) > Math.max(Number(line.shipped_qty || 0), Number(line.invoiced_qty || 0)));
+}
+
 function salesOrderFullyShipped(order = {}) {
   return Boolean((order._lines || []).length) && (order._lines || []).every((line) => Number(line.shipped_qty || 0) >= Number(line.qty || 0));
 }
@@ -17310,9 +18767,9 @@ function salesOrderRowHtml(order) {
   const issued = salesOrderFullyShipped(order) || ["fulfilled", "issued", "delivered", "posted", "paid"].includes(String(order.status || "").toLowerCase());
   const inactive = /void|reversed|cancelled/i.test(order.status || "");
   const quantities = salesOrderQuantitySummary(order);
-  const canInvoice = !String(order.work_order_no || "").trim() && salesOrderUnbilledShippedQty(order) > 0;
+  const canInvoice = !String(order.work_order_no || "").trim();
   const displayStatus = salesOrderDisplayStatus(order);
-  const canEdit = !inactive && !order.invoice_no && !/paid/i.test(order.status || "");
+  const canEdit = salesOrderCanEdit(order);
   return `<tr>
     <td>${esc(order.order_no)}</td>
     <td>${badge(order.order_type || "Stock Order")}</td>
@@ -17403,12 +18860,8 @@ async function openSalesOrderReorderPrompt(orderNo) {
   if (!opened) alert(`${order.order_no} has no new reorder quantity to purchase. An existing linked reorder PO may already cover the requirement.`);
 }
 
-async function salesOrderLinkedPurchaseOrdersHtml(orderNo) {
-  const [purchaseOrders, purchaseLines, receipts] = await Promise.all([
-    getAll("purchase_orders").catch(() => []),
-    getAll("purchase_order_lines").catch(() => []),
-    getAll("goods_receipts").catch(() => []),
-  ]);
+async function salesOrderLinkedPurchaseOrdersHtml(orderNo, openingData = null) {
+  const { purchaseOrders, purchaseLines, receipts } = openingData || await salesPurchaseOpeningData();
   const marker = `[Reorder Source: ${orderNo}]`;
   const linked = purchaseOrders.filter((po) => String(po.linked_sales_order_no || "") === String(orderNo)
     || String(po.notes || "").includes(marker));
@@ -17430,12 +18883,9 @@ async function salesOrderLinkedPurchaseOrdersHtml(orderNo) {
   return `<div class="field wide"><label>Linked vendor POs (${linked.length})</label><div class="table-wrap"><table class="line-table"><thead><tr><th>PO #</th><th>Vendor</th><th>Ordered</th><th>Received</th><th>Remaining</th><th>Status</th><th>Line progress</th></tr></thead><tbody>${rows}</tbody></table></div><small>Create as many vendor POs as needed. Goods Receipts update this progress automatically.</small></div>`;
 }
 
-async function salesOrderLinkedPurchaseOrderMap(orderNo) {
+async function salesOrderLinkedPurchaseOrderMap(orderNo, openingData = null) {
   if (!orderNo) return {};
-  const [purchaseOrders, purchaseLines] = await Promise.all([
-    getAll("purchase_orders").catch(() => []),
-    getAll("purchase_order_lines").catch(() => []),
-  ]);
+  const { purchaseOrders, purchaseLines, receipts } = openingData || await salesPurchaseOpeningData();
   const marker = `[Reorder Source: ${orderNo}]`;
   const linked = purchaseOrders.filter((po) => String(po.linked_sales_order_no || "") === String(orderNo)
     || String(po.notes || "").includes(marker));
@@ -17453,15 +18903,16 @@ async function salesOrderLinkedPurchaseOrderMap(orderNo) {
 }
 
 async function openSalesOrderModal(order = null, options = {}) {
-  productMeta.products = await getAll("products");
-  const readOnly = Boolean(order && (options.forceReadOnly || String(order.invoice_no || "").trim() || /^(invoiced|paid|void|reversed|cancelled)$/i.test(order.status || "")));
+  await ensureListEditorProducts();
+  if (!Array.isArray(productMeta.products)) productMeta.products = await getViewRows("products");
+  const readOnly = Boolean(order && (options.forceReadOnly || !salesOrderCanEdit(order)));
   editing = order;
-  if (!Array.isArray(productMeta.salesPricingRates)) productMeta.salesPricingRates = await getAll("sales_pricing_rates").catch(() => []);
+  if (!Array.isArray(productMeta.salesPricingRates)) productMeta.salesPricingRates = await getViewRows("sales_pricing_rates").catch(() => []);
   const prefill = options.prefill || {};
-  const depositEntries = order?.deposit_invoice_no ? await getAll("general_ledger") : [];
+  const depositEntries = order?.deposit_invoice_no ? await (async () => { const { data, error } = await supabase.from("general_ledger").select("reference,source,posting_date").eq("reference", order.deposit_invoice_no).eq("source", "Sales Order Deposit").limit(1); if (error) throw error; return data || []; })() : [];
   const depositDate = depositEntries.find((entry) => entry.reference === order?.deposit_invoice_no && entry.source === "Sales Order Deposit")?.posting_date || order?.order_date || prefill.order_date || today();
   productMeta.pendingSalesPoSource = options.sourcePo || (order?.source_po_no ? { po_no: order.source_po_no } : null);
-  const orderNo = order?.order_no || await nextRefPreview("so", "SO-", "sales_orders", "order_no");
+  const orderNo = order?.order_no || "";
   const lines = order?._lines?.length ? order._lines : prefill.lines?.length ? prefill.lines : [{ sku: "", product_name: "", qty: 1, price: 0 }];
   const sourcePoNo = order?.source_po_no || options.sourcePo?.po_no || "";
   const initialPaymentMode = order?.payment_mode || prefill.payment_mode || "PO";
@@ -17469,8 +18920,9 @@ async function openSalesOrderModal(order = null, options = {}) {
   const initialReferenceIsPo = initialReferenceLabel === "Customer PO #";
   const linkedWorkOrder = (productMeta.workOrders || []).find((wo) => wo.wo_no === (order?.work_order_no || prefill.work_order_no));
   const linkedWorkOrderLabel = linkedWorkOrder ? workOrderOptionLabel(linkedWorkOrder) : (order?.work_order_no || prefill.work_order_no || "");
-  const linkedPoSummary = order?.order_no ? await salesOrderLinkedPurchaseOrdersHtml(order.order_no) : "";
-  const linkedPoMap = order?.order_no ? await salesOrderLinkedPurchaseOrderMap(order.order_no) : {};
+  const openingData = order?.order_no ? await salesPurchaseOpeningData() : null;
+  const linkedPoSummary = order?.order_no ? await salesOrderLinkedPurchaseOrdersHtml(order.order_no, openingData) : "";
+  const linkedPoMap = order?.order_no ? await salesOrderLinkedPurchaseOrderMap(order.order_no, openingData) : {};
   $("modalTitle").textContent = readOnly ? `View sales order ${order.order_no}` : order ? "Edit sales order" : "New sales order";
   $("modalBody").innerHTML = `
     <div class="form-grid">
@@ -17526,9 +18978,7 @@ async function openSalesOrderModal(order = null, options = {}) {
     if (!opened) alert("The selected quantities are already covered by linked open vendor POs.");
   };
   document.querySelectorAll("[data-linked-sales-po]").forEach((button) => button.onclick = async () => {
-    const pos = await getAll("purchase_orders");
-    const lines = await getAll("purchase_order_lines");
-    const receipts = await getAll("goods_receipts");
+    const { purchaseOrders: pos, purchaseLines: lines, receipts } = await salesPurchaseOpeningData();
     const po = pos.find((row) => row.po_no === button.dataset.linkedSalesPo);
     if (!po) return alert("That linked purchase order could not be loaded.");
     po._lines = lines.filter((line) => String(line.po_id || "") === String(po.id || "") || String(line.po_no || "") === String(po.po_no || ""));
@@ -17538,6 +18988,7 @@ async function openSalesOrderModal(order = null, options = {}) {
   });
   wireSalesOrderLinePricing();
   if (readOnly) setSalesOrderModalReadOnly(order);
+  if (!order) prepareOrderReference("order_no", () => orderReferencePreview("so", "SO-", "sales_orders", "order_no"));
 }
 
 function bindSalesOrderWorkOrderFields() {
@@ -17682,8 +19133,8 @@ function setupSalesOrderModalFooter(order = null) {
   invoiceButton.type = "button";
   const unbilledShipped = salesOrderUnbilledShippedQty(order || {});
   const chargedToWorkOrder = Boolean(String(order?.work_order_no || "").trim());
-  invoiceButton.textContent = chargedToWorkOrder ? "Billed on Work Order" : unbilledShipped > 0 ? (order?.invoice_no ? "Create Next Invoice" : "Invoice") : (order?.invoice_no ? "Fully Invoiced" : "Invoice");
-  invoiceButton.disabled = chargedToWorkOrder || !order?.order_no || !(unbilledShipped > 0);
+  invoiceButton.textContent = chargedToWorkOrder ? "Billed on Work Order" : order?.invoice_no && unbilledShipped > 0 ? "Create Next Invoice" : "Invoice";
+  invoiceButton.disabled = chargedToWorkOrder || !order?.order_no;
   invoiceButton.title = !order?.order_no
     ? "Save the Sales Order before invoicing."
     : chargedToWorkOrder
@@ -17692,7 +19143,8 @@ function setupSalesOrderModalFooter(order = null) {
       ? `Review a draft invoice for ${unbilledShipped} reserved, uninvoiced unit(s). Confirming updates SHP and inventory.`
       : "Reserve stock (ISS) before creating an invoice.";
   invoiceButton.onclick = async () => {
-    if (!order?.order_no || !(unbilledShipped > 0)) return;
+    if (!order?.order_no) return;
+    if (!(unbilledShipped > 0) && !modalDirty) return alert("Nothing to invoice.");
     if (modalDirty) {
       alert("Save and Close the Sales Order first so the invoice uses the latest customer, quantity, freight, and price details.");
       return;
@@ -17773,7 +19225,7 @@ function savedSalesAlternateProducts(product) {
   return (productMeta.productAlternates || [])
     .filter((row) => String(row.product_id || "") === String(product.id))
     .map((row) => (productMeta.products || []).find((candidate) => String(candidate.sku || "").trim().toLowerCase() === String(row.alternate_sku || "").trim().toLowerCase()))
-    .filter((candidate) => candidate && candidate.id !== product.id)
+    .filter((candidate) => isSelectableProduct(candidate) && candidate.id !== product.id)
     .filter((candidate) => {
       const key = String(candidate.sku || "").trim().toLowerCase();
       if (!key || seen.has(key)) return false;
@@ -18062,9 +19514,9 @@ async function renderSalesPartsToOrderView() {
   $("viewTitle").textContent = "Parts to Order";
   $("viewSub").textContent = "Reserved customer demand that cannot be fulfilled until inventory is received.";
   const [orders, lines, products] = await Promise.all([
-    getAll("sales_orders"),
-    getAll("sales_order_lines"),
-    getAll("products"),
+    getViewRows("sales_orders"),
+    getViewRows("sales_order_lines"),
+    getViewRows("products"),
   ]);
   currentRows = buildSalesPartsToOrderRows(orders, lines, products);
   $("content").innerHTML = `
@@ -18214,6 +19666,10 @@ async function saveSalesOrderModal({ keepOpen = false } = {}) {
   record.override_by = null;
   record.override_reason = null;
   const lineRows = parseSalesLineRows();
+  if (editing && !salesOrderPostedLinesPreserved(editing, lineRows)) {
+    alert("Already shipped or invoiced parts must stay on this order. You cannot remove or replace them, or reduce their ordered quantity below the quantity already processed.");
+    return;
+  }
   if (!lineRows.length) {
     alert("Add at least one sales order line.");
     return;
@@ -18984,7 +20440,7 @@ async function invoiceSalesOrder(orderNo, silent = false) {
     const alreadyShippedNotInvoiced = Math.max(0, shipped - invoiced);
     return { ...line, billQty, shipQty: Math.max(0, billQty - alreadyShippedNotInvoiced) };
   }).filter((line) => line.billQty > 0);
-  if (!billableLines.length) return alert(`There is no reserved, uninvoiced quantity on ${orderNo}. Save the Sales Order with available stock so ISS is reserved first.`);
+  if (!billableLines.length) return alert("Nothing to invoice.");
   let previousInvoices = [];
   try {
     const [invoices, lines] = await Promise.all([getAll("invoices"), getAll("invoice_lines")]);
@@ -19225,6 +20681,9 @@ async function postSalesOrderDeposit(order, amount) {
 async function printSalesOrder(orderNo, sourceOrder = null) {
   const order = sourceOrder || currentRows.find((row) => row.order_no === orderNo);
   if (!order) return;
+  const loadingWindow = openInAppDocumentWindow(orderNo);
+  if (loadingWindow) { loadingWindow.document.write("<p style='font-family:sans-serif;padding:24px'>Preparing this order and its invoices…</p>"); loadingWindow.document.close(); }
+  try {
   const title = String(order.status || "").toLowerCase() === "quotation" ? "Sales Quote" : "Sales Order";
   const printLines = (order._lines || []).map((line) => [line.sku, line.description || line.product_name || "", line.unit || "Each", line.qty, line.issued_qty || 0, line.shipped_qty || 0, money(line.price), money(Number(line.qty || 0) * Number(line.price || 0))]);
   if (Number(order.freight_amount || 0) > 0) printLines.push(["", "Freight", "Each", 1, 0, 0, money(order.freight_amount), money(order.freight_amount)]);
@@ -19244,7 +20703,8 @@ async function printSalesOrder(orderNo, sourceOrder = null) {
     salesLayout: true,
     signatureDataUrl: order.signature_data_url || "",
   });
-  const [invoices, invoiceLines] = await Promise.all([getAll("invoices"), getAll("invoice_lines")]);
+  const invoices = await workOrderScopedRows("invoices", "source_ref", [orderNo]);
+    const invoiceLines = await workOrderScopedRows("invoice_lines", "invoice_id", invoices.map(row => row.id));
   const relatedInvoices = invoices
     .filter((invoice) => String(invoice.source_ref || "") === String(order.order_no || "") && !/customer deposit/i.test(invoice.type || ""))
     .sort((a, b) => String(a.invoice_date || "").localeCompare(String(b.invoice_date || "")) || String(a.invoice_no || "").localeCompare(String(b.invoice_no || "")));
@@ -19254,11 +20714,15 @@ async function printSalesOrder(orderNo, sourceOrder = null) {
     invoice.payment_mode ||= order.payment_mode || "PO";
   });
   if (relatedInvoices.length) {
-    const invoiceDocuments = await Promise.all(relatedInvoices.map((invoice) => printCustomerInvoice(invoice.invoice_no, { returnHtml: true })));
+    const invoiceDocuments = await Promise.all(relatedInvoices.map((invoice) => printCustomerInvoice(invoice.invoice_no, { returnHtml: true, preparedInvoice: invoice })));
     const packet = invoiceDocuments.map((invoiceHtml) => `<section class="linked-invoice-page">${printableDocumentMain(invoiceHtml)}</section>`).join("");
     html = html.replace("</body>", `<style>.linked-invoice-page{break-before:page;page-break-before:always}.linked-invoice-page>.sheet{margin:0 auto}.linked-invoice-page .sig-actions,.linked-invoice-page .sig-save-actions{display:none!important}</style>${packet}</body>`);
   }
-  openPrintWindow(html, order.order_no);
+  openPrintWindow(html, order.order_no, loadingWindow);
+  } catch (error) {
+    if (loadingWindow && !loadingWindow.closed) loadingWindow.close();
+    alert(error.message || error);
+  }
 }
 
 async function printSalesOrderInvoiceHistory(orderNo) {
@@ -19268,7 +20732,8 @@ async function printSalesOrderInvoiceHistory(orderNo) {
     historyWindow.document.close();
   }
   try {
-    const [invoices, invoiceLines] = await Promise.all([getAll("invoices"), getAll("invoice_lines")]);
+    const invoices = await workOrderScopedRows("invoices", "source_ref", [orderNo]);
+    const invoiceLines = await workOrderScopedRows("invoice_lines", "invoice_id", invoices.map(row => row.id));
     const related = invoices
       .filter((invoice) => String(invoice.source_ref || "") === String(orderNo || ""))
       .sort((a, b) => String(a.invoice_date || "").localeCompare(String(b.invoice_date || "")) || String(a.invoice_no || "").localeCompare(String(b.invoice_no || "")));
@@ -19283,7 +20748,7 @@ async function printSalesOrderInvoiceHistory(orderNo) {
       invoice.customer_po ||= salesOrderInvoicePoReference(sourceOrder || {});
       invoice.payment_mode ||= sourceOrder?.payment_mode || "PO";
     });
-    const invoiceDocuments = await Promise.all(related.map((invoice) => printCustomerInvoice(invoice.invoice_no, { returnHtml: true })));
+    const invoiceDocuments = await Promise.all(related.map((invoice) => printCustomerInvoice(invoice.invoice_no, { returnHtml: true, preparedInvoice: invoice })));
     openPrintWindow(combinedPrintableDocumentsHtml(invoiceDocuments, `Invoice History - ${orderNo}`), `${orderNo}-invoice-history`, historyWindow);
   } catch (error) {
     if (historyWindow && !historyWindow.closed) historyWindow.close();
@@ -19338,8 +20803,9 @@ function nextEquipmentRentalBidNo(rows = []) {
   return `ERB-${largest + 1}`;
 }
 
-async function loadEquipmentRentalMeta() {
-  const [customers, assets, products, rates] = await Promise.all([getAll("customers"), getAll("assets"), getAll("products"), getAll("equipment_rental_rates")]);
+async function loadEquipmentRentalMeta({ useCache = false } = {}) {
+  const readRows = useCache ? getViewRows : getAll;
+  const [customers, assets, products, rates] = await Promise.all([readRows("customers"), readRows("assets"), readRows("products"), readRows("equipment_rental_rates")]);
   productMeta.customerRows = customers;
   productMeta.customers = customers.map((row) => row.name).filter(Boolean).sort();
   productMeta.assets = assets;
@@ -19362,7 +20828,7 @@ async function renderEquipmentRentalRatesView() {
   currentCfg = tableMap.rentalrates;
   $("viewTitle").textContent = "Rental Rate Sheet";
   $("viewSub").textContent = "Rates for equipment, plants, tools, containers, and other rentable items.";
-  const { rates } = await loadEquipmentRentalMeta();
+  const { rates } = await loadEquipmentRentalMeta({ useCache: true });
   currentRows = rates.sort((a, b) => String(rentalRateItemRef(a)).localeCompare(String(rentalRateItemRef(b))));
   $("content").innerHTML = `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Rental Pricing</strong><span>Use Product for plants, tools, containers, and other rental inventory. Operator pricing is optional and is mainly used for operated equipment.</span></div><div class="actions"><button id="rentalRateCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newRentalRateBtn">Add rental rate</button></div></div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Item Ref</th><th>Rentable Item</th><th>Daily<br>Item Only</th><th>Weekly<br>Item Only</th><th>Monthly<br>Item Only</th><th>Daily<br>With Operator</th><th>Weekly<br>With Operator</th><th>Monthly<br>With Operator</th><th>Included Operator Hours</th><th>Excess Operator / Hr</th><th>Status</th><th></th></tr></thead><tbody>${currentRows.length ? currentRows.map((row) => `<tr><td>${esc(rentalRateItemType(row))}</td><td>${esc(rentalRateItemRef(row))}</td><td>${esc(rentalRateItemName(row))}</td><td>${money(row.daily_without_operator)}</td><td>${money(row.weekly_without_operator)}</td><td>${money(row.monthly_without_operator)}</td><td>${money(row.daily_with_operator)}</td><td>${money(row.weekly_with_operator)}</td><td>${money(row.monthly_with_operator)}</td><td>${esc(row.operator_hours_included)}</td><td>${money(row.excess_operator_hourly_rate)}</td><td>${badge(row.status)}</td><td><button class="rowbtn" data-rental-rate-edit="${esc(row.id)}">Edit</button></td></tr>`).join("") : `<tr><td colspan="13" class="empty">No rental rates yet. Add any rentable item from Fleet & Equipment or Product Master.</td></tr>`}</tbody></table></div></section>`;
   $("newRentalRateBtn").onclick = () => openEquipmentRentalRateModal();
@@ -19404,8 +20870,8 @@ async function renderEquipmentRentalBidsView() {
   currentCfg = tableMap.rentalbids;
   $("viewTitle").textContent = "Rental Bids";
   $("viewSub").textContent = "Quote equipment, plants, tools, containers, and any other rentable item.";
-  await loadEquipmentRentalMeta();
-  const [bids, bidLines] = await Promise.all([getAll("equipment_rental_bids"), getAll("equipment_rental_bid_lines").catch(() => [])]);
+  await loadEquipmentRentalMeta({ useCache: true });
+  const [bids, bidLines] = await Promise.all([getViewRows("equipment_rental_bids"), getViewRows("equipment_rental_bid_lines").catch(() => [])]);
   currentRows = bids.map((bid) => ({ ...bid, lines: bidLines.filter((line) => line.bid_no === bid.bid_no).sort((a, b) => a.line_no - b.line_no) })).sort((a, b) => String(b.bid_date || "").localeCompare(String(a.bid_date || "")));
   $("content").innerHTML = `<div class="stats">${statCard("Open Bids", currentRows.filter((r) => /draft|sent/i.test(r.status)).length, "Draft or sent")}${statCard("Accepted", currentRows.filter((r) => /accepted|converted/i.test(r.status)).length, "Won bids")}${statCard("Quoted Value", money(currentRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)), "All bids")}</div><section class="panel"><div class="panel-head"><div class="panel-title"><strong>Rental Bids / Quotations</strong><span>Each bid can contain multiple plants, equipment, tools, containers, toilets, facilities, materials, or accessories.</span></div><div class="actions"><button id="rentalBidCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newRentalBidBtn">New bid</button></div></div><div class="table-wrap"><table><thead><tr><th>Bid</th><th>Date</th><th>Valid Until</th><th>Customer</th><th>Category</th><th>Rentable Items</th><th>Total</th><th>Status</th><th>Rental</th><th></th></tr></thead><tbody>${currentRows.length ? currentRows.map((row) => `<tr><td>${esc(row.bid_no)}</td><td>${esc(formatDisplayDate(row.bid_date))}</td><td>${esc(formatDisplayDate(row.valid_until))}</td><td>${esc(row.customer)}</td><td>${esc(row.rental_category || (row.lines?.length > 1 ? "Mixed" : row.lines?.[0]?.category || rentalRateItemType(row)))}</td><td>${esc(row.lines?.length ? `${row.lines.length} item(s): ${row.lines.map((line) => line.item_ref).join(", ")}` : `${rentalRateItemRef(row)} - ${rentalRateItemName(row)}`)}</td><td>${money(row.amount)}</td><td>${badge(row.status)}</td><td>${esc(row.rental_no || "")}</td><td><div class="rowactions"><button class="rowbtn" data-rental-bid-pdf="${esc(row.bid_no)}">PDF</button><button class="rowbtn" data-rental-bid-edit="${esc(row.bid_no)}">Edit</button>${!/converted|rejected/i.test(row.status) ? `<button class="rowbtn primary" data-rental-bid-convert="${esc(row.bid_no)}">Convert to Rental</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="10" class="empty">No rental bids yet.</td></tr>`}</tbody></table></div></section>`;
   $("newRentalBidBtn").onclick = () => openEquipmentRentalBidModal();
@@ -19588,7 +21054,7 @@ async function renderRentalsView() {
   currentCfg = tableMap.rentals;
   $("viewTitle").textContent = "Rentals";
   $("viewSub").textContent = "Track rented vehicles, equipment, inventory items, dates, deposits, returns, and billing.";
-  const [rentals, customers, assets, products, rentalRates] = await Promise.all([getAll("rentals"), getAll("customers"), getAll("assets"), getAll("products"), getAll("equipment_rental_rates").catch(() => [])]);
+  const [rentals, customers, assets, products, rentalRates] = await Promise.all([getViewRows("rentals"), getViewRows("customers"), getViewRows("assets"), getViewRows("products"), getViewRows("equipment_rental_rates").catch(() => [])]);
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.customerRows = customers;
   productMeta.assets = assets;
@@ -19863,24 +21329,54 @@ async function collapseDuplicatePendingWorkOrderPoReservations(parts = []) {
   return parts;
 }
 
-async function renderRepairsView() {
+async function repairDataAfterRecordChange(reference) {
+  const key = reference?.id ? "id" : "wo_no";
+  const value = reference?.id || reference?.wo_no || reference;
+  const headers = await workOrderScopedRows("work_orders", key, [value]);
+  if (!headers.length) throw new Error("The changed work order could not be refreshed.");
+  const wo = headers[0];
+  const previous = currentRows.find((row) => row.id === wo.id) || {};
+  const [issues, parts, labor, movements, poContext] = await Promise.all([
+    workOrderScopedRows("work_order_issues", "wo_id", [wo.id]),
+    workOrderScopedRows("work_order_parts", "wo_id", [wo.id]),
+    workOrderScopedRows("work_order_labor", "wo_id", [wo.id]),
+    workOrderScopedRows("stock_movements", "document_no", [wo.wo_no]),
+    loadWorkOrderPartCostContext({ ...wo, _parts: previous._parts || [] }),
+  ]);
+  const productIds = [...new Set([...(previous._parts || []), ...parts].map((part) => part.product_id).filter(Boolean))];
+  const products = await workOrderScopedRows("products", "id", productIds);
+  const merge = (before, after) => [...new Map([...before, ...after].map((row) => [row.id, row])).values()];
+  const others = currentRows.filter((row) => row.id !== wo.id);
+  return [
+    [...others, wo], [...others.flatMap((row) => row._issues || []), ...issues],
+    [...others.flatMap((row) => row._parts || []), ...parts], [...others.flatMap((row) => row._labor || []), ...labor],
+    productMeta.assets || [], productMeta.outsideFleet || [], productMeta.mechanicsRows || [],
+    (productMeta.customers || []).map((name) => ({ name })), merge(productMeta.products || [], products),
+    [...others.flatMap((row) => row._stockMovements || []), ...movements],
+    merge(productMeta.repairPurchaseOrders || [], poContext.orders), merge(productMeta.repairPurchaseLines || [], poContext.lines),
+  ];
+}
+
+async function renderRepairsView(refreshWo = null) {
   currentCfg = tableMap.repairs;
   $("viewTitle").textContent = "Repairs";
   $("viewSub").textContent = "Work orders, mechanic time, issue details, parts, labor, and billing.";
-  const [workOrders, issues, parts, labor, assets, outsideFleet, mechanics, customers, products, stockMovements, purchaseOrders, purchaseOrderLines] = await Promise.all([
-    getAll("work_orders"),
-    getAll("work_order_issues"),
-    getAll("work_order_parts"),
-    getAll("work_order_labor"),
-    getAll("assets"),
-    getAll("outside_customer_fleet").catch(() => []),
-    getAll("mechanics"),
-    getAll("customers"),
-    getAll("products"),
-    getAll("stock_movements"),
-    getAll("purchase_orders").catch(() => []),
-    getAll("purchase_order_lines").catch(() => []),
-  ]);
+  const [workOrders, issues, parts, labor, assets, outsideFleet, mechanics, customers, products, stockMovements, purchaseOrders, purchaseOrderLines] = await (refreshWo ? repairDataAfterRecordChange(refreshWo) : Promise.all([
+    getViewRows("work_orders"),
+    getViewRows("work_order_issues"),
+    getViewRows("work_order_parts"),
+    getViewRows("work_order_labor"),
+    getViewRows("assets"),
+    getViewRows("outside_customer_fleet").catch(() => []),
+    getViewRows("mechanics"),
+    getViewRows("customers"),
+    getViewRows("products"),
+    getViewRows("stock_movements"),
+    getViewRows("purchase_orders").catch(() => []),
+    getViewRows("purchase_order_lines").catch(() => []),
+  ]));
+  productMeta.repairPurchaseOrders = purchaseOrders;
+  productMeta.repairPurchaseLines = purchaseOrderLines;
   // Repeated Part # rows are independent requests; never consolidate on load.
   productMeta.assets = assets;
   productMeta.outsideFleet = outsideFleet;
@@ -20732,7 +22228,7 @@ async function mechanicManagerAssignWorkOrder(woNo) {
       if (issueError) throw issueError;
     }
     alert(`${wo.wo_no} is now assigned to ${selected}.`);
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -20830,7 +22326,7 @@ async function mechanicQuickRequestParts(woNo) {
       await supabase.from("work_orders").update({ status: "Waiting Parts" }).eq("id", wo.id);
     }
     alert("Part request saved.");
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -20869,7 +22365,7 @@ async function mechanicPortalAskHelp(woNo) {
       work_notes: `Asked by ${primary} to help on ${wo.wo_no}`,
     }, "id");
     alert(`${helper} can now see ${wo.wo_no} and clock in.`);
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -20902,7 +22398,7 @@ async function mechanicQuickClockIn(woNo) {
       entry_mode: "Clock",
     }, ["entry_mode"], "Clock-in was saved, but run the labor entry-mode SQL update for the correct report format.");
     await supabase.from("work_orders").update({ status: "In Progress" }).eq("id", wo.id);
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -20939,7 +22435,7 @@ async function mechanicQuickClockOut(woNo) {
     }).eq("id", active.id);
     if (error) throw error;
     if (!helperOnly && note) await appendIssueWorkNote(wo, active.issue || "General work order", mechanic, note);
-    await renderRepairsView();
+    await renderRepairsView(wo);
     promptPartsUsedAfterClockOut(wo, mechanic, active.issue || "General work order");
   } catch (error) {
     alert(error.message || error);
@@ -21036,7 +22532,7 @@ async function saveClockOutPartsRequests(wo, mechanic, defaultIssue) {
     if (records.some((row) => /shortage|requested/i.test(row.status))) await supabase.from("work_orders").update({ status: "Waiting Parts" }).eq("id", wo.id);
     alert(`${records.length} part request${records.length === 1 ? "" : "s"} added to ${wo.wo_no}.`);
     closeModal();
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || "Could not save the parts requests.");
   }
@@ -21131,7 +22627,7 @@ async function mechanicPortalAcceptPart(partId, mode) {
     await postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCost);
     await refreshWorkOrderWaitingPartsStatus(wo);
     alert("Part accepted and inventory deducted.");
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -21232,90 +22728,9 @@ async function reverseWorkOrderPartsLedger(wo, postingDate, reason = "") {
 }
 
 async function returnWorkOrderIssuedParts(wo, { postingDate = today(), reason = "Work order voided" } = {}) {
-  const [{ data: movementRows, error: movementError }, products] = await Promise.all([
-    supabase.from("stock_movements").select("*").eq("document_no", wo.wo_no),
-    getAll("products"),
-  ]);
-  if (movementError) throw movementError;
-  const movements = movementRows || [];
-  const movementReferences = new Set(movements.map((row) => String(row.reference_no || "")).filter(Boolean));
-  const outstanding = outstandingWorkOrderPartIssueMovements(movements);
-  const productById = new Map((products || []).filter((row) => row.id).map((row) => [String(row.id), row]));
-  const productBySku = new Map((products || []).filter((row) => row.sku).map((row) => [String(row.sku).trim().toLowerCase(), row]));
-  const prepared = outstanding.map((movement) => {
-    const product = productById.get(String(movement.product_id || ""))
-      || productBySku.get(String(movement.sku || "").trim().toLowerCase());
-    if (!product?.id) {
-      throw new Error(`Cannot safely return ${movement.sku || movement.product_name || "an issued part"}: the Product Master item was not found.`);
-    }
-    return { movement, product, qty: Math.abs(Number(movement.qty || 0)), reversalReference: workOrderPartReturnReference(movement) };
-  });
-  const returnedSkus = new Set(movements
-    .filter((movement) => isWorkOrderPartIssueMovement(movement) && movementReferences.has(workOrderPartReturnReference(movement)))
-    .map((movement) => String(movement.sku || "").trim().toLowerCase())
-    .filter(Boolean));
-  const returnedBy = profile?.full_name || profile?.username || profile?.email || session?.user?.email || "Owner";
-  let totalQty = 0;
-
-  for (const item of prepared) {
-    const { movement, product, qty, reversalReference } = item;
-    const previousQty = Number(product.qty || 0);
-    const nextQty = previousQty + qty;
-    const { data: updatedProducts, error: productError } = await supabase
-      .from("products")
-      .update({ qty: nextQty })
-      .eq("id", product.id)
-      .select("id,qty");
-    if (productError) throw productError;
-    if (!(updatedProducts || []).length) throw new Error(`Inventory for ${product.sku || product.name} could not be restored.`);
-    try {
-      await insertOneWithOptionalColumns("stock_movements", {
-        reference_no: reversalReference,
-        movement_date: postingDate,
-        type: "Work Order Void Return",
-        product_id: product.id,
-        sku: product.sku || movement.sku,
-        product_name: product.name || movement.product_name,
-        vendor: movement.vendor || product.source_vendor || "Internal",
-        qty,
-        to_warehouse: movement.from_warehouse || product.warehouse || null,
-        to_bin_shelf: movement.from_bin_shelf || product.bin_shelf || null,
-        unit_fifo_cost: Number(movement.unit_fifo_cost || product.cost || 0),
-        total_fifo_cost: qty * Number(movement.unit_fifo_cost || product.cost || 0),
-        document_no: wo.wo_no,
-        entered_by: returnedBy,
-        reason: `Return of issued parts from ${wo.wo_no}${reason ? `: ${reason}` : ""}`,
-      }, ["to_bin_shelf"], "Parts were returned. Run the multi-location SQL update so bin/shelf details can be stored.");
-    } catch (error) {
-      await supabase.from("products").update({ qty: previousQty }).eq("id", product.id);
-      throw error;
-    }
-    product.qty = nextQty;
-    totalQty += qty;
-    returnedSkus.add(String(product.sku || movement.sku || "").trim().toLowerCase());
-  }
-
-  const ledgerReversed = await reverseWorkOrderPartsLedger(wo, postingDate, reason);
-  if (returnedSkus.size) {
-    const returnNote = `Returned to inventory on ${formatDisplayDate(postingDate)} by ${returnedBy}. Reason: ${reason}`;
-    for (const part of wo._parts || []) {
-      if (!returnedSkus.has(String(part.sku || "").trim().toLowerCase()) || Number(part.accepted_qty || 0) <= 0) continue;
-      const { error } = await supabase.from("work_order_parts").update({
-        status: "Returned",
-        availability: "Returned to Inventory",
-        notes: appendDatedNote(part.notes, returnNote),
-      }).eq("id", part.id);
-      if (error) throw error;
-    }
-  }
-  await writeAuditLog({
-    tableName: "work_orders",
-    action: "Issued Parts Returned",
-    beforeData: { wo_no: wo.wo_no, outstanding_movements: outstanding.length },
-    afterData: { wo_no: wo.wo_no, returned_movements: prepared.length, returned_qty: totalQty, ledger_reversed: ledgerReversed },
-    reason,
-  });
-  return { movementCount: prepared.length, totalQty, ledgerReversed };
+  const {data,error}=await supabase.rpc('return_work_order_parts_atomic',{p_wo_id:wo.id,p_posting_date:postingDate,p_reason:reason,p_actor:profile?.full_name || profile?.username || session?.user?.email || 'Admin'});
+  if(error)throw error;
+  return data;
 }
 
 async function returnPartsForVoidedWorkOrder(woNo) {
@@ -21333,7 +22748,7 @@ async function returnPartsForVoidedWorkOrder(woNo) {
       notes: appendDatedNote(wo.notes, `${result.totalQty} issued part unit(s) returned to inventory. ${details.reason}`),
     }).eq("id", wo.id);
     if (error) throw error;
-    await renderRepairsView();
+    await renderRepairsView(wo);
     document.querySelector('[data-repair-tab="void"]')?.click();
     alert(`${wo.wo_no}: ${result.totalQty} issued part unit(s) returned to inventory. The accounting reversal was ${result.ledgerReversed ? "posted" : "already posted or not required"}.`);
   } catch (error) {
@@ -21376,8 +22791,8 @@ async function ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products = [], po
   const { data: acceptedRows, error } = await supabase
     .from("general_ledger")
     .select("account,debit,credit")
-    .eq("source", "Work Order Parts")
-    .like("reference", `${wo.wo_no}-PART-%`);
+    .in("source", ["Work Order Parts", "Work Order Part Void"])
+    .or(`reference.like.${wo.wo_no}-PART-%,reference.like.VOID-${wo.wo_no}-PART-%`);
   if (error) throw error;
   const alreadyPosted = (acceptedRows || [])
     .filter((row) => row.account === "Parts Inventory")
@@ -21407,7 +22822,7 @@ async function mechanicPortalReleasePart(partId) {
     const { error } = await supabase.from("work_order_parts").update({ status: "Released", availability: "Released", notes }).eq("id", part.id);
     if (error) throw error;
     alert("Reserved part released.");
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -21440,13 +22855,14 @@ async function mechanicPortalReadyToClose(woNo) {
       closed_by: currentMechanicName(),
     }, "id", wo.id, ["ready_to_close_at", "closed_date", "closed_by"], "Ready to Close was saved, but structured closing dates require the 20260810 work-order closing metrics SQL update.");
     alert(`${wo.wo_no} marked Ready to Close.`);
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
 }
 
 async function openNewWorkOrderModal(prefill = {}) {
+  await ensureListEditorProducts();
   editing = null;
   await ensureWorkOrderModalMeta();
   const woNo = await nextWorkOrderNoPreview();
@@ -21496,6 +22912,8 @@ async function openNewWorkOrderModal(prefill = {}) {
   $("modal").style.display = "flex";
   $("addNewWoIssueRowBtn").onclick = addNewWorkOrderIssueRow;
   const assetInput = document.querySelector('[data-product-field="asset_lookup"]');
+  const priorityInput=document.querySelector('[data-product-field="priority"]');
+  if(priorityInput){priorityInput.dataset.priorityManual=prefill.priority ? '1':'0';priorityInput.onchange=()=>{priorityInput.dataset.priorityManual='1';};}
   if (assetInput) assetInput.onchange = () => fillWorkOrderAssetReadings(assetInput.value);
   if (assetLookup) fillWorkOrderAssetReadings(assetLookup);
   bindWorkOrderLocationControls();
@@ -21504,9 +22922,10 @@ async function openNewWorkOrderModal(prefill = {}) {
 
 async function ensureWorkOrderModalMeta() {
   // A work order can be opened from other screens or after a product was added.
-  const loaders = [getAll("products").then((rows) => { productMeta.products = rows; })];
+  const loaders = [];
+  productMeta.products ||= [];
   if (!Array.isArray(productMeta.mechanics) || !productMeta.mechanics.length) {
-    loaders.push(getAll("mechanics").then((rows) => {
+    loaders.push(getViewRows("mechanics").then((rows) => {
       productMeta.mechanicsRows = rows;
       productMeta.mechanics = rows.map((m) => m.name).filter(Boolean).sort();
     }).catch(() => {
@@ -21515,27 +22934,27 @@ async function ensureWorkOrderModalMeta() {
     }));
   }
   if (!Array.isArray(productMeta.customers) || !productMeta.customers.length) {
-    loaders.push(getAll("customers").then((rows) => {
+    loaders.push(getViewRows("customers").then((rows) => {
       productMeta.customers = rows.map((c) => c.name).filter(Boolean).sort();
     }).catch(() => { productMeta.customers = []; }));
   }
   if (!Array.isArray(productMeta.assets) || !productMeta.assets.length) {
-    loaders.push(getAll("assets").then((rows) => { productMeta.assets = rows; }).catch(() => { productMeta.assets = []; }));
+    loaders.push(getViewRows("assets").then((rows) => { productMeta.assets = rows; }).catch(() => { productMeta.assets = []; }));
   }
   if (!Array.isArray(productMeta.outsideFleet)) {
-    loaders.push(getAll("outside_customer_fleet").then((rows) => { productMeta.outsideFleet = rows; }).catch(() => { productMeta.outsideFleet = []; }));
+    loaders.push(getViewRows("outside_customer_fleet").then((rows) => { productMeta.outsideFleet = rows; }).catch(() => { productMeta.outsideFleet = []; }));
   }
   if (!Array.isArray(productMeta.workOrders) || !productMeta.workOrders.length) {
-    loaders.push(getAll("work_orders").then((rows) => { productMeta.workOrders = rows; }).catch(() => { productMeta.workOrders = []; }));
+    loaders.push(getViewRows("work_orders").then((rows) => { productMeta.workOrders = rows; }).catch(() => { productMeta.workOrders = []; }));
   }
   if (!Array.isArray(productMeta.laborPricingRates)) {
-    loaders.push(getAll("labor_pricing_rates").then((rows) => { productMeta.laborPricingRates = rows; }).catch(() => { productMeta.laborPricingRates = []; }));
+    loaders.push(getViewRows("labor_pricing_rates").then((rows) => { productMeta.laborPricingRates = rows; }).catch(() => { productMeta.laborPricingRates = []; }));
   }
   if (!Array.isArray(productMeta.salesPricingRates)) {
-    loaders.push(getAll("sales_pricing_rates").then((rows) => { productMeta.salesPricingRates = rows; }).catch(() => { productMeta.salesPricingRates = []; }));
+    loaders.push(getViewRows("sales_pricing_rates").then((rows) => { productMeta.salesPricingRates = rows; }).catch(() => { productMeta.salesPricingRates = []; }));
   }
   if (!Array.isArray(productMeta.locations) || !productMeta.locations.length) {
-    loaders.push(getAll("asset_locations").then((rows) => { productMeta.locations = rows.map((row) => row.name || row.location || row.value).filter(Boolean); }).catch(() => { productMeta.locations = []; }));
+    loaders.push(getViewRows("asset_locations").then((rows) => { productMeta.locations = rows.map((row) => row.name || row.location || row.value).filter(Boolean); }).catch(() => { productMeta.locations = []; }));
   }
   if (loaders.length) await Promise.all(loaders);
   productMeta.locations = [...new Set([
@@ -21630,6 +23049,7 @@ function resolveAssetLookup(value) {
 function fillWorkOrderAssetReadings(value) {
   const asset = resolveAssetLookup(value);
   if (!asset) return;
+  void fillNewWorkOrderStartingPriority(asset);
   const odometer = document.querySelector('[data-product-field="odometer"]');
   const hours = document.querySelector('[data-product-field="engine_hours"]');
   const operator = document.querySelector('[data-product-field="operator"]');
@@ -21662,6 +23082,7 @@ async function saveNewWorkOrderModal() {
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
   const asset = resolveAssetLookup(record.asset_lookup);
   const openingMechanic = resolveRegisteredMechanic(record.opening_mechanic);
+  record.priority_override=document.querySelector('[data-product-field="priority"]')?.dataset.priorityManual==='1';
   record.manager_override = String(record.manager_override || "").toLowerCase() === "yes";
   record.asset_id = asset?.id || null;
   record.asset_tag = asset?.asset_tag || null;
@@ -21813,9 +23234,11 @@ function parseWorkOrderIssueRows() {
 }
 
 async function openWorkOrderEditModal(wo, options = {}) {
+  await ensureListEditorProducts();
   if (!wo) return;
   const auditReadOnly = Boolean(options.readOnly || wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || ""));
   await ensureWorkOrderModalMeta();
+  productMeta.workOrderPartCosts = await loadWorkOrderPartCostContext(wo);
   editing = wo;
   const editAssetDetails = workOrderAssetDetails(wo);
   $("modalTitle").textContent = `${auditReadOnly ? "View" : "Edit"} work order ${wo.wo_no}`;
@@ -22084,7 +23507,7 @@ async function closeAndFinalizeFromEdit(wo) {
       if (error) throw error;
       if (!helperOnly) await appendIssueWorkNote(wo, labor.issue || "General work order", labor.mechanic || "Mechanic", workDone);
     }
-    await renderRepairsView();
+    await renderRepairsView(wo);
     const refreshed = currentRows.find((row) => row.id === wo.id || row.wo_no === wo.wo_no) || wo;
     if (confirm(`Did you use any additional parts on ${wo.wo_no}?\n\nChoose OK for Yes to enter parts and quantities. Choose Cancel for No to continue finalizing.`)) {
       document.getElementById("closeFinalizeWoBtn")?.remove();
@@ -22096,7 +23519,7 @@ async function closeAndFinalizeFromEdit(wo) {
       return;
     }
     closeModal(true);
-    await renderRepairsView();
+    await renderRepairsView(wo);
     await closeWorkOrder(wo.wo_no);
   } catch (error) {
     alert(`Could not continue Close and Finalize.\n\n${error.message || error}`);
@@ -22189,13 +23612,13 @@ async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance =
     const savedNumber = record.wo_no;
     editing = { ...editing, ...record };
     if (keepOpen) {
-      await renderRepairsView();
+      await renderRepairsView({ id: savedId, wo_no: savedNumber });
       const refreshed = currentRows.find((row) => row.id === savedId || row.wo_no === savedNumber) || editing;
       await openWorkOrderEditModal(refreshed);
       return refreshed;
     } else {
       closeModal(true);
-      await renderRepairsView();
+      await renderRepairsView({ id: savedId, wo_no: savedNumber });
       return editing;
     }
   } catch (error) {
@@ -22256,6 +23679,19 @@ async function saveWorkOrderIssueEdits(wo) {
 }
 
 async function saveWorkOrderPartEdits(wo) {
+  const {data: latestParts,error: partReadError}=await supabase.from('work_order_parts').select('*').eq('wo_id',wo.id);
+  if(partReadError)throw partReadError;
+  for(const previous of wo._parts || []) {
+    const latest=(latestParts || []).find(part=>String(part.id)===String(previous.id));
+    if(!latest || Number(latest.accepted_qty || 0)!==Number(previous.accepted_qty || 0) || latest.status!==previous.status) {
+      throw new Error('Parts were updated after this form opened (for example, by a PO receipt). Close and reopen the work order before saving. Existing issued quantities have not been changed.');
+    }
+  }
+
+  const lookupInputs = [...document.querySelectorAll('#adminPartBody [data-admin-part="product_lookup"]')];
+  await Promise.all(lookupInputs.map((input) => input._costLookupPending));
+  const costFailure = lookupInputs.find((input) => input._costLookupError);
+  if (costFailure) throw costFailure._costLookupError;
   const rows = [...document.querySelectorAll("#adminPartBody tr")];
   const upserts = [];
   const acceptanceJobs = [];
@@ -22328,34 +23764,26 @@ async function saveWorkOrderPartEdits(wo) {
     upserts.push(savedRecord);
     if (acceptanceQty > 0) acceptanceJobs.push({ record: savedRecord, product, qty: acceptanceQty, unitCost, remainingQty: availableByProduct.get(String(product.id || product.sku || "")) });
   }
-  const savedRows = await upsertManyWithOptionalColumns("work_order_parts", upserts, "id", ["markup_percent", "selling_price"], "Work-order parts were saved. Run the work-order part selling-price SQL update so markup and selling price can be stored.");
+  // Collect optional components before saving anything. Cancellation leaves all rows untouched.
   for (const job of acceptanceJobs) {
-    const savedPart = savedRows.find((row) => String(row.id) === String(job.record.id)) || job.record;
-    const deductions = await deductProductWithMotherComponents(job.product, job.qty);
-    for (const deduction of deductions) {
-      const deductedProduct = deduction.product;
-      const deductedQty = Number(deduction.quantity_deducted || 0);
-      const deductedCost = deduction.is_component ? Number(deductedProduct.cost || 0) : job.unitCost;
-      await upsertOneWithOptionalColumns("stock_movements", {
-        reference_no: `SM-${wo.wo_no}-${deductedProduct.sku}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        movement_date: today(),
-        type: deduction.is_component ? "Repair - Mother Component" : "Repair",
-        product_id: deductedProduct.id,
-        sku: deductedProduct.sku,
-        product_name: deductedProduct.name,
-        vendor: deductedProduct.source_vendor || "Internal",
-        qty: -Math.abs(deductedQty),
-        from_warehouse: deductedProduct.warehouse || null,
-        from_bin_shelf: deductedProduct.bin_shelf || null,
-        unit_fifo_cost: deductedCost,
-        total_fifo_cost: deductedQty * deductedCost,
-        document_no: wo.wo_no,
-        entered_by: acceptedBy,
-        reason: `${deduction.is_component ? `Automatically issued with mother part ${deduction.mother_sku} on ${wo.wo_no}` : `Issued and accepted from web Work Order editor on ${wo.wo_no}`} [WO part:${savedPart.id}]`,
-      }, "reference_no", ["from_bin_shelf"], "Part accepted. Run the multi-location SQL update so bin/shelf details can be stored.");
-      await postWorkOrderPartAcceptanceLedger(wo, savedPart, deductedProduct, deductedQty, deductedCost);
+    const {data:links,error}=await supabase.from('product_mother_components').select('component_product_id,quantity_required').eq('mother_product_id',job.product.id);
+    if(error)throw error;
+    job.record.component_ids=[];
+    if(links?.length){
+      const componentProducts=await Promise.all(links.map(async link=>{
+        const {data,error}=await supabase.from('products').select('*').eq('id',link.component_product_id).single();
+        if(error)throw error;return data;
+      }));
+      const selected=await chooseOptionalMotherComponents(job.product,job.qty,links,componentProducts);
+      if(selected==null)throw new Error('Issue cancelled. No parts or inventory were saved.');
+      job.record.component_ids=selected;
     }
   }
+  if(acceptanceJobs.length)await ensureWorkOrderAccountingAccounts(Boolean(wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)));
+  const {data:savedRows,error:saveError}=await supabase.rpc('save_work_order_parts_atomic',{
+    p_wo_id:wo.id,p_rows:upserts,p_expected:wo._parts || [],p_posting_date:today(),p_actor:acceptedBy
+  });
+  if(saveError)throw saveError;
   const savedById = new Map((wo._parts || []).map((part) => [part.id, part]));
   for (const part of savedRows) savedById.set(part.id, {...savedById.get(part.id), ...part});
   wo._parts = [...savedById.values()];
@@ -22459,7 +23887,7 @@ async function finalizeWorkOrderClose(wo, openIssueCount = 0) {
     }, "id", wo.id, ["closed_date", "closed_by", "posting_date"], "The work order was closed, but its structured closing or posting date requires the latest work-order SQL updates.");
     await releaseCompletedWorkOrderEquipment({ ...wo, status: "Closed" });
     closeModal();
-    await renderRepairsView();
+    await renderRepairsView(wo);
     await printWorkOrderDraft(wo.wo_no);
   } catch (error) {
     alert(`Could not close ${wo.wo_no}.\n\nProblem: ${error.message || error}\n\nHow to fix: Refresh the Repairs screen, confirm the work order is not invoiced, all mechanics are clocked out, and all requested parts are accepted or released.`);
@@ -22506,7 +23934,7 @@ async function reopenClosedWorkOrder(woNo) {
       }
     }
     await writeAuditLog({ tableName: "work_orders", action: "Reopened", beforeData: wo, afterData: { ...wo, status: "Open", closed_date: null, posting_date: null, closed_by: null, ready_to_close_at: null, reopened_at: reopenedAt }, reason: String(reason).trim() });
-    await renderRepairsView();
+    await renderRepairsView(wo);
     alert(`${wo.wo_no} was reopened and moved to Open Work Orders. Existing parts, labor, inventory, and accounting history were preserved.`);
   } catch (error) {
     alert(`Could not reopen ${wo.wo_no}.\n\n${error.message || error}`);
@@ -22573,7 +24001,7 @@ async function voidWorkOrder(woNo) {
       }
     }
     closeModal();
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(`Could not void ${wo.wo_no}.\n\nProblem: ${error.message || error}\n\nHow to fix: refresh Repairs, confirm the work order is not invoiced and all mechanics are clocked out, then try again.`);
   }
@@ -22614,7 +24042,7 @@ async function markWorkOrderReadyToClose(wo) {
       closed_by: mechanic,
     }, "id", wo.id, ["ready_to_close_at", "closed_date", "closed_by"], "Ready to Close was saved, but structured closing dates require the 20260810 work-order closing metrics SQL update.");
     closeModal();
-    await renderRepairsView();
+    await renderRepairsView(wo);
   } catch (error) {
     alert(error.message || error);
   }
@@ -23177,8 +24605,9 @@ function printSelectedWorkOrderPartsIssuance(wo) {
 }
 
 async function openWorkOrderIssuanceHistory(wo = {}) {
-  const { data, error } = await supabase.from("stock_movements").select("*").eq("document_no", wo.wo_no).lt("qty", 0);
-  if (error) return alert(`Could not load issuance history for ${wo.wo_no}.\n\n${error.message || error}`);
+  let data;
+  try { data = (await workOrderScopedRows("stock_movements", "document_no", [wo.wo_no])).filter((row) => Number(row.qty || 0) < 0); }
+  catch (error) { return alert(error.message || "Could not load issuance history."); }
   const rows = (data || []).filter((row) => /repair|work order/i.test(String(row.type || "")))
     .sort((a, b) => String(b.created_at || b.movement_date || "").localeCompare(String(a.created_at || a.movement_date || "")));
   const overlay = document.createElement("div");
@@ -23399,7 +24828,7 @@ function workOrderPartAdminEditRow(row = {}, index = 0) {
   const product = (productMeta.products || []).find((item) => item.id === row.product_id || String(item.sku || "").toLowerCase() === String(row.sku || "").toLowerCase()) || {};
   const populated = Boolean(lookup || row.product_name || Number(row.qty_needed || 0) > 0);
   const alreadyIssued = Number(row.accepted_qty || 0) > 0;
-  return `<tr data-admin-part-row="${index}" data-part-id="${esc(row.id || "")}" data-original-accepted="${esc(Number(row.accepted_qty || 0))}">
+  return `<tr data-source-po="${esc(workOrderPartOriginPo(row))}" data-admin-part-row="${index}" data-part-id="${esc(row.id || "")}" data-original-accepted="${esc(Number(row.accepted_qty || 0))}">
     <td class="issuance-select-cell"><input type="checkbox" data-part-issuance-select data-was-eligible="${populated && !alreadyIssued ? "1" : "0"}" ${populated && !alreadyIssued ? "checked" : ""} ${alreadyIssued ? "disabled" : ""} ${populated ? "" : "hidden disabled"} aria-label="Include ${esc(row.sku || row.product_name || `part row ${index + 1}`)} in issuance PDF" title="${alreadyIssued ? "Already issued — excluded from the next issuance PDF" : "Include in issuance PDF"}"></td>
     <td><input class="suggest-input" list="workOrderAdminProductOptions" data-admin-part="product_lookup" value="${esc(lookup)}" placeholder="Search SKU, product, vendor" autocomplete="off"></td>
     <td><input data-admin-part="product_name" value="${esc(row.product_name || "")}" placeholder="Description requested"></td>
@@ -23433,82 +24862,18 @@ function bindAdminPartVoidButtons(wo) {
 }
 
 async function voidWorkOrderPart(wo, partId) {
-  const part = (wo?._parts || []).find((row) => String(row.id || "") === String(partId || ""));
-  if (!part) return alert("That work-order part could not be found.");
-  const acceptedQty = Number(part.accepted_qty || 0);
-  const product = (productMeta.products || []).find((row) => row.id === part.product_id || String(row.sku || "").trim().toLowerCase() === String(part.sku || "").trim().toLowerCase());
-  const inventoryMessage = acceptedQty > 0
-    ? `\n\n${acceptedQty} accepted unit${acceptedQty === 1 ? "" : "s"} will be returned to inventory and the related accounting entry will be reversed.`
-    : "\n\nNo inventory was issued for this line; only the reservation/request will be voided.";
-  if (!confirm(`Void this part line?\n\nWork order: ${wo.wo_no}\nPart: ${part.sku || "TBD"} - ${part.product_name || "Unnamed part"}${inventoryMessage}\n\nThe line will remain in the Voided Parts section for audit history.`)) return;
-  const reason = prompt("Reason for voiding this part:", "Entered in error")?.trim();
-  if (!reason) return alert("A void reason is required.");
+  if(!confirm('Void this part? Issued stock and its accounting will be returned together.'))return;
+  const reason=prompt('Reason for voiding this part:','Entered in error')?.trim();
+  if(!reason)return;
+  let completed=false;
   try {
-    const voidedBy = profile?.full_name || profile?.username || session?.user?.email || "Admin";
-    const postingDate = today();
-    if (acceptedQty > 0) {
-      if (!product?.id) throw new Error("The Product Master item was not found, so inventory cannot be safely returned.");
-      const { data: movementRows, error: movementError } = await supabase.from("stock_movements").select("*").eq("document_no", wo.wo_no);
-      if (movementError) throw movementError;
-      const allMovements = movementRows || [];
-      const refs = new Set(allMovements.map((row) => String(row.reference_no || "")).filter(Boolean));
-      const matchingIssues = allMovements.filter((movement) => isWorkOrderPartIssueMovement(movement)
-        && (String(movement.product_id || "") === String(product.id) || String(movement.sku || "").trim().toLowerCase() === String(part.sku || "").trim().toLowerCase()));
-      const issued = matchingIssues.filter((movement) => !refs.has(workOrderPartReturnReference(movement)));
-      const issuedQty = issued.reduce((sum, movement) => sum + Math.abs(Number(movement.qty || 0)), 0);
-      const returnedQty = matchingIssues.filter((movement) => refs.has(workOrderPartReturnReference(movement)))
-        .reduce((sum, movement) => sum + Math.abs(Number(movement.qty || 0)), 0);
-      const inventoryAlreadyReturned = issuedQty <= 0.0001 && returnedQty + 0.0001 >= acceptedQty;
-      if (Math.abs(issuedQty - acceptedQty) > 0.0001 && !inventoryAlreadyReturned) throw new Error(`This SKU has ${issuedQty} outstanding issued units on the work order while this line shows ${acceptedQty} accepted. The system will not guess which issuance belongs to this row. Review its stock history or use the controlled work-order part return.`);
-      if (!inventoryAlreadyReturned) {
-        const previousQty = Number(product.qty || 0);
-        const { data: updatedProducts, error: productError } = await supabase.from("products").update({ qty: previousQty + acceptedQty }).eq("id", product.id).select("id,qty");
-        if (productError) throw productError;
-        if (!(updatedProducts || []).length) throw new Error("Inventory could not be restored.");
-        try {
-          let remaining = acceptedQty;
-          for (const movement of issued) {
-            if (remaining <= 0) break;
-            const qty = Math.min(remaining, Math.abs(Number(movement.qty || 0)));
-            await insertOneWithOptionalColumns("stock_movements", {
-              reference_no: workOrderPartReturnReference(movement), movement_date: postingDate, type: "Work Order Part Void Return",
-              product_id: product.id, sku: product.sku || part.sku, product_name: product.name || part.product_name,
-              vendor: movement.vendor || product.source_vendor || "Internal", qty,
-              to_warehouse: movement.from_warehouse || product.warehouse || null, to_bin_shelf: movement.from_bin_shelf || product.bin_shelf || null,
-              unit_fifo_cost: Number(movement.unit_fifo_cost || part.unit_cost || product.cost || 0),
-              total_fifo_cost: qty * Number(movement.unit_fifo_cost || part.unit_cost || product.cost || 0),
-              document_no: wo.wo_no, entered_by: voidedBy, reason: `Voided part ${part.sku || part.product_name}: ${reason}`,
-            }, ["to_bin_shelf"]);
-            remaining -= qty;
-          }
-        } catch (error) {
-          await supabase.from("products").update({ qty: previousQty }).eq("id", product.id);
-          throw error;
-        }
-        product.qty = previousQty + acceptedQty;
-      }
-      const { data: originalLedger, error: ledgerError } = await supabase.from("general_ledger").select("*").eq("source", "Work Order Parts").like("reference", `${wo.wo_no}-PART-${part.id}-%`);
-      if (ledgerError) throw ledgerError;
-      const reversalReference = `VOID-${wo.wo_no}-PART-${part.id}`;
-      const { data: existingReversal } = await supabase.from("general_ledger").select("id").eq("source", "Work Order Part Void").eq("reference", reversalReference).limit(1);
-      if (!(existingReversal || []).length && (originalLedger || []).length) {
-        const reversalRows = originalLedger.map((row) => ({ entry_date: postingDate, posting_date: postingDate, account: row.account, customer: row.customer, vendor: row.vendor, asset: row.asset, description: `Void part ${part.sku || part.product_name} on ${wo.wo_no}: ${reason}`, reference: reversalReference, debit: Number(row.credit || 0), credit: Number(row.debit || 0), source: "Work Order Part Void", status: "Posted", mechanic: voidedBy }));
-        assertBalancedLedgerRows(reversalRows, `Void work-order part ${part.id}`);
-        await upsertMany("general_ledger", reversalRows, "id");
-      }
-    }
-    const { error: partError } = await supabase.from("work_order_parts").update({
-      status: "Voided", availability: acceptedQty > 0 ? "Returned to Inventory" : "Voided",
-      notes: appendDatedNote(part.notes, `Voided by ${voidedBy}. Reason: ${reason}${acceptedQty > 0 ? `. ${acceptedQty} unit(s) returned to inventory.` : ""}`),
-    }).eq("id", part.id).eq("wo_id", wo.id);
-    if (partError) throw partError;
-    await writeAuditLog({ tableName: "work_order_parts", action: "Voided", beforeData: part, afterData: { ...part, status: "Voided" }, reason });
-    await renderRepairsView();
-    const refreshed = currentRows.find((row) => row.id === wo.id || row.wo_no === wo.wo_no);
-    if (refreshed) openWorkOrderEditModal(refreshed);
-  } catch (error) {
-    alert(`Could not void this part.\n\n${error.message || error}`);
-  }
+    const {error}=await supabase.rpc('void_work_order_part_atomic',{p_part_id:partId,p_posting_date:today(),p_reason:reason,p_actor:profile?.full_name || profile?.username || session?.user?.email || 'Admin'});
+    if(error)throw error;
+    completed=true;
+    await renderRepairsView(wo);
+    const refreshed=currentRows.find(row=>row.id===wo.id || row.wo_no===wo.wo_no);
+    if(refreshed)await openWorkOrderEditModal(refreshed);
+  }catch(error){alert((completed?'Return saved, but the screen could not refresh. Reopen the work order. ':'Return was not saved. ')+(error.message || error));}
 }
 
 function adminInlineSelect(attrName, field, values, value) {
@@ -23517,9 +24882,9 @@ function adminInlineSelect(attrName, field, values, value) {
 
 function bindAdminPartEditLookups() {
   document.querySelectorAll('[data-admin-part="product_lookup"]').forEach((input) => {
-    input.oninput = () => refreshAdminPartEditLookup(input, true);
-    input.onchange = () => refreshAdminPartEditLookup(input, true);
-    if (input.value) refreshAdminPartEditLookup(input, false);
+    input.oninput = () => queueAdminPartCostLookup(input, true);
+    input.onchange = () => queueAdminPartCostLookup(input, true);
+    if (input.value) queueAdminPartCostLookup(input, false);
   });
   document.querySelectorAll("#adminPartBody tr").forEach((tr) => {
     const cost = tr.querySelector('[data-admin-part="unit_cost"]');
@@ -23536,7 +24901,7 @@ function bindAdminPartEditLookups() {
       syncWorkOrderPartIssuanceCheckbox(tr);
     };
     tr.querySelector('[data-admin-part="product_name"]')?.addEventListener("input", () => syncWorkOrderPartIssuanceCheckbox(tr));
-    tr.querySelector('[data-admin-part="status"]')?.addEventListener("change", () => syncWorkOrderPartIssuanceCheckbox(tr));
+    tr.querySelector('[data-admin-part="status"]')?.addEventListener("change", () => syncAdminPartAcceptedStatus(tr));
     syncWorkOrderPartIssuanceCheckbox(tr);
   });
   document.querySelectorAll("[data-work-order-part-column]").forEach((input) => input.onchange = saveWorkOrderPartColumnPreferences);
@@ -23594,6 +24959,98 @@ async function saveWorkOrderPartColumnPreferences() {
   if (profile?.id) await updateOneWithOptionalColumns("app_profiles", { column_preferences: preferences }, "id", profile.id, ["column_preferences"]);
 }
 
+async function workOrderScopedRows(table, column, values, columns = "*") {
+  if (!values.length) return [];
+  return getViewData(`wo-action:${table}:${column}:${columns}:${JSON.stringify([...values].sort())}`, async (signal) => {
+    const rows = [];
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabase.from(table).select(columns).in(column, values).order("id").range(offset, offset + 499).abortSignal(signal);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if ((data || []).length < 500) return rows;
+    }
+  });
+}
+
+async function loadWorkOrderPartCostContext(wo) {
+  const poNumbers = [...new Set((wo._parts || []).map(workOrderPartOriginPo).filter(Boolean))];
+  const [woLines, linkedOrders] = await Promise.all([
+    workOrderScopedRows("purchase_order_lines", "wo_no", [wo.wo_no]),
+    workOrderScopedRows("purchase_orders", "po_no", poNumbers),
+  ]);
+  const knownIds = new Set(linkedOrders.map((po) => po.id));
+  const missingIds = [...new Set(woLines.map((line) => line.po_id).filter((id) => id && !knownIds.has(id)))];
+  const [otherOrders, linkedLines] = await Promise.all([
+    workOrderScopedRows("purchase_orders", "id", missingIds),
+    workOrderScopedRows("purchase_order_lines", "po_id", [...knownIds]),
+  ]);
+  return { woNo: wo.wo_no, orders: [...linkedOrders, ...otherOrders], lines: [...new Map([...woLines, ...linkedLines].map((line) => [line.id, line])).values()], movements: [], receipts: [] };
+}
+
+function queueAdminPartCostLookup(input, replacePricing = true) {
+  const context = productMeta.workOrderPartCosts;
+  const value = input.value;
+  const product = resolveProductLookup(value);
+  const tr = input.closest("tr");
+  const costField = tr?.querySelector('[data-admin-part="unit_cost"]');
+  const needsFifo = product && context && Number(tr?.dataset.originalAccepted || 0) <= 0
+    && (replacePricing || !costField?.value) && workOrderPartLookupCost(product, tr?.dataset.sourcePo || "", false) === null;
+  if (!needsFifo) {
+    input._costLookupError = null;
+    refreshAdminPartEditLookup(input, replacePricing);
+    return;
+  }
+  const request = (input._costLookupVersion || 0) + 1;
+  input._costLookupVersion = request;
+  input._costLookupError = null;
+  input._costLookupPending = (async () => {
+    try {
+      const key = product.id ? "product_id" : "sku";
+      const id = product.id || product.sku;
+      const [movements, receipts] = await Promise.all([
+        workOrderScopedRows("stock_movements", key, [id]),
+        workOrderScopedRows("goods_receipts", key, [id]),
+      ]);
+      if (input._costLookupVersion !== request || input.value !== value || productMeta.workOrderPartCosts !== context || !input.isConnected) return;
+      context.movements = [...new Map([...context.movements, ...movements].map((row) => [row.id, row])).values()];
+      context.receipts = [...new Map([...context.receipts, ...receipts].map((row) => [row.id, row])).values()];
+      refreshAdminPartEditLookup(input, replacePricing);
+    } catch (error) {
+      if (input._costLookupVersion === request && input.value === value) {
+        input._costLookupError = error;
+        alert(error.message || "Could not load this part's FIFO cost. Select the part again to retry.");
+      }
+    }
+  })();
+}
+
+function workOrderPartLookupCost(product, sourcePo = "", fifoFallback = true) {
+  const context = productMeta.workOrderPartCosts || {};
+  const orders = (context.orders || []).filter((po) => !/void|revers|cancel/i.test(po.status || "") && (!sourcePo || po.po_no === sourcePo));
+  const byId = new Map(orders.map((po) => [String(po.id), po]));
+  const matches = (context.lines || []).filter((line) => {
+    const po = byId.get(String(line.po_id));
+    return po && (sourcePo || String(line.wo_no || "").trim().toLowerCase() === String(context.woNo || "").trim().toLowerCase())
+      && (product.id && line.product_id === product.id || product.sku && String(line.sku || "").toLowerCase() === String(product.sku).toLowerCase())
+      && line.unit_cost !== null && line.unit_cost !== undefined && line.unit_cost !== "" && Number.isFinite(Number(line.unit_cost)) && Number(line.unit_cost) >= 0;
+  }).sort((a, b) => {
+    const pa = byId.get(String(a.po_id)), pb = byId.get(String(b.po_id));
+    return String(pb.po_date || "").localeCompare(String(pa.po_date || "")) || String(pb.po_no || "").localeCompare(String(pa.po_no || ""), undefined, { numeric: true });
+  });
+  return matches.length ? Number(matches[0].unit_cost) : fifoFallback ? productFifoCost(product, context.movements || [], context.receipts || []) : null;
+}
+
+function syncAdminPartAcceptedStatus(tr) {
+  const status = tr.querySelector('[data-admin-part="status"]');
+  tr.dataset.adminAutoAccept = status?.value === "Accepted" ? "1" : "0";
+  if (status?.value === "Accepted") {
+    const qty = tr.querySelector('[data-admin-part="qty_needed"]');
+    const accepted = tr.querySelector('[data-admin-part="accepted_qty"]');
+    if (accepted) accepted.value = String(Math.max(Number(tr.dataset.originalAccepted || 0), Number(qty?.value || 0)));
+  }
+  syncWorkOrderPartIssuanceCheckbox(tr);
+}
+
 function refreshAdminPartEditLookup(input, replacePricing = true) {
   const tr = input.closest("tr");
   const product = resolveProductLookup(input.value);
@@ -23618,9 +25075,11 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
   };
   set("product_name", product.name || "");
   set("on_hand_qty", Number(product.qty || 0));
-  set("unit_cost", product.cost ?? "", !replacePricing);
+  const poControlled = Boolean(tr.dataset.sourcePo);
+  const lookupCost = workOrderPartLookupCost(product, tr.dataset.sourcePo || "");
+  if (Number(tr.dataset.originalAccepted || 0) <= 0) set("unit_cost", lookupCost, !replacePricing);
   set("markup_percent", product.markup_percent ?? "", true);
-  set("selling_price", calculatedWorkOrderPartPrice(product.cost, product.markup_percent, product.selling_price ?? product.cost ?? ""), !replacePricing);
+  if (!poControlled) set("selling_price", calculatedWorkOrderPartPrice(lookupCost, product.markup_percent, product.selling_price ?? lookupCost), !replacePricing);
   set("availability", Number(product.qty || 0) > 0 ? "OK" : "Out of stock");
   const status = tr.querySelector('[data-admin-part="status"]');
   if (status && /requested|shortage|needs/i.test(status.value || "")) status.value = Number(product.qty || 0) > 0 ? "Reserved" : "Shortage";
@@ -23694,7 +25153,7 @@ function repairLaborEditTable(wo) {
   const laborRates = (productMeta.laborPricingRates || []).filter((rate) => String(rate.status || "Active").toLowerCase() !== "inactive");
   return `<div class="actions"><button type="button" id="addAdminLaborRowBtn">Add labor entry</button><button type="button" id="addAdminHelperLaborRowBtn">Add helper mechanic hours</button><select id="workOrderLaborRateSelect" aria-label="Work Order labor pricing rate"><option value="">Select labor pricing rate</option>${laborRates.map((rate) => `<option value="${esc(rate.id)}">${esc(laborPricingRateLabel(rate))} - ${Number(rate.hourly_rate || 0).toFixed(2)}% of base cost</option>`).join("")}</select><button type="button" id="applyWorkOrderLaborRateBtn">Apply rate to labor</button></div>
     <datalist id="adminLaborMechanicOptions">${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}"></option>`).join("")}</datalist>
-    <div class="table-wrap"><table class="line-table work-order-labor-edit-table"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody id="adminLaborEditRows">${rows.length ? rows.map((l) => repairLaborEditRow(l, l.id, isHelperLabor(l))).join("") : `<tr id="adminLaborEmptyRow"><td colspan="12" class="empty">No labor entries yet. Click Add labor entry to record missed hours.</td></tr>`}</tbody></table></div>
+    <div class="table-wrap"><table class="line-table work-order-labor-edit-table" data-custom-column-order="1"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody id="adminLaborEditRows">${rows.length ? rows.map((l) => repairLaborEditRow(l, l.id, isHelperLabor(l))).join("") : `<tr id="adminLaborEmptyRow"><td colspan="12" class="empty">No labor entries yet. Click Add labor entry to record missed hours.</td></tr>`}</tbody></table></div>
     <p class="notice">Entries are ordered from newest Clock In to oldest. New labor entries are added at the top. Net Hours equals Clock In to Clock Out less Break. Upload work photos on the matching dated labor row; all selected photos are accepted and compressed. Keep Include in PDF checked for photos that should appear at the bottom of the PDF Draft and Invoice PDF; uncheck it to keep the photo saved internally without printing it. New photos are included by default.</p>`;
 }
 
@@ -23720,6 +25179,79 @@ function applySelectedWorkOrderLaborRate() {
   alert(`${laborPricingRateLabel(rate)} was applied as ${multiplierPercent.toFixed(2)}% of base labor cost. Review the calculated regular and overtime charges, then save the Work Order.`);
 }
 
+function parseLaborClipboardTime(value) {
+  const text = String(value || "").trim().replace(/\u202f|\u00a0/g, " ");
+  let year, month, day, hours, minutes, seconds;
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  const us = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[,]?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (iso) [, year, month, day, hours, minutes, seconds = "00"] = iso;
+  else if (us) {
+    [, month, day, year, hours, minutes, seconds = "00"] = us;
+    if (us[7]) {
+      if (Number(hours) < 1 || Number(hours) > 12) throw new Error("Use a valid AM/PM time.");
+      hours = Number(hours) % 12 + (/pm/i.test(us[7]) ? 12 : 0);
+    }
+  } else throw new Error("Paste a date and time, such as 09/16/2026 09:00 AM or 2026-09-16 09:00.");
+  [year, month, day, hours, minutes, seconds] = [year, month, day, hours, minutes, seconds].map(Number);
+  const date = new Date(year, month - 1, day, hours, minutes, seconds);
+  if (year < 1000 || date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+      || date.getHours() !== hours || date.getMinutes() !== minutes || date.getSeconds() !== seconds) {
+    throw new Error("The pasted date or time is not valid.");
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${year}-${pad(month)}-${pad(day)}T${pad(hours)}:${pad(minutes)}${seconds ? `:${pad(seconds)}` : ""}`;
+}
+
+function laborTimeInputHtml(field, value) {
+  const label = field === "clock_in" ? "Clock in" : "Clock out";
+  return `<div class="labor-time-entry"><input type="datetime-local" data-labor-field="${field}" aria-label="${label}" value="${esc(dateTimeLocalValue(value))}"><div style="display:flex;gap:4px;margin-top:4px"><button type="button" class="rowbtn" data-labor-time-copy="${field}" aria-label="Copy ${label.toLowerCase()}">Copy</button><button type="button" class="rowbtn" data-labor-time-paste="${field}" aria-label="Paste ${label.toLowerCase()}">Paste</button><small data-labor-time-status="${field}" role="status"></small></div></div>`;
+}
+
+function bindLaborTimeClipboard(row) {
+  for (const field of ["clock_in", "clock_out"]) {
+    const input = row.querySelector(`[data-labor-field="${field}"]`);
+    const status = row.querySelector(`[data-labor-time-status="${field}"]`);
+    const copy = row.querySelector(`[data-labor-time-copy="${field}"]`);
+    const paste = row.querySelector(`[data-labor-time-paste="${field}"]`);
+    if (!input) continue;
+    const apply = (text) => {
+      if (text == null || !String(text).trim()) return;
+      try {
+        const parsed = parseLaborClipboardTime(text);
+        input.value = parsed;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        if (status) status.textContent = "Pasted";
+      } catch (error) { alert(error.message); }
+    };
+    input.addEventListener("copy", (event) => {
+      if (!input.value || !event.clipboardData) return;
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", input.value.replace("T", " "));
+      if (status) status.textContent = "Copied";
+    });
+    input.addEventListener("paste", (event) => {
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) return;
+      event.preventDefault();
+      apply(text);
+    });
+    if (copy) copy.onclick = async () => {
+      if (!input.value) { if (status) status.textContent = "Enter a time first"; return; }
+      const text = input.value.replace("T", " ");
+      try { await navigator.clipboard.writeText(text); if (status) status.textContent = "Copied"; }
+      catch { prompt("Copy this date and time:", text); }
+    };
+    if (paste) paste.onclick = async () => {
+      let text;
+      try { text = await navigator.clipboard.readText(); }
+      catch { text = prompt("Paste the date and time here (for example, 09/16/2026 09:00 AM):"); }
+      apply(text);
+    };
+  }
+}
+
+
 function repairLaborEditRow(labor, rowKey = labor.id || `new-${Date.now()}`, helper = isHelperLabor(labor)) {
   const displayedHours = labor.clock_in && labor.clock_out ? laborHours(labor).toFixed(2) : "";
   const registeredMechanic = resolveRegisteredMechanic(labor.mechanic || "");
@@ -23730,8 +25262,8 @@ function repairLaborEditRow(labor, rowKey = labor.id || `new-${Date.now()}`, hel
   return `<tr data-labor-row="${esc(rowKey)}" data-labor-existing-id="${esc(labor.id || "")}" data-labor-helper="${helper ? "true" : "false"}">
     <td><input data-labor-field="mechanic" list="adminLaborMechanicOptions" value="${esc(labor.mechanic || "")}"></td>
     <td><input data-labor-field="issue" value="${esc(labor.issue || "")}" placeholder="General work order"></td>
-    <td><input type="datetime-local" data-labor-field="clock_in" value="${esc(dateTimeLocalValue(labor.clock_in))}"></td>
-    <td><input type="datetime-local" data-labor-field="clock_out" value="${esc(dateTimeLocalValue(labor.clock_out))}"></td>
+    <td>${laborTimeInputHtml("clock_in", labor.clock_in)}</td>
+    <td>${laborTimeInputHtml("clock_out", labor.clock_out)}</td>
     <td><input type="number" min="0" step="1" data-labor-field="break_minutes" value="${esc(laborBreakMinutes(labor))}" placeholder="0"></td>
     <td><input type="number" min="0" step="0.01" data-labor-field="hours" data-original-hours="${esc(displayedHours)}" value="${esc(displayedHours)}" placeholder="0.00"></td>
     <td><input type="number" min="0" step="0.01" data-labor-field="overtime_hours" value="${esc(Number(labor.overtime_hours || 0))}" placeholder="0.00"></td>
@@ -23806,6 +25338,7 @@ function bindAdminLaborRowControls() {
       if (clockOut) clockOut.value = dateTimeLocalValue(new Date(start.getTime() + (enteredHours + breakHours) * 3600000));
       updateCharge();
     };
+    bindLaborTimeClipboard(row);
     if (clockIn) clockIn.oninput = calculateHours;
     if (clockOut) clockOut.oninput = calculateHours;
     if (breakMinutes) breakMinutes.oninput = calculateHours;
@@ -23867,7 +25400,7 @@ const accumulatedWorkPhotoFiles = new WeakMap();
 function accumulateWorkPhotoFiles(input, accepted = []) {
   const fileKey = (file) => `${file.name}|${file.size}|${file.lastModified}`;
   const combined = [...(accumulatedWorkPhotoFiles.get(input) || []), ...accepted];
-  const unique = [...new Map(combined.map((file) => [fileKey(file), file])).values()].slice(0, 8);
+  const unique = [...new Map(combined.map((file) => [fileKey(file), file])).values()];
   accumulatedWorkPhotoFiles.set(input, unique);
   const transfer = new DataTransfer();
   unique.forEach((file) => transfer.items.add(file));
@@ -23879,7 +25412,7 @@ async function validateAdminLaborPhotos(input) {
   const row = input.closest("[data-labor-row]");
   const status = row?.querySelector("[data-labor-photo-status]");
   const preview = row?.querySelector("[data-labor-photo-preview]");
-  const files = [...(input.files || [])].slice(0, 8);
+  const files = [...(input.files || [])];
   if (!files.length) {
     const accumulated = accumulateWorkPhotoFiles(input, []);
     if (status && accumulated.length) status.textContent = `${accumulated.length} previously selected photo${accumulated.length === 1 ? " remains" : "s remain"} ready to upload.`;
@@ -24153,7 +25686,7 @@ async function saveMechanicWorkAndRefresh(wo, closeAfter = false) {
     await saveMechanicModalWork(wo, mechanic, issue);
     if (closeAfter) {
       closeModal();
-      await renderRepairsView();
+      await renderRepairsView(wo);
     } else {
       await refreshMechanicTimeModal(wo.wo_no);
     }
@@ -24163,7 +25696,7 @@ async function saveMechanicWorkAndRefresh(wo, closeAfter = false) {
 }
 
 async function refreshMechanicTimeModal(woNo) {
-  await renderRepairsView();
+  await renderRepairsView(woNo);
   const fresh = currentRows.find((row) => row.wo_no === woNo);
   if (fresh) openMechanicTimeModal(fresh);
 }
@@ -24468,7 +26001,7 @@ async function invoiceWorkOrder(woNo) {
     await supabase.from("work_orders").update({ invoice_no: invoiceNo, status: "Invoiced" }).eq("id", wo.id);
     await releaseCompletedWorkOrderEquipment({ ...wo, invoice_no: invoiceNo, status: "Invoiced" });
     alert(`Invoice ${invoiceNo} created for ${wo.wo_no}.\n\nUse Invoice PDF to view or save it, or Email to open a draft for the customer.`);
-    await renderRepairsView();
+    await renderRepairsView(wo);
     document.querySelector('[data-repair-tab="invoiced"]')?.click();
   } catch (error) {
     alert(`Could not invoice ${wo.wo_no}.\n\nProblem: ${error.message || error}\n\nHow to fix: Check that the work order is closed, has accepted parts or completed labor, and the invoice number is not already used.`);
@@ -24476,10 +26009,11 @@ async function invoiceWorkOrder(woNo) {
 }
 
 async function renderInvoicesView() {
+  if (!moduleListScope && currentView === "invoices" && moduleListSpec(currentView)) return loadView(currentView);
   currentCfg = tableMap.invoices;
   $("viewTitle").textContent = "Invoices";
   $("viewSub").textContent = "Issue customer invoices for sales, rentals, equipment sales, and work orders.";
-  const [invoices, lines, payments, customers, products, workOrders, woIssues, woParts, woLabor, assets, outsideFleet, salesOrders] = await Promise.all([getAll("invoices"), getAll("invoice_lines"), getAll("customer_payments"), getAll("customers"), getAll("products"), getAll("work_orders"), getAll("work_order_issues"), getAll("work_order_parts"), getAll("work_order_labor"), getAll("assets").catch(() => []), getAll("outside_customer_fleet").catch(() => []), getAll("sales_orders").catch(() => [])]);
+  const [invoices, lines, payments, customers, products, workOrders, woIssues, woParts, woLabor, assets, outsideFleet, salesOrders] = await Promise.all([getViewRows("invoices"), getViewRows("invoice_lines"), getViewRows("customer_payments"), getViewRows("customers"), getViewRows("products"), getViewRows("work_orders"), getViewRows("work_order_issues"), getViewRows("work_order_parts"), getViewRows("work_order_labor"), getViewRows("assets").catch(() => []), getViewRows("outside_customer_fleet").catch(() => []), getViewRows("sales_orders").catch(() => [])]);
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.customerRows = customers;
   productMeta.products = products;
@@ -24756,6 +26290,7 @@ function paidInvoiceStampText(inv) {
 }
 
 async function openInvoiceModal(inv = null, forceReadOnly = false) {
+  await ensureListEditorProducts();
   productMeta.products = await getAll("products");
   const readOnly = Boolean(inv && (forceReadOnly || /paid|void|reversed/i.test(invoiceDisplayStatus(inv))));
   editing = inv;
@@ -25355,27 +26890,37 @@ async function restoreDirectPartsInvoiceStock(invoiceNo) {
   }
 }
 
-async function loadCustomerInvoiceDocument(invoiceNo) {
-  const [invoices, lines, customers, payments, workOrders, woIssues, woParts, woLabor, assets, outsideFleet, salesOrders] = await Promise.all([
-    getAll("invoices"),
-    getAll("invoice_lines"),
-    getAll("customers"),
-    getAll("customer_payments"),
-    getAll("work_orders").catch(() => []),
-    getAll("work_order_issues").catch(() => []),
-    getAll("work_order_parts").catch(() => []),
-    getAll("work_order_labor").catch(() => []),
-    getAll("assets").catch(() => []),
-    getAll("outside_customer_fleet").catch(() => []),
-    getAll("sales_orders").catch(() => []),
-  ]);
+async function loadCustomerInvoiceDocument(invoiceNo, preparedInvoice = null) {
   const requestedInvoiceNo = String(invoiceNo || "");
-  // When opened from a work order, resolve its source reference before considering
-  // a legacy generated invoice number. This keeps W08733 tied to W08733 even when
-  // historical data contains a reused/mismatched WO-#### invoice number.
-  const inv = invoices.find((row) => /work order/i.test(row.type || "") && String(row.source_ref || "") === requestedInvoiceNo)
-    || invoices.find((row) => String(row.invoice_no || "") === requestedInvoiceNo);
+  let inv = preparedInvoice;
+  if (!inv) {
+    const [bySource, byNumber] = await Promise.all([
+      workOrderScopedRows("invoices", "source_ref", [requestedInvoiceNo]),
+      workOrderScopedRows("invoices", "invoice_no", [requestedInvoiceNo]),
+    ]);
+    inv = bySource.find(row => /work order/i.test(row.type || "")) || byNumber[0];
+  }
   if (!inv) return null;
+  inv = structuredClone(inv);
+  const refs = [...new Set([inv.source_ref, inv.invoice_no].filter(Boolean))];
+  const [lines, customers, payments, ordersBySource, ordersByInvoice, salesOrders] = await Promise.all([
+    inv._lines || workOrderScopedRows("invoice_lines", "invoice_id", [inv.id]),
+    workOrderScopedRows("customers", "name", [inv.customer]),
+    workOrderScopedRows("customer_payments", "invoice_no", [inv.invoice_no]),
+    workOrderScopedRows("work_orders", "wo_no", refs),
+    workOrderScopedRows("work_orders", "invoice_no", [inv.invoice_no]),
+    workOrderScopedRows("sales_orders", "order_no", [inv.source_ref].filter(Boolean)),
+  ]);
+  const workOrders = [...new Map([...ordersBySource, ...ordersByInvoice].map(row => [row.id, row])).values()];
+  const ids = workOrders.map(row => row.id);
+  const tags = [...new Set(workOrders.map(row => row.asset_tag).filter(Boolean))];
+  const [woIssues, woParts, woLabor, assets, outsideFleet] = await Promise.all([
+    workOrderScopedRows("work_order_issues", "wo_id", ids),
+    workOrderScopedRows("work_order_parts", "wo_id", ids),
+    workOrderScopedRows("work_order_labor", "wo_id", ids),
+    workOrderScopedRows("assets", "asset_tag", tags),
+    workOrderScopedRows("outside_customer_fleet", "reference", tags),
+  ]);
   inv._lines = lines.filter((line) => line.invoice_id === inv.id);
   inv._paid = payments
     .filter((payment) => String(payment.invoice_no || "") === String(inv.invoice_no || "") && !/void|reverse|cancel/i.test(payment.status || ""))
@@ -25400,8 +26945,8 @@ async function loadCustomerInvoiceDocument(invoiceNo) {
   return { inv, customer };
 }
 
-async function printCustomerInvoice(invoiceNo, { returnHtml = false, targetWindow = null } = {}) {
-  const documentData = await loadCustomerInvoiceDocument(invoiceNo);
+async function printCustomerInvoice(invoiceNo, { returnHtml = false, targetWindow = null, preparedInvoice = null } = {}) {
+  const documentData = await loadCustomerInvoiceDocument(invoiceNo, preparedInvoice);
   if (!documentData) return alert(`Invoice ${invoiceNo} could not be loaded.`);
   const { inv, customer } = documentData;
   const isWorkOrderInvoice = Boolean(inv._workOrder) || /work order/i.test(inv.type || "");
@@ -25474,26 +27019,17 @@ function printableInvoiceLine(line, workOrder = false) {
 }
 
 async function loadWorkOrderDraftDocument(woNo) {
-  const { data: wo, error: workOrderError } = await supabase
-    .from("work_orders")
-    .select("*")
-    .eq("wo_no", woNo)
-    .maybeSingle();
-  if (workOrderError) throw workOrderError;
+  const [wo] = await workOrderScopedRows("work_orders", "wo_no", [woNo]);
   if (!wo) return null;
-  const [issuesResult, partsResult, laborResult, assets, outsideFleet] = await Promise.all([
-    supabase.from("work_order_issues").select("*").eq("wo_id", wo.id),
-    supabase.from("work_order_parts").select("*").eq("wo_id", wo.id),
-    supabase.from("work_order_labor").select("*").eq("wo_id", wo.id),
-    getAll("assets").catch(() => productMeta.assets || []),
-    getAll("outside_customer_fleet").catch(() => productMeta.outsideFleet || []),
+  const tags = [wo.asset_tag].filter(Boolean);
+  const [issues, parts, labor, assets, outsideFleet] = await Promise.all([
+    workOrderScopedRows("work_order_issues", "wo_id", [wo.id]),
+    workOrderScopedRows("work_order_parts", "wo_id", [wo.id]),
+    workOrderScopedRows("work_order_labor", "wo_id", [wo.id]),
+    workOrderScopedRows("assets", "asset_tag", tags),
+    workOrderScopedRows("outside_customer_fleet", "reference", tags),
   ]);
-  if (issuesResult.error) throw issuesResult.error;
-  if (partsResult.error) throw partsResult.error;
-  if (laborResult.error) throw laborResult.error;
-  wo._issues = issuesResult.data || [];
-  wo._parts = partsResult.data || [];
-  wo._labor = laborResult.data || [];
+  wo._issues = issues; wo._parts = parts; wo._labor = labor;
   wo._draftAsset = workOrderAssetDetailsFromLists(wo, assets, outsideFleet);
   return wo;
 }
@@ -25742,7 +27278,7 @@ async function renderCustomerPaymentsView() {
   currentCfg = tableMap.payments;
   $("viewTitle").textContent = "Customer Payments";
   $("viewSub").textContent = "Receive and track accounts receivable payments.";
-  const [payments, invoices, lines, customers] = await Promise.all([getAll("customer_payments"), getAll("invoices"), getAll("invoice_lines"), getAll("customers")]);
+  const [payments, invoices, lines, customers] = await Promise.all([getViewRows("customer_payments"), getViewRows("invoices"), getViewRows("invoice_lines"), getViewRows("customers")]);
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.customerRows = customers;
   productMeta.invoiceRows = invoices.map((inv) => ({ ...inv, _lines: lines.filter((line) => line.invoice_id === inv.id), _paid: payments.filter((p) => p.invoice_no === inv.invoice_no && !/void|reversed/i.test(p.status || "")).reduce((s, p) => s + Number(p.amount || 0), 0) }));
@@ -25987,33 +27523,63 @@ function printPartsIssuanceReprint(rows = []) {
   openPrintWindow(html, `parts-issuance-reprinted-${today()}`);
 }
 
+let partsIssuanceLoadVersion = 0;
+async function reloadPartsIssuanceRange() {
+  const version = ++partsIssuanceLoadVersion;
+  const host = $("partsIssuanceTableHost");
+  if (!host) return;
+  const from = $("partsIssuanceFrom")?.value || "";
+  const to = $("partsIssuanceTo")?.value || "";
+  if (from && to && from > to) return alert("From date must be on or before To date.");
+  host.textContent = "Loading issuance records…";
+  currentRows = [];
+  try {
+    const movements = await getViewData(`parts-issuance:${from}:${to}`, async (signal) => {
+      const rows = [];
+      for (let offset = 0; ; offset += 500) {
+        let query = supabase.from("stock_movements").select("*").lt("qty", 0).order("id").range(offset, offset + 499).abortSignal(signal);
+        if (from) query = query.gte("movement_date", from);
+        if (to) query = query.lte("movement_date", to);
+        const { data, error } = await query;
+        if (error) throw error;
+        rows.push(...(data || []));
+        if ((data || []).length < 500) return rows;
+      }
+    });
+    if (version !== partsIssuanceLoadVersion || !host.isConnected) return;
+    const eligible = movements.filter((row) => /repair|work order|supplies issue/i.test(String(row.type || "")) && !/revers|return|void|cancel/i.test(`${row.type || ""} ${row.reason || ""}`));
+    const numbers = [...new Set(eligible.map((row) => row.document_no).filter(Boolean))];
+    const workOrders = [];
+    for (let i = 0; i < numbers.length; i += 100) workOrders.push(...await workOrderScopedRows("work_orders", "wo_no", numbers.slice(i, i + 100)));
+    if (version !== partsIssuanceLoadVersion || !host.isConnected) return;
+    const byNo = new Map(workOrders.map((wo) => [String(wo.wo_no || "").trim().toLowerCase(), wo]));
+    currentRows = eligible.map((row) => mapPartsIssuanceMovement(row, byNo)).sort((a,b) => `${b.issuance_date}|${b.created_at || ""}`.localeCompare(`${a.issuance_date}|${a.created_at || ""}`));
+    renderPartsIssuanceTable();
+  } catch (error) {
+    if (version === partsIssuanceLoadVersion && host.isConnected) host.textContent = `Could not load issuance records: ${error.message || error}. Change the date range or Refresh to retry.`;
+  }
+}
+
 async function renderPartsIssuanceView() {
   currentCfg = { title: "Parts Issuance", sub: "Find and reprint posted parts issuances to work orders, mechanics, and General Shop." };
   $("viewTitle").textContent = currentCfg.title;
   $("viewSub").textContent = currentCfg.sub;
-  const [movements, workOrders] = await Promise.all([getAll("stock_movements"), getAll("work_orders").catch(() => [])]);
-  const workOrderByNo = new Map(workOrders.map((workOrder) => [String(workOrder.wo_no || "").trim().toLowerCase(), workOrder]).filter(([number]) => number));
-  currentRows = movements
-    .filter((movement) => Number(movement.qty || 0) < 0)
-    .filter((movement) => /repair|work order|supplies issue/i.test(String(movement.type || "")))
-    .filter((movement) => !/revers|return|void|cancel/i.test(`${movement.type || ""} ${movement.reason || ""}`))
-    .map((movement) => mapPartsIssuanceMovement(movement, workOrderByNo))
-    .sort((a, b) => `${b.issuance_date}|${b.created_at || ""}`.localeCompare(`${a.issuance_date}|${a.created_at || ""}`));
+  currentRows = [];
   $("content").innerHTML = `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Parts Issuance History</strong><span id="partsIssuanceCount"></span></div><div class="actions"><button type="button" id="partsIssuanceExcelBtn">Excel</button><button type="button" class="primary" id="partsIssuanceReprintSelectedBtn">Reprint Selected PDF</button></div></div><div class="toolbar parts-issuance-toolbar"><input class="searchbox" id="partsIssuanceSearch" placeholder="Search WO, mechanic, shop, reference, part, description, or issuer"><label class="field"><span>Type</span><select id="partsIssuanceType"><option value="">All issuance types</option><option>Work Order</option><option>Mechanic</option><option>General Shop</option></select></label><label class="field"><span>From</span><input type="date" id="partsIssuanceFrom"></label><label class="field"><span>To</span><input type="date" id="partsIssuanceTo"></label><button type="button" id="partsIssuanceClearBtn">Clear filters</button></div><div class="notice">This list uses posted negative Stock Movements, so every reprint represents inventory that was physically issued. Reprints retain the original issue date and user and are clearly marked REPRINTED.</div><div id="partsIssuanceTableHost"></div></section>`;
   ["partsIssuanceSearch", "partsIssuanceType", "partsIssuanceFrom", "partsIssuanceTo"].forEach((id) => {
     const element = $(id);
-    if (element) element.addEventListener(id === "partsIssuanceSearch" ? "input" : "change", renderPartsIssuanceTable);
+    if (element) element.addEventListener(id === "partsIssuanceSearch" ? "input" : "change", /From|To/.test(id) ? reloadPartsIssuanceRange : renderPartsIssuanceTable);
   });
   $("partsIssuanceClearBtn").onclick = () => {
     ["partsIssuanceSearch", "partsIssuanceType", "partsIssuanceFrom", "partsIssuanceTo"].forEach((id) => { if ($(id)) $(id).value = ""; });
-    renderPartsIssuanceTable();
+    reloadPartsIssuanceRange();
   };
   $("partsIssuanceReprintSelectedBtn").onclick = () => printPartsIssuanceReprint(selectedPartsIssuanceRows());
   $("partsIssuanceExcelBtn").onclick = () => {
     const rows = filteredPartsIssuanceRows();
     downloadCsv([["Issue Date", "Type", "Issued To / WO", "Reference", "Part #", "Description", "Qty", "Unit Cost", "Total Cost", "Originally Issued By", "Reason"], ...rows.map((row) => [row.issuance_date, row.issuance_type, row.issued_to, row.issuance_reference, row.sku, row.product_name, row.issued_qty, row.unit_cost_value, row.total_cost_value, row.issued_by, row.reason])], `parts-issuance-history-${today()}.csv`);
   };
-  renderPartsIssuanceTable();
+  await reloadPartsIssuanceRange();
 }
 
 async function renderSuppliesIssuanceView() {
@@ -26026,11 +27592,11 @@ async function renderSuppliesIssuanceView() {
   $("viewTitle").textContent = "Supplies Issuance";
   $("viewSub").textContent = "Issue supplies to employees or mechanics, and optionally charge them to a work order.";
   const [products, movements, mechanics, workOrders, workOrderParts] = await Promise.all([
-    getAll("products"),
-    getAll("stock_movements"),
-    getAll("mechanics"),
-    getAll("work_orders"),
-    getAll("work_order_parts"),
+    getViewRows("products"),
+    getViewRows("stock_movements"),
+    getViewRows("mechanics"),
+    getViewRows("work_orders"),
+    getViewRows("work_order_parts"),
   ]);
   productMeta.products = products.sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || "")));
   productMeta.mechanics = mechanics.map((m) => m.name).filter(Boolean).sort();
@@ -26834,7 +28400,7 @@ function openPropertyMaintenanceModal(title) {
 async function renderPropertyMasterView() {
   $("viewTitle").textContent = "Properties";
   $("viewSub").textContent = "Property master for maintenance monitoring; no accounting entries.";
-  const rows = await getAll("property_maintenance_properties");
+  const rows = await getViewRows("property_maintenance_properties");
   currentRows = rows;
   $("content").innerHTML = `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Property Master</strong><span>Create each property once, then use it for requests, maintenance work orders, and reports.</span></div><div class="actions"><button id="propertyCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newPropertyBtn">New property</button></div></div><div class="notice"><strong>Monitoring only:</strong> Property records and maintenance activity never create accounting entries.</div><div class="table-wrap"><table><thead><tr><th>Property #</th><th>Property</th><th>Type</th><th>Owner / Customer</th><th>Address / Jobsite</th><th>Contact</th><th>Manager</th><th>Next Inspection</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td>${esc(r.property_no)}</td><td><strong>${esc(r.property_name)}</strong></td><td>${esc(r.property_type)}</td><td>${esc(r.customer_owner)}</td><td>${esc(r.address || r.jobsite)}</td><td>${esc(r.contact_name)}<br><small>${esc(r.contact_phone || r.contact_email)}</small></td><td>${esc(r.manager_name)}</td><td>${esc(formatDisplayDate(r.next_inspection_date))}</td><td>${badge(r.status)}</td><td><button data-property-edit="${esc(r.id)}">Edit</button></td></tr>`).join("") : `<tr><td colspan="10" class="empty">No properties yet. Create the first property.</td></tr>`}</tbody></table></div></section>`;
   $("newPropertyBtn").onclick = () => openPropertyMaintenancePropertyModal();
@@ -26865,7 +28431,7 @@ function openPropertyMaintenancePropertyModal(row = null) {
 async function renderPropertyRequestsView() {
   $("viewTitle").textContent = "Property Maintenance Requests";
   $("viewSub").textContent = "Request Access entry for monitoring property maintenance; no accounting entries.";
-  const [rows, properties] = await Promise.all([getAll("property_maintenance_requests"), getAll("property_maintenance_properties")]);
+  const [rows, properties] = await Promise.all([getViewRows("property_maintenance_requests"), getViewRows("property_maintenance_properties")]);
   rows.sort((a, b) => String(b.request_date).localeCompare(String(a.request_date)));
   currentRows = rows;
   $("content").innerHTML = `${dualRequestPortalTabs("propertyrequests")}<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Maintenance Requests</strong><span>Request repairs, preventive maintenance, inspections, cleaning, landscaping, and other property work.</span></div><div class="actions"><button id="propertyRequestCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newPropertyRequestBtn">New request</button></div></div><div class="notice"><strong>Monitoring only:</strong> Submitting or approving a request does not create AP, AR, cash, invoice, or General Ledger entries.</div><div class="table-wrap"><table><thead><tr><th>Request #</th><th>Date</th><th>Property</th><th>Requested By</th><th>Category</th><th>Priority</th><th>Area</th><th>Issue</th><th>Status</th><th>Work Order</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td>${esc(r.request_no)}</td><td>${esc(formatDisplayDate(r.request_date))}</td><td><strong>${esc(r.property_name)}</strong><br><small>${esc(r.property_no)}</small></td><td>${esc(r.requested_by)}<br><small>${esc(r.requestor_email)}</small></td><td>${esc(r.category)}</td><td>${badge(r.priority)}</td><td>${esc(r.location_area)}</td><td>${esc(r.issue_description)}</td><td>${badge(r.status)}</td><td>${esc(r.work_order_no)}</td><td><div class="row-actions"><button data-property-request-edit="${esc(r.id)}">View / Edit</button>${!/Completed|Denied|Cancelled/i.test(r.status) && !r.work_order_no ? `<button class="primary" data-property-request-convert="${esc(r.id)}">Create Work Order</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="11" class="empty">No property maintenance requests yet.</td></tr>`}</tbody></table></div></section>`;
@@ -26901,7 +28467,7 @@ async function createPropertyWorkOrderFromRequest(request, properties) {
 
 async function renderPropertyWorkOrdersView() {
   $("viewTitle").textContent = "Property Maintenance Work Orders"; $("viewSub").textContent = "Work-order-style maintenance monitoring with no accounting posting.";
-  const [rows, properties, requests] = await Promise.all([getAll("property_maintenance_work_orders"), getAll("property_maintenance_properties"), getAll("property_maintenance_requests")]);
+  const [rows, properties, requests] = await Promise.all([getViewRows("property_maintenance_work_orders"), getViewRows("property_maintenance_properties"), getViewRows("property_maintenance_requests")]);
   rows.sort((a, b) => String(b.opened_date).localeCompare(String(a.opened_date))); currentRows = rows;
   $("content").innerHTML = `<div class="stats">${statCard("Open", rows.filter((r) => !/Completed|Cancelled/i.test(r.status)).length, "Active maintenance")}${statCard("Completed", rows.filter((r) => r.status === "Completed").length, "Completed work")}${statCard("Monitoring Cost", money(rows.reduce((s, r) => s + propertyMaintenanceCost(r), 0)), "Operational estimate only")}</div><section class="panel"><div class="panel-head"><div class="panel-title"><strong>Maintenance Work Orders</strong><span>Schedule, assign, record work and costs, and complete each property task.</span></div><div class="actions"><button id="pmWorkOrderCsv">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newPmWorkOrder">New work order</button></div></div><div class="notice"><strong>Monitoring only:</strong> Labor and costs below are operational metrics; they do not post to payroll, AP, AR, cash, invoices, or the General Ledger.</div><div class="table-wrap"><table><thead><tr><th>Work Order</th><th>Opened</th><th>Property</th><th>Category</th><th>Priority</th><th>Issue / Scope</th><th>Assigned To</th><th>Schedule</th><th>Labor Hrs</th><th>Monitoring Cost</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td><strong>${esc(r.work_order_no)}</strong><br><small>${esc(r.request_no)}</small></td><td>${esc(formatDisplayDate(r.opened_date))}</td><td>${esc(r.property_name)}<br><small>${esc(r.location_area)}</small></td><td>${esc(r.category)}</td><td>${badge(r.priority)}</td><td>${esc(r.issue_description)}<br><small>${esc(r.scope_of_work)}</small></td><td>${esc(r.assigned_to)}<br><small>${esc(r.vendor_name)}</small></td><td>${esc(formatDisplayDate(r.scheduled_date))}</td><td>${esc(Number(r.labor_hours || 0).toFixed(2))}</td><td>${money(propertyMaintenanceCost(r))}</td><td>${badge(r.status)}</td><td><button data-pm-workorder-edit="${esc(r.id)}">View / Edit</button></td></tr>`).join("") : `<tr><td colspan="12" class="empty">No property maintenance work orders yet.</td></tr>`}</tbody></table></div></section>`;
   $("newPmWorkOrder").onclick = () => openPropertyMaintenanceWorkOrderModal(null, properties, requests);
@@ -26937,7 +28503,7 @@ function groupPropertyMaintenanceRows(rows, keyFn) {
 
 async function renderPropertyMaintenanceReportView() {
   $("viewTitle").textContent = "Property Maintenance Report"; $("viewSub").textContent = "Monitoring-only operational report; no accounting entries.";
-  const rows = await getAll("property_maintenance_work_orders"); const defaultFrom = new Date(); defaultFrom.setDate(1); const defaultFromValue = `${defaultFrom.getFullYear()}-${String(defaultFrom.getMonth() + 1).padStart(2, "0")}-${String(defaultFrom.getDate()).padStart(2, "0")}`; const from = document.getElementById("pmReportFrom")?.value || defaultFromValue; const to = document.getElementById("pmReportTo")?.value || today(); const filtered = rows.filter((r) => (!from || r.opened_date >= from) && (!to || r.opened_date <= to)); const byProperty = groupPropertyMaintenanceRows(filtered, (r) => r.property_name); const byCategory = groupPropertyMaintenanceRows(filtered, (r) => r.category); const byAssignee = groupPropertyMaintenanceRows(filtered, (r) => r.assigned_to || r.vendor_name); const totalCost = filtered.reduce((s, r) => s + propertyMaintenanceCost(r), 0); const completed = filtered.filter((r) => r.status === "Completed").length;
+  const rows = await getViewRows("property_maintenance_work_orders"); const defaultFrom = new Date(); defaultFrom.setDate(1); const defaultFromValue = `${defaultFrom.getFullYear()}-${String(defaultFrom.getMonth() + 1).padStart(2, "0")}-${String(defaultFrom.getDate()).padStart(2, "0")}`; const from = document.getElementById("pmReportFrom")?.value || defaultFromValue; const to = document.getElementById("pmReportTo")?.value || today(); const filtered = rows.filter((r) => (!from || r.opened_date >= from) && (!to || r.opened_date <= to)); const byProperty = groupPropertyMaintenanceRows(filtered, (r) => r.property_name); const byCategory = groupPropertyMaintenanceRows(filtered, (r) => r.category); const byAssignee = groupPropertyMaintenanceRows(filtered, (r) => r.assigned_to || r.vendor_name); const totalCost = filtered.reduce((s, r) => s + propertyMaintenanceCost(r), 0); const completed = filtered.filter((r) => r.status === "Completed").length;
   const summaryTable = (title, grouped) => `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>${title}</strong><span>${esc(from)} to ${esc(to)}</span></div></div><div class="table-wrap"><table><thead><tr><th>${title.replace("Summary by ", "")}</th><th>Work Orders</th><th>Open</th><th>Completed</th><th>Labor Hours</th><th>Monitoring Cost</th></tr></thead><tbody>${grouped.map((x) => `<tr><td><strong>${esc(x.key)}</strong></td><td>${x.work_orders}</td><td>${x.open}</td><td>${x.completed}</td><td>${x.labor_hours.toFixed(2)}</td><td>${money(x.cost)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No activity in this period.</td></tr>`}<tr class="subtotal-row"><td><strong>TOTAL</strong></td><td>${grouped.reduce((s, x) => s + x.work_orders, 0)}</td><td>${grouped.reduce((s, x) => s + x.open, 0)}</td><td>${grouped.reduce((s, x) => s + x.completed, 0)}</td><td>${grouped.reduce((s, x) => s + x.labor_hours, 0).toFixed(2)}</td><td><strong>${money(grouped.reduce((s, x) => s + x.cost, 0))}</strong></td></tr></tbody></table></div></section>`;
   $("content").innerHTML = `<div class="toolbar"><label>From<input type="date" id="pmReportFrom" value="${esc(from)}"></label><label>To<input type="date" id="pmReportTo" value="${esc(to)}"></label><button class="primary" id="pmReportApply">Apply Report</button><button id="pmReportExcel">Excel</button><button onclick="window.print()">PDF / Print</button></div><div class="notice"><strong>Monitoring only:</strong> All labor and cost figures are operational estimates and do not post to accounting.</div><div class="stats">${statCard("Work Orders", filtered.length, "Covered period")}${statCard("Open", filtered.length - completed, "Still active")}${statCard("Completed", completed, "Finished")}${statCard("Monitoring Cost", money(totalCost), "No accounting posting")}</div>${summaryTable("Summary by Property", byProperty)}${summaryTable("Summary by Category", byCategory)}${summaryTable("Summary by Assignee / Vendor", byAssignee)}<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Work Order Detail</strong><span>Chronological maintenance activity.</span></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Work Order</th><th>Property</th><th>Category</th><th>Area</th><th>Issue / Scope</th><th>Assignee</th><th>Labor Hours</th><th>Cost</th><th>Status</th></tr></thead><tbody>${filtered.sort((a, b) => String(a.opened_date).localeCompare(String(b.opened_date))).map((r) => `<tr><td>${esc(formatDisplayDate(r.opened_date))}</td><td>${esc(r.work_order_no)}</td><td>${esc(r.property_name)}</td><td>${esc(r.category)}</td><td>${esc(r.location_area)}</td><td>${esc(r.issue_description)}<br><small>${esc(r.scope_of_work)}</small></td><td>${esc(r.assigned_to || r.vendor_name)}</td><td>${Number(r.labor_hours || 0).toFixed(2)}</td><td>${money(propertyMaintenanceCost(r))}</td><td>${badge(r.status)}</td></tr>`).join("") || `<tr><td colspan="10" class="empty">No maintenance activity in this period.</td></tr>`}</tbody></table></div></section>`;
   $("pmReportApply").onclick = renderPropertyMaintenanceReportView; $("pmReportExcel").onclick = () => downloadCsv([["Date", "Work Order", "Request", "Property", "Category", "Area", "Issue", "Scope", "Assignee", "Vendor", "Labor Hours", "Labor Cost", "Materials", "Vendor Cost", "Other Cost", "Total Monitoring Cost", "Status"], ...filtered.map((r) => [r.opened_date, r.work_order_no, r.request_no, r.property_name, r.category, r.location_area, r.issue_description, r.scope_of_work, r.assigned_to, r.vendor_name, r.labor_hours, Number(r.labor_hours || 0) * Number(r.labor_rate || 0), r.material_cost, r.vendor_cost, r.other_cost, propertyMaintenanceCost(r), r.status])], `property-maintenance-report-${from}-to-${to}.csv`);
@@ -27519,7 +29085,7 @@ async function renderCustomerEquipmentFormsView() {
   $("viewSub").textContent = cfg.sub;
   let rows = [];
   try {
-    rows = await getAll("customer_equipment_forms");
+    rows = await getViewRows("customer_equipment_forms");
   } catch (error) {
     $("content").innerHTML = `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Database update required</strong><span>Run the supplied Customer Equipment Forms SQL once in Supabase.</span></div></div><div class="notice">${esc(error.message || error)}<br><br>SQL file: <strong>supabase/migrations/2026-08-17_customer_equipment_forms.sql</strong></div></section>`;
     return;
@@ -27536,6 +29102,54 @@ async function renderCustomerEquipmentFormsView() {
   document.querySelectorAll("[data-customer-form-view]").forEach((button) => button.onclick = () => openCustomerEquipmentForm(rows.find((r) => r.id === button.dataset.customerFormView)?.form_type || "Drop-Off", rows.find((r) => r.id === button.dataset.customerFormView), rows));
   document.querySelectorAll("[data-customer-form-pdf]").forEach((button) => button.onclick = () => printCustomerEquipmentForm(rows.find((r) => r.id === button.dataset.customerFormPdf)));
   document.querySelectorAll("[data-customer-form-release]").forEach((button) => button.onclick = () => openCustomerEquipmentForm("Acceptance/Release", null, rows, rows.find((r) => r.id === button.dataset.customerFormRelease)));
+}
+
+function wireCustomerFormWorkOrder(equipmentRows, dropoffs) {
+  const input = $('cefWorkOrder');
+  let generation = 0;
+  input.addEventListener('input', () => { generation++; });
+  input.onchange = async () => {
+    const request = ++generation;
+    const value = input.value;
+    const number = value.trim().split('|')[0].trim();
+    const status = $('cefWorkOrderStatus');
+    if (!number) { status.textContent = ''; return; }
+    status.textContent = 'Loading work-order details…';
+    try {
+      const {data: wo, error} = await supabase.from('work_orders').select('*').eq('wo_no', number).maybeSingle();
+      if (error) throw error;
+      if (!wo) throw new Error('Select a valid work order from the suggestions.');
+      const {data: labor, error: laborError} = await supabase.from('work_order_labor').select('mechanic,issue,work_done,clock_in,clock_out').eq('wo_id', wo.id).order('clock_in');
+      if (laborError) throw laborError;
+      if (request !== generation || !input.isConnected || input.value !== value) return;
+      const fill = (id, next) => {
+        const field = $(id); if (!field) return;
+        if (!field.value || field.value === field.dataset.woAutoValue) {
+          field.value = next || ''; field.dataset.woAutoValue = field.value;
+        }
+      };
+      const equipment = equipmentRows.find(row => row.tag.trim().toLowerCase() === String(wo.asset_tag || '').trim().toLowerCase());
+      fill('cefCustomer', wo.bill_to_customer || wo.customer || equipment?.customer);
+      if (equipment) {
+        fill('cefAsset', [equipment.tag,equipment.name].filter(Boolean).join(' | '));
+        if ($('cefAsset').value === $('cefAsset').dataset.woAutoValue) {
+          for (const [id,key] of [['cefAssetTag','tag'],['cefEquipmentName','name'],['cefSerial','serial'],['cefPlate','plate']]) {
+            $(id).value = equipment[key] || ''; $(id).dataset.woAutoValue = $(id).value;
+          }
+        }
+      }
+      const active = (labor || []).filter(row => !isReversedLabor(row));
+      const narrative = [...new Set(active.filter(row => !isHelperLabor(row)).map(row => String(row.work_done || '').trim()).filter(Boolean))].join('\n\n');
+      fill('cefWorkCompleted', narrative);
+      fill('cefIssues', wo.description);
+      fill('cefHeadMechanic', wo.opening_mechanic || active.find(row => row.mechanic)?.mechanic);
+      const linked = dropoffs.filter(row => row.work_order_no === wo.wo_no && row.asset_tag === wo.asset_tag);
+      if (linked.length === 1) fill('cefDropoff', linked[0].form_no);
+      status.textContent = 'Work-order details loaded. Existing edits were kept. Review the details and enter the release condition.' + (!equipment ? ' Equipment was not found in the master; select it below.' : '') + (!narrative && $('cefWorkCompleted') ? ' No completed-work notes were recorded; enter the service performed.' : '');
+    } catch (error) {
+      if (request === generation && input.isConnected) status.textContent = 'Could not load work-order details: ' + (error.message || error);
+    }
+  };
 }
 
 async function openCustomerEquipmentForm(type, existing = null, allRows = [], sourceDropoff = null) {
@@ -27555,10 +29169,10 @@ async function openCustomerEquipmentForm(type, existing = null, allRows = [], so
     <div class="field"><label>Form #</label><input id="cefFormNo" value="${esc(formNo)}" readonly></div>
     <div class="field"><label>Date *</label><input id="cefDate" type="date" value="${esc(existing?.form_date || today())}" required></div>
     <div class="field"><label>Status</label><input id="cefStatus" value="${esc(existing?.status || "Completed")}" readonly></div>
+    <div class="field wide"><label>Work Order (optional)</label><input id="cefWorkOrder" class="suggest-input" data-suggest-source="work-order" value="${esc(base.work_order_no || "")}" placeholder="Type work order, asset, customer, or status" autocomplete="off"><small id="cefWorkOrderStatus" role="status">Select a work order to fill customer, equipment, mechanic, and recorded work details.</small></div>
     <div class="field wide"><label>Customer *</label><input id="cefCustomer" class="suggest-input" data-suggest-source="customer" value="${esc(base.customer_name || "")}" placeholder="Type customer reference, name, email, or phone" autocomplete="off" required><small>Customer must be selected from Customer Master.</small></div>
     <div class="field wide"><label>Equipment name / asset *</label><input id="cefAsset" class="suggest-input" data-suggest-source="equipment" data-equipment-source="master" value="${esc(initialEquipmentValue)}" placeholder="Type asset #, equipment name, plate, serial, VIN, type, or location" autocomplete="off" required><small>Results appear in separate columns after you start typing, just like the Work Order lookup.</small></div>
     <div class="customer-equipment-asset-details field wide"><div><span>Asset #</span><input id="cefAssetTag" value="${esc(base.asset_tag || "")}" readonly></div><div><span>Equipment name</span><input id="cefEquipmentName" value="${esc(base.equipment_name || "")}" readonly></div><div><span>Serial #</span><input id="cefSerial" value="${esc(base.serial_no || "")}" readonly></div><div><span>License plate</span><input id="cefPlate" value="${esc(base.license_plate || "")}" readonly></div></div>
-    <div class="field wide"><label>Work Order (optional)</label><input id="cefWorkOrder" class="suggest-input" data-suggest-source="work-order" value="${esc(base.work_order_no || "")}" placeholder="Type work order, asset, customer, or status" autocomplete="off"></div>
     ${type === "Acceptance/Release" ? `<div class="field wide"><label>Linked Drop-Off (optional)</label><input id="cefDropoff" list="cefDropoffs" value="${esc(existing?.linked_dropoff_no || sourceDropoff?.form_no || "")}" placeholder="Select a related drop-off"><datalist id="cefDropoffs">${dropoffs.map((row) => `<option value="${esc(row.form_no)}">${esc([row.customer_name, row.asset_tag, row.equipment_name].filter(Boolean).join(" | "))}</option>`).join("")}</datalist></div>` : ""}
     ${type === "Drop-Off" ? `<div class="field wide"><label>Issues / symptoms reported *</label><textarea id="cefIssues" rows="5" required>${esc(existing?.issues_reported || "")}</textarea></div><div class="field wide"><label>Condition at drop-off</label><textarea id="cefCondition" rows="4">${esc(existing?.condition_notes || "")}</textarea></div><div class="field wide"><label>Accessories / items left with equipment</label><textarea id="cefAccessories" rows="3">${esc(existing?.accessories_received || "")}</textarea></div>` : `<div class="field wide"><label>Work completed / service performed *</label><textarea id="cefWorkCompleted" rows="6" required>${esc(existing?.work_completed || "")}</textarea></div><div class="field wide"><label>Condition when released *</label><textarea id="cefReleaseCondition" rows="4" required>${esc(existing?.release_condition || "")}</textarea></div><div class="notice field wide">Customer acceptance: I confirm that I received the equipment in the condition described above and acknowledge the work completed.</div>`}
     <div class="field"><label>Customer printed name *</label><input id="cefCustomerPrint" value="${esc(existing?.customer_print_name || "")}" required></div>
@@ -27566,6 +29180,7 @@ async function openCustomerEquipmentForm(type, existing = null, allRows = [], so
     <div class="field wide"><label>Notes</label><textarea id="cefNotes" rows="3">${esc(existing?.notes || "")}</textarea></div>
     <div class="signature-pair field wide"><div class="customer-equipment-signature-card"><strong>Customer signature *</strong><canvas id="cefCustomerSignature" class="signature-pad" width="760" height="180"></canvas><button type="button" id="clearCefCustomerSignature">Clear</button></div><div class="customer-equipment-signature-card"><strong>Head mechanic signature *</strong><canvas id="cefMechanicSignature" class="signature-pad" width="760" height="180"></canvas><button type="button" id="clearCefMechanicSignature">Clear</button></div></div>
   </div>`;
+  wireCustomerFormWorkOrder(equipmentRows, dropoffs);
   const customerCanvas = $("cefCustomerSignature");
   const mechanicCanvas = $("cefMechanicSignature");
   wireSignatureCanvas(customerCanvas); wireSignatureCanvas(mechanicCanvas);
@@ -27608,10 +29223,10 @@ async function renderAssetsView() {
   $("viewTitle").textContent = "Fleet & Equipment";
   $("viewSub").textContent = "Track vehicles, heavy equipment, readings, ownership, and assignments.";
   const [assets, locations, types, workOrders] = await Promise.all([
-    getAll("assets"),
-    getAll("asset_locations"),
-    getAll("asset_types"),
-    getAll("work_orders"),
+    getViewRows("assets"),
+    getViewRows("asset_locations"),
+    getViewRows("asset_types"),
+    getViewRows("work_orders"),
   ]);
   currentRows = attachOpenWorkOrderToAssets(assets, workOrders).sort((a, b) => String(a.asset_tag || "").localeCompare(String(b.asset_tag || "")));
   productMeta.assets = currentRows;
@@ -27735,40 +29350,56 @@ function assetStats(assets, workOrders) {
   };
 }
 
+let equipmentRepairQueueTab = 'pending';
+function repairQueueArchived(asset) {
+  const notes=String(asset.notes || '');
+  const cleared=notes.lastIndexOf('[Repair queue cleared 2026-10-01]');
+  return cleared>=0 && cleared>notes.toLowerCase().lastIndexOf('repair requested');
+}
 async function renderEquipmentRepairQueueView() {
   if (isDualRequestPortalUser()) return await renderEquipmentRepairRequestMobile();
   currentCfg = { heads: ["asset_tag", "name", "location", "gps_location", "assigned_operator", "requested_by", "approved_by", "repair_po_no", "status", "_openWoIssue", "wo_no"], labels: ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Status", "Issue / Request", "Assigned WO"] };
   $("viewTitle").textContent = "Equipment Repair Requests";
   $("viewSub").textContent = "Repair requests submitted from mobile login, QR scan, or Fleet & Equipment before work-order assignment.";
   const [assets, workOrders, locations, types, customers] = await Promise.all([
-    getAll("assets"),
-    getAll("work_orders"),
-    getAll("asset_locations"),
-    getAll("asset_types"),
-    getAll("customers"),
+    getViewRows("assets"),
+    getViewRows("work_orders"),
+    getViewRows("asset_locations"),
+    getViewRows("asset_types"),
+    getViewRows("customers"),
   ]);
-  productMeta.assets = attachOpenWorkOrderToAssets(assets, workOrders);
+  productMeta.assets = attachOpenWorkOrderToAssets(assets, workOrders).map(asset => {
+    const completed = workOrders.filter(wo => String(wo.asset_tag || '').trim().toLowerCase()===String(asset.asset_tag || '').trim().toLowerCase() && !/void|cancel/i.test(wo.status || '') && (wo.invoice_no || /closed|complete|invoiced/i.test(wo.status || '')))
+      .sort((a,b)=>String(b.wo_date || '').localeCompare(String(a.wo_date || '')))[0];
+    const requestDates=[...String(asset.notes || '').matchAll(/Repair requested (\d{1,2}\/\d{1,2}\/\d{4})/gi)];
+    const requestedAt=requestDates.length?new Date(requestDates.at(-1)[1]):null;
+    const completedAt=completed?new Date(completed.wo_date+'T23:59:59'):null;
+    const newerRequest=requestedAt && completedAt && requestedAt>completedAt && !repairQueueArchived(asset);
+    return {...asset,_completedWo:!newerRequest?completed || null:null};
+  });
   productMeta.locations = locations.map((l) => l.name).filter(Boolean).sort();
   productMeta.assetTypes = types.map((t) => t.name).filter(Boolean).sort();
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
-  currentRows = productMeta.assets.filter((asset) => /repair|subject/i.test(asset.status || "") || asset._openWo);
+  currentRows = productMeta.assets.filter((asset) => asset._openWo || asset._completedWo || (/repair|subject/i.test(asset.status || "") && !repairQueueArchived(asset)));
   $("content").innerHTML = `
     <div class="toolbar">
       <input class="searchbox" id="repairAssetSearch" placeholder="Search asset, issue, location, assigned WO">
     </div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Equipment Repair Requests</strong><span>Create or review work orders from mobile and QR repair requests.</span></div><div class="actions"><button id="repairAssetCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button></div></div>
-      <div id="repairAssetHost">${equipmentRepairQueueTable(currentRows)}</div>
+      <div class="tabs"><button type="button" data-repair-queue-tab="pending">Pending Work Order Assignment ${currentRows.filter(row=>!row._openWo && !row._completedWo).length}</button><button type="button" data-repair-queue-tab="assigned">Active Work Orders ${currentRows.filter(row=>row._openWo).length}</button><button type="button" data-repair-queue-tab="completed">Completed Work Orders ${currentRows.filter(row=>!row._openWo && row._completedWo).length}</button></div>
+      <div id="repairAssetHost"></div>
     </section>`;
   $("repairAssetSearch").oninput = renderFilteredEquipmentRepairQueue;
   $("repairAssetCsvBtn").onclick = exportCurrentCsv;
-  bindEquipmentRepairQueue();
+  document.querySelectorAll("[data-repair-queue-tab]").forEach(button=>button.onclick=()=>{equipmentRepairQueueTab=button.dataset.repairQueueTab;renderFilteredEquipmentRepairQueue();});
+  renderFilteredEquipmentRepairQueue();
 }
 
 async function renderEquipmentRepairRequestMobile() {
   $("viewTitle").textContent = "";
   $("viewSub").textContent = "";
-  productMeta.assets = await getAll("assets").catch(() => []);
+  productMeta.assets = await getViewRows("assets").catch(() => []);
   $("content").innerHTML = `
     <section class="request-portal request-form-only">
       ${dualRequestPortalTabs("equipmentrepairqueue")}
@@ -27891,13 +29522,13 @@ async function renderEquipmentRepairQuotesView() {
   $("viewTitle").textContent = "Equipment Repair Quotes";
   $("viewSub").textContent = "Pending repair estimates move to Expired after their selected expiration date and can be converted into work orders.";
   const [quotes, customers, assets, outsideFleet] = await Promise.all([
-    getAll("equipment_repair_quotes").catch((error) => {
+    getViewRows("equipment_repair_quotes").catch((error) => {
       if (/does not exist|schema cache|404/i.test(String(error?.message || error))) return [];
       throw error;
     }),
-    getAll("customers").catch(() => []),
-    getAll("assets").catch(() => []),
-    getAll("outside_customer_fleet").catch(() => []),
+    getViewRows("customers").catch(() => []),
+    getViewRows("assets").catch(() => []),
+    getViewRows("outside_customer_fleet").catch(() => []),
   ]);
   productMeta.customers = customers.map((row) => row.name).filter(Boolean).sort();
   productMeta.assets = assets;
@@ -28372,9 +30003,9 @@ async function renderOutsideCustomerFleetView() {
   $("viewTitle").textContent = "Outside Customer Fleet";
   $("viewSub").textContent = "Customer-owned equipment that can be requested, inspected, repaired, and billed.";
   const [rows, workOrders, customers] = await Promise.all([
-    getAll("outside_customer_fleet").catch(() => []),
-    getAll("work_orders"),
-    getAll("customers"),
+    getViewRows("outside_customer_fleet").catch(() => []),
+    getViewRows("work_orders"),
+    getViewRows("customers"),
   ]);
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.outsideFleet = rows;
@@ -28621,13 +30252,14 @@ function fuelActorName() {
   return profile?.full_name || profile?.username || session?.user?.email || "";
 }
 
-async function loadFuelTankState() {
+async function loadFuelTankState({ useCache = false } = {}) {
+  const readRows = useCache ? getViewRows : getAll;
   const [tanks, ledger, driverBalances, reconciliations, reconciliationItems] = await Promise.all([
-    getAll("fuel_tanks").catch(() => []),
-    getAll("fuel_tank_ledger").catch(() => []),
-    getAll("fuel_driver_daily_balances").catch(() => []),
-    getAll("fuel_reconciliations").catch(() => []),
-    getAll("fuel_reconciliation_items").catch(() => []),
+    readRows("fuel_tanks").catch(() => []),
+    readRows("fuel_tank_ledger").catch(() => []),
+    readRows("fuel_driver_daily_balances").catch(() => []),
+    readRows("fuel_reconciliations").catch(() => []),
+    readRows("fuel_reconciliation_items").catch(() => []),
   ]);
   productMeta.fuelTanks = (tanks || []).sort((a, b) => String(a.asset_tag || "").localeCompare(String(b.asset_tag || "")));
   productMeta.fuelTankLedger = (ledger || []).sort((a, b) => String(b.event_date || "").localeCompare(String(a.event_date || "")) || String(b.created_at || "").localeCompare(String(a.created_at || "")));
@@ -28641,10 +30273,16 @@ function fuelTankOptionList() {
   return `<datalist id="fuelTankOptions">${(productMeta.fuelTanks || []).map((tank) => `<option value="${esc(tank.asset_tag)} | ${esc(Number(tank.current_balance || 0).toFixed(2))} gal | ${esc(tank.balance_status || "Active")}"></option>`).join("")}</datalist>`;
 }
 
+function fuelPendingUsageVariance(rows = []) {
+  const latestByTank = new Map();
+  for (const row of rows) latestByTank.set(String(row.fuel_tank_id), row);
+  return [...latestByTank.values()].reduce((sum, row) => sum + Math.min(0, Number(row.balance_after || 0)), 0);
+}
+
 function fuelTankBalanceCards() {
   const tanks = productMeta.fuelTanks || [];
   if (!tanks.length) return `<div class="hint">No fuel tank balance has been configured yet.</div>`;
-  return `<div class="summary-grid">${tanks.map((tank) => `<div class="summary-card"><span>${esc(tank.asset_tag)}</span><strong>${esc(Number(tank.current_balance || 0).toFixed(2))} gal</strong><small>${esc(tank.balance_status || "Active")}${tank.last_balance_at ? ` · updated ${esc(formatDisplayDate(String(tank.last_balance_at).slice(0, 10)))}` : ""}</small></div>`).join("")}</div>`;
+  return `<div class="summary-grid">${tanks.map((tank) => `<div class="summary-card"><span>${esc(tank.asset_tag)}</span><strong>${esc(Number(tank.current_balance || 0).toFixed(2))} gal</strong><small>${esc(tank.balance_status || "Active")}${Number(tank.current_balance || 0) < 0 ? ` · Pending excess usage variance: ${Number(tank.current_balance).toFixed(2)} gal` : ""}${tank.last_balance_at ? ` · updated ${esc(formatDisplayDate(String(tank.last_balance_at).slice(0, 10)))}` : ""}</small></div>`).join("")}</div>`;
 }
 
 function selectedFuelTank(value) {
@@ -28954,6 +30592,7 @@ let simpleFuelReconciliationReturnState = null;
 
 async function openSimpleFuelReconciliationModal(initial = {}) {
   await Promise.all([loadFuelTankState(), loadFuelLookups()]);
+  currentRows = await getPagedViewRows("fuel_logs");
   const tanks = productMeta.fuelTanks || [];
   if (!tanks.length) return alert("Set up a fuel truck before starting a reconciliation.");
   const clearedItems = productMeta.fuelReconciliationItems || [];
@@ -29067,6 +30706,7 @@ function fuelReconciliationPeriods() {
 
 async function openFuelReconciliationPeriodsModal() {
   await Promise.all([loadFuelTankState(), loadFuelLookups()]);
+  currentRows = await getPagedViewRows("fuel_logs");
   const periods = fuelReconciliationPeriods();
   const finalizedBatches = productMeta.fuelReconciliations || [];
   const reconciliationItems = productMeta.fuelReconciliationItems || [];
@@ -29311,6 +30951,7 @@ function fuelCycleVarianceAllocations(allRuns = [], fuelRates = [], ledgerRows =
 function fuelVarianceReportHtml(rows, runs, from, to, tankTag, reportView = "all", fuelRates = [], allFuelRuns = []) {
   const total = (type) => rows.filter((row) => row.event_type === type).reduce((sum, row) => sum + Number(row.signed_gallons || 0), 0);
   const variance = rows.reduce((sum, row) => sum + Number(row.variance_gallons || 0), 0);
+  const pendingVariance = fuelPendingUsageVariance(rows);
   const ending = [...new Map(rows.map((row) => [String(row.fuel_tank_id), row])).values()].reduce((sum, row) => sum + Number(row.balance_after || 0), 0);
   const selectedTankTags = (Array.isArray(tankTag) ? tankTag : [tankTag]).filter(Boolean);
   const effectiveTanks = (productMeta.fuelTanks || []).filter((tank) => !selectedTankTags.length || selectedTankTags.some((tag) => isSameFuelTankAsset(tank.asset_tag, tag)));
@@ -29519,7 +31160,7 @@ function fuelVarianceReportHtml(rows, runs, from, to, tankTag, reportView = "all
     <section data-fuel-report-section="refill"><h3>Refill report</h3><div class="table-wrap"><table><thead><tr><th>Refill Date</th><th>Fuel Truck</th><th>Receipt #</th><th>Gallons</th><th>Cost / Gallon</th><th>Fuel Invoice Cost</th><th>Refill Source</th><th>Balance Before</th><th>Balance After</th><th>Entered By</th><th>Notes</th></tr></thead><tbody>${savedRefillsForPeriod.map((row) => { const tank = (productMeta.fuelTanks || []).find((item) => String(item.id) === String(row.fuel_tank_id)); const pricing = fuelRunPricing({ fuel_date: row.event_date, company: "Landscape Management Systems, Inc.", gallons: Math.abs(Number(row.signed_gallons || 0)) }, fuelRates); return `<tr><td>${esc(formatDisplayDate(row.event_date))}</td><td>${esc(fuelTankEquipmentValue(tank || ""))}</td><td>${esc(row.receipt_no || "")}</td><td>${Math.abs(Number(row.signed_gallons || 0)).toFixed(2)}</td><td>${pricing.has_fuel_rate ? money(pricing.price_per_gallon) : "Not set"}</td><td>${pricing.has_fuel_rate ? `<strong>${money(pricing.fuel_cost)}</strong>` : "Not set"}</td><td>${esc(row.refill_truck || "")}</td><td>${Number(row.balance_before || 0).toFixed(2)}</td><td>${Number(row.balance_after || 0).toFixed(2)}</td><td>${esc(row.created_by || "")}</td><td>${esc(row.notes || "")}</td></tr>`; }).join("") || `<tr><td colspan="11" class="empty">No saved refill was found for the selected fuel trucks and period.</td></tr>`}</tbody></table></div></section>
     <section data-fuel-report-section="jobsite_equipment"><h3>Equipment by jobsite</h3>${equipmentByJobsite.map((group) => `<div class="fuel-jobsite-equipment-report"><h4>${esc(group.jobsite)} <small>${group.gallons.toFixed(2)} gal · ${money(group.equipment.reduce((sum, item) => sum + item.fuel_cost, 0))} fuel cost</small></h4><div class="table-wrap"><table class="fuel-jobsite-equipment-table"><thead><tr><th>Asset #</th><th>Type</th><th>Make</th><th>Model</th><th>Description</th><th>Runs</th><th>Gallons</th><th>Price / Gallon</th><th>Fuel Cost</th><th>% of Jobsite</th></tr></thead><tbody>${group.equipment.map((item) => `<tr><td>${esc(item.asset_no)}</td><td>${esc(item.type)}</td><td>${esc(item.make)}</td><td>${esc(item.model)}</td><td>${esc(item.description)}</td><td>${item.runs}</td><td>${item.gallons.toFixed(2)}</td><td>${item.priced_allocated_gallons ? money(item.fuel_cost / item.priced_allocated_gallons) : "Not set"}</td><td><strong>${money(item.fuel_cost)}</strong></td><td>${group.gallons ? ((item.gallons / group.gallons) * 100).toFixed(1) : "0.0"}%</td></tr>`).join("")}</tbody></table></div></div>`).join("") || `<div class="empty">No equipment usage was found by jobsite.</div>`}</section>
     <section data-fuel-report-section="ledger"><h3>Balance activity</h3>
-    <div class="summary-grid fuel-ledger-summary"><div class="summary-card"><span>Fuel price / gallon</span><strong>${esc(reportFuelPriceLabel)}</strong></div><div class="summary-card"><span>Total fuel cost</span><strong>${money(totalFuelCost)}</strong></div><div class="summary-card"><span>Refills</span><strong>${total("Tank Refill").toFixed(2)} gal</strong></div><div class="summary-card"><span>Dispensed</span><strong>${Math.abs(total("Fuel Dispensed")).toFixed(2)} gal</strong></div><div class="summary-card"><span>Variance</span><strong>${variance.toFixed(2)} gal</strong></div><div class="summary-card"><span>Ending balance</span><strong>${ending.toFixed(2)} gal</strong></div></div>
+    <div class="summary-grid fuel-ledger-summary"><div class="summary-card"><span>Fuel price / gallon</span><strong>${esc(reportFuelPriceLabel)}</strong></div><div class="summary-card"><span>Total fuel cost</span><strong>${money(totalFuelCost)}</strong></div><div class="summary-card"><span>Refills</span><strong>${total("Tank Refill").toFixed(2)} gal</strong></div><div class="summary-card"><span>Dispensed</span><strong>${Math.abs(total("Fuel Dispensed")).toFixed(2)} gal</strong></div><div class="summary-card"><span>Variance</span><strong>${variance.toFixed(2)} gal</strong></div><div class="summary-card"><span>Pending excess usage variance</span><strong>${pendingVariance.toFixed(2)} gal</strong><small>Usage above the recorded balance; finalized when the tank is closed.</small></div><div class="summary-card"><span>Ending balance</span><strong>${ending.toFixed(2)} gal</strong></div></div>
     <div class="table-wrap"><table><thead><tr><th>Date</th><th>Fuel Truck Used</th><th>Event</th><th>Report / Receipt</th><th>Refill Source</th><th>Gallons</th><th>Price / Gallon</th><th>Fuel Cost</th><th>Before</th><th>After</th><th>Variance</th><th>Entered By</th><th>Notes</th></tr></thead><tbody>${rows.map((row) => { const pricing = fuelRunPricing({ fuel_date: row.event_date, company: "Landscape Management Systems, Inc.", gallons: Math.abs(Number(row.signed_gallons || 0)) }, fuelRates); const costRelevant = ["Tank Refill", "Beginning Balance", "Fuel Dispensed"].includes(row.event_type); return `<tr><td>${esc(formatDisplayDate(row.event_date))}</td><td>${esc(row.asset_tag)}</td><td>${esc(row.event_type)}</td><td>${esc(row.report_no || row.receipt_no || "")}</td><td>${esc(row.refill_truck || "")}</td><td>${esc(Number(row.signed_gallons || 0).toFixed(2))}</td><td>${costRelevant && pricing.has_fuel_rate ? money(pricing.price_per_gallon) : "—"}</td><td>${costRelevant && pricing.has_fuel_rate ? `<strong>${money(pricing.fuel_cost)}</strong>` : costRelevant ? "Not set" : "—"}</td><td>${esc(Number(row.balance_before || 0).toFixed(2))}</td><td>${esc(Number(row.balance_after || 0).toFixed(2))}</td><td>${esc(Number(row.variance_gallons || 0).toFixed(2))}</td><td>${esc(row.created_by || "")}</td><td>${esc(row.notes || "")}</td></tr>`; }).join("") || `<tr><td colspan="13" class="empty">No fuel-truck activity in this period.</td></tr>`}</tbody></table></div>
     </section><section data-fuel-report-section="runs"><h3>Run details</h3>
     <div class="table-wrap"><table><thead><tr><th>Date</th><th>Report #</th><th>Jobsite</th>${hasConsolidatedJobsites ? "<th>Original Jobsite</th>" : ""}<th>Asset #</th><th>Type</th><th>Make</th><th>Model</th><th>Description</th><th>Serial / VIN</th><th>Gallons</th><th>Price / Gallon</th><th>Fuel Cost</th><th>Balance</th><th>Driver</th></tr></thead><tbody>${runRows.map((run) => `<tr><td>${esc(formatDisplayDate(run.fuel_date))}</td><td>${esc(run.report_no || "")}</td><td>${esc(run.jobsite || "")}</td>${hasConsolidatedJobsites ? `<td>${esc(run.original_jobsite || run.jobsite || "")}</td>` : ""}<td>${esc(run.asset_tag || "")}</td><td>${esc(run.equipment_type)}</td><td>${esc(run.equipment_make)}</td><td>${esc(run.equipment_model)}</td><td>${esc(run.equipment_description)}</td><td>${esc(run.equipment_serial)}</td><td>${esc(Number(run.gallons || 0).toFixed(2))}</td><td>${run.has_fuel_rate ? money(run.price_per_gallon) : "Not set"}</td><td>${run.has_fuel_rate ? `<strong>${money(run.fuel_cost)}</strong>` : "Not set"}</td><td>${run.running_balance == null ? "" : `${esc(run.running_balance.toFixed(2))} gal`}</td><td>${esc(run.driver_name || "")}</td></tr>`).join("") || `<tr><td colspan="${hasConsolidatedJobsites ? 15 : 14}" class="empty">No fuel runs recorded for this refill cycle.</td></tr>`}</tbody></table></div>
@@ -29528,6 +31169,7 @@ function fuelVarianceReportHtml(rows, runs, from, to, tankTag, reportView = "all
 
 async function openFuelVarianceReportModal() {
   await Promise.all([loadFuelTankState(), loadFuelLookups()]);
+  currentRows = await getPagedViewRows("fuel_logs");
   const fuelPricingRows = await getAll("fuel_pricing_periods").catch(() => []);
   const today = new Date().toISOString().slice(0, 10);
   const defaultTank = (productMeta.fuelTanks || []).find((tank) => normalizeFuelTankAssetTag(tank.asset_tag).endsWith("FT08")) || (productMeta.fuelTanks || [])[0];
@@ -30046,16 +31688,17 @@ async function openFuelDailyJobsiteReport() {
   if (detailView) detailView.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function loadFuelLookups() {
+async function loadFuelLookups({ useCache = false } = {}) {
+  const readRows = useCache ? getViewRows : getAll;
   const [fleet, outside, jobsites, locations, purchaseOrders, workOrders, rentals, users] = await Promise.all([
-    getAll("assets").catch(() => []),
-    getAll("outside_customer_fleet").catch(() => []),
-    getAll("fuel_jobsites").catch(() => []),
-    getAll("locations").catch(() => []),
-    getAll("purchase_orders").catch(() => []),
-    getAll("work_orders").catch(() => []),
-    getAll("rentals").catch(() => []),
-    getAll("app_profiles").catch(() => []),
+    readRows("assets").catch(() => []),
+    readRows("outside_customer_fleet").catch(() => []),
+    readRows("fuel_jobsites").catch(() => []),
+    readRows("locations").catch(() => []),
+    readRows("purchase_orders").catch(() => []),
+    readRows("work_orders").catch(() => []),
+    readRows("rentals").catch(() => []),
+    readRows("app_profiles").catch(() => []),
   ]);
   productMeta.fuelDrivers = (users || []).map((user) => ({
     name: user.full_name || user.username || user.email || "",
@@ -30180,6 +31823,72 @@ async function updateFuelAssetLocationsFromFuel(lines, jobsite, fuelDate) {
   for (const line of lines || []) {
     await updateOne(line);
   }
+}
+
+function truckingTimeOrderError(startTime = "", endTime = "") {
+  if (!startTime || !endTime) return "";
+  const seconds = (value) => {
+    const [hours, minutes, seconds = 0] = String(value).split(":").map(Number);
+    return hours * 3600 + minutes * 60 + seconds;
+  };
+  return seconds(startTime) > seconds(endTime)
+    ? "Time In cannot be later than Time Out. Correct the trucking ticket times before saving."
+    : "";
+}
+
+function truckingQuantity(value = "") {
+  const match = String(value || "").trim().match(/^(\d+(?:\.\d+)?|\.\d+)\s*(CY|Tons?)?$/i);
+  return { quantity: match ? Number(match[1]) : 0, unit: match?.[2] ? (/^cy$/i.test(match[2]) ? "CY" : "Ton") : "" };
+}
+
+function truckingRateUnit(rateType = "") {
+  if (/(?:\/|\bper\s+)\s*(?:cy|cubic\s+yards?)\b/i.test(rateType)) return "CY";
+  if (/(?:\/|\bper\s+)\s*tons?\b/i.test(rateType)) return "Ton";
+  return "";
+}
+
+function truckingRateForUnit(rows, unit) {
+  return rows.find((row) => unit && truckingRateUnit(row.rate_type) === unit)
+    || rows.find((row) => !truckingRateUnit(row.rate_type)) || null;
+}
+
+function truckingDebrisRates(debris) {
+  return (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "")
+    && String(row.category || "").trim().toLowerCase() === "tipping fee"
+    && String(row.service || "").trim().toLowerCase() === String(debris || "").trim().toLowerCase());
+}
+
+function truckingDebrisSuggestOptions(input) {
+  const rows = (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "") && String(row.category || "").trim().toLowerCase() === "tipping fee");
+  return rankedTruckingSuggestOptions(input, rows, (row) => row.service, (row) => `${row.service || ""} ${row.rate_type || ""}`);
+}
+
+function truckingTicketMaterialFields(row = {}) {
+  const parsed = truckingQuantity(row.cy_ton);
+  const legacyQuantity = String(row.cy_ton || "").trim().match(/^(\d+(?:\.\d+)?|\.\d+)/)?.[1] || "";
+  return `<label class="field">Type of Debris (required)<input class="suggest-input" data-suggest-source="trucking_debris" name="debris_type" value="${esc(row.debris_type || "")}" placeholder="Search debris or enter material type" autocomplete="off" required></label>
+    <label class="field">Quantity<input type="number" min="0.01" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
+    <label class="field">Quantity Unit<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
+    <input type="hidden" name="cy_ton" value="${esc(row.cy_ton || "")}">`;
+}
+
+function syncTruckingTicketQuantity(root = modalBody) {
+  const quantity = root.querySelector('[name="debris_quantity"]')?.value || "";
+  const unit = root.querySelector('[name="debris_unit"]')?.value || "";
+  const stored = root.querySelector('[name="cy_ton"]');
+  if (stored) stored.value = quantity ? `${quantity}${unit ? ` ${unit}` : ""}` : "";
+}
+
+function truckingTicketMaterialError(values) {
+  if (!String(values.debris_type || "").trim()) return "Type of Debris is required for every ticket.";
+  const { quantity, unit } = truckingQuantity(values.cy_ton);
+  const rate = manualTruckingRate(values.service);
+  const debrisRates = truckingDebrisRates(values.debris_type);
+  const needsQuantity = requiresTruckingCyTon(values.service) || Boolean(truckingRateUnit(rate?.rate_type)) || debrisRates.some((row) => truckingRateUnit(row.rate_type));
+  if ((values.cy_ton || needsQuantity) && (!(quantity > 0) || !unit)) return "Enter a positive quantity and select CY or Ton.";
+  if (rate && !manualTruckingRate(values.service, unit)) return `No active service rate for ${unit || "the selected unit"}. Select the correct unit or update the rate sheet.`;
+  if (debrisRates.length && !truckingRateForUnit(debrisRates, unit)) return `No active tipping rate for ${values.debris_type} in ${unit || "the selected unit"}. Select the correct unit or update the rate sheet.`;
+  return "";
 }
 
 function truckingToday() {
@@ -30443,26 +32152,28 @@ function truckingNextRequestNo(rows = []) {
   return `LMS-${String(max + 1).padStart(5, "0")}`;
 }
 
-async function loadTruckingLookups() {
+async function loadTruckingLookups({ useCache = true, formOnly = false, dispatchOnly = false, requestNo = "", ticket = null } = {}) {
+  if (dispatchOnly) formOnly = true;
+  const readRows = dispatchOnly ? getPagedViewRows : useCache ? getViewRows : getAll;
   // Always refresh this lookup. Fleet & Equipment can be edited from several
   // workflows, so a session-level cache can otherwise leave trucking with an
   // old plate, description, location, or asset number.
   const [moves, requests, rates, fleet, outside, users, customers, jobsites, locations, payrollHours] = await Promise.all([
-    getAll("trucking_moves").catch(() => []),
-    getAll("trucking_requests").catch(() => []),
-    getAll("trucking_rates").catch(() => []),
-    getAll("assets").catch(() => []),
-    getAll("outside_customer_fleet").catch(() => []),
-    getAll("app_profiles").catch(() => []),
-    getAll("customers").catch(() => []),
-    getAll("asset_locations").catch(() => []),
-    getAll("locations").catch(() => []),
-    getAll("trucking_payroll_hours").catch(() => []),
+    formOnly ? Promise.resolve(ticket ? [ticket] : []) : readRows("trucking_moves"),
+    formOnly && requestNo ? workOrderScopedRows("trucking_requests","request_no",[requestNo]) : formOnly ? Promise.resolve([]) : readRows("trucking_requests"),
+    readRows("trucking_rates").catch(() => []),
+    readRows("assets", { columns: "id,asset_tag,type,general_type,name,make,model,vin_serial,plate,location,status,size" }).catch(() => []),
+    readRows("outside_customer_fleet", { columns: "id,reference,customer_name,vin,model,make,description,status,plate" }).catch(() => []),
+    readRows("app_profiles"),
+    dispatchOnly ? Promise.resolve(productMeta.truckingCustomerRows || []) : readRows("customers").catch(() => []),
+    dispatchOnly ? Promise.resolve(productMeta.truckingJobsiteRows || []) : readRows("asset_locations").catch(() => []),
+    dispatchOnly ? Promise.resolve(productMeta.truckingJobsiteRows || []) : readRows("locations").catch(() => []),
+    formOnly ? Promise.resolve([]) : readRows("trucking_payroll_hours").catch(() => []),
   ]);
-  productMeta.truckingMoves = moves;
-  productMeta.truckingRequests = requests;
+  if (!dispatchOnly) productMeta.truckingMoves = moves;
+  if (!dispatchOnly) productMeta.truckingRequests = requests;
   productMeta.truckingRates = rates;
-  productMeta.truckingPayrollHours = payrollHours || [];
+  if (!dispatchOnly) productMeta.truckingPayrollHours = payrollHours || [];
   productMeta.truckingAssets = [
     ...(fleet || []).map((asset) => {
       const assetTag = asset.asset_tag || asset.asset_no || asset.reference || "";
@@ -30541,6 +32252,7 @@ async function loadTruckingLookups() {
     .filter((user) => Number(user.hourly_labor_rate || 0) > 0)
     .map((user) => [String(user.id), user]));
   productMeta.truckingPayrollPeople = [...payrollPeopleById.values()];
+  if (dispatchOnly) return;
   productMeta.truckingCustomerRows = customers || [];
   productMeta.truckingCustomers = (customers || []).map((row) => row.name || row.customer || row.customer_name).filter(Boolean);
   const fleetJobsites = (fleet || []).flatMap((asset) => [
@@ -30566,7 +32278,7 @@ async function loadTruckingLookups() {
     .map((row) => ({ name: row.name, source: [...row.sources].join(" / ") }))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   productMeta.truckingJobsites = productMeta.truckingJobsiteRows.map((row) => row.name);
-  productMeta.truckingLoaded = true;
+  productMeta.truckingLoaded = !formOnly;
 }
 
 function truckingDatalists() {
@@ -30995,9 +32707,18 @@ async function renderTruckingRequestsView() {
   currentCfg = tableMap.truckingrequests;
   $("viewTitle").textContent = usesTruckingRequestMobileView() ? "" : "Move Requests";
   $("viewSub").textContent = usesTruckingRequestMobileView() ? "" : "Requestor entries with multiple equipment lines before dispatch scheduling.";
-  await loadTruckingLookups();
+  if (!moduleListScope && currentView === 'truckingrequests' && moduleListSpec(currentView)) return loadView(currentView);
+  let lines;
+  if (moduleListScope?.view === 'truckingrequests') {
+    const [requests, moves, requestLines] = await Promise.all(['trucking_requests','trucking_moves','trucking_request_lines'].map(table => getViewRows(table)));
+    productMeta.truckingRequests = requests;
+    productMeta.truckingMoves = moves;
+    productMeta.truckingLoaded = false;
+    lines = requestLines;
+  } else {
+    [, lines] = await Promise.all([loadTruckingLookups({ useCache: true }), getViewRows("trucking_request_lines")]);
+  }
   const rows = productMeta.truckingRequests || [];
-  const lines = await getAll("trucking_request_lines").catch(() => []);
   const activeMoves = (productMeta.truckingMoves || []).filter((move) => !/cancel|void|revers/i.test(String(move.status || "")));
   productMeta.truckingRequests = rows;
   productMeta.truckingRequestLines = lines;
@@ -31142,17 +32863,43 @@ async function copyTruckingRequest(requestNo) {
   }
 }
 
+async function readMoveRequestRows(table, requestNo, signal) {
+  const result = await supabase.from(table).select("*").eq("request_no", requestNo).abortSignal(signal);
+  if (result.error) throw result.error;
+  return result.data || [];
+}
+
 async function openTruckingRequestForm(requestNo = "", copyMode = false) {
-  await loadTruckingLookups();
-  const liveRequests = await getAll("trucking_requests").catch(() => productMeta.truckingRequests || []);
+  modalTitle.textContent = "Opening move request " + requestNo;
+  modalBody.innerHTML = '<div class="empty" role="status">Loading this move request...</div>';
+  const loadingNode = modalBody.firstElementChild;
+  modalSave.onclick = null;
+  modalSave.style.display = "none";
+  $("modalCancel").textContent = "Close";
+  $("modal").style.display = "flex";
+  const controller = new AbortController();
+  let timer;
+  try {
+    await Promise.race([loadTruckingRequestForm(requestNo, copyMode, loadingNode, controller.signal), new Promise((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Error("The move request took too long to load. Please try again.")); }, 20000);
+    })]);
+  } catch (error) {
+    if (modalBody.firstElementChild !== loadingNode || $("modal").style.display === "none") return;
+    modalBody.innerHTML = '<p class="notice" role="alert">' + esc(error?.message || "Could not load this move request.") + '</p><button type="button" id="retryMoveRequestBtn">Retry</button>';
+    $("retryMoveRequestBtn").onclick = () => openTruckingRequestForm(requestNo, copyMode);
+  } finally { clearTimeout(timer); controller.abort(); }
+}
+
+async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal) {
+  await loadTruckingLookups({formOnly:true,requestNo});
+  const liveRequests = requestNo && !copyMode ? await readMoveRequestRows("trucking_requests", requestNo, signal) : await getAll("trucking_requests");
   const existing = requestNo ? liveRequests.find((row) => String(row.request_no || "").trim() === String(requestNo || "").trim()) : null;
   if (requestNo && !existing) {
     const message = `Could not find move request ${requestNo}. Refresh the page and try again.`;
-    if (copyMode) throw new Error(message);
-    return alert(message);
+    throw new Error(message);
   }
   const allRequestLines = requestNo
-    ? await getAll("trucking_request_lines").catch(() => productMeta.truckingRequestLines || [])
+    ? await readMoveRequestRows("trucking_request_lines", requestNo, signal)
     : [];
   const existingLines = requestNo ? allRequestLines.filter((line) => String(line.request_no || "").trim() === String(requestNo || "").trim()).sort((a, b) => Number(a.line_no || 0) - Number(b.line_no || 0)) : [];
   const number = copyMode ? truckingNextRequestNo(liveRequests) : (existing?.request_no || truckingNextRequestNo(liveRequests));
@@ -31166,6 +32913,9 @@ async function openTruckingRequestForm(requestNo = "", copyMode = false) {
   const selectedService = existing?.service_needed || existingLines[0]?.service || "";
   const selectedServiceOption = existing?.service_option || (existingLines[0]?.service !== selectedService ? existingLines[0]?.service : "");
   const initialRateOptions = truckingRateOptionsForService(selectedService);
+  if (signal.aborted || modalBody.firstElementChild !== loadingNode || $("modal").style.display === "none") return;
+  modalSave.style.display = "";
+  modalSave.disabled = false;
   modalTitle.textContent = copyMode ? `Review repeated move ${number}` : (existing ? `Edit request ${number}` : `New move request ${number}`);
   modalBody.innerHTML = `
     <div class="move-request-form">
@@ -31525,8 +33275,8 @@ async function renderTruckingSchedulerView() {
   $("viewSub").textContent = isTruckingDriverUser()
     ? "View assigned moves, complete ticket details, and collect signatures."
     : "Dispatch requested moves, generate tickets, and maintain non-accounting trucking billing support.";
-  await loadTruckingLookups();
-  let rows = await getAll("trucking_moves").catch(() => []);
+  await loadTruckingLookups({ useCache: true });
+  let rows = productMeta.truckingMoves || [];
   rows = rows.filter((row) => !isManualTruckingTicket(row));
   if (isTruckingDriverUser()) {
     const me = String(profile?.full_name || profile?.username || profile?.email || "").toLowerCase();
@@ -31643,7 +33393,7 @@ function truckingMoveBelongsToCurrentDriver(row) {
 async function renderAssignedDriverView() {
   $("viewTitle").textContent = "Assigned Driver";
   $("viewSub").textContent = "Driver assignments waiting for completion and required signatures.";
-  let rows = await getAll("trucking_moves").catch(() => []);
+  let rows = await getViewRows("trucking_moves").catch(() => []);
   rows = rows.filter((row) => !isManualTruckingTicket(row) && !["Finalized", "Cancelled"].includes(row.status || ""));
   if (isTruckingDriverUser()) rows = rows.filter(truckingMoveBelongsToCurrentDriver);
   currentRows = rows.sort((a, b) => String(a.move_date || "").localeCompare(String(b.move_date || "")) || String(a.ticket_no || "").localeCompare(String(b.ticket_no || "")));
@@ -31725,6 +33475,7 @@ async function openAssignedDriverTask(ticketNo) {
       <label class="field">BL #<input name="bl_no" value="${esc(row.bl_no || "")}"></label>
       <label class="field">Truck license<input name="truck_license" value="${esc(row.truck_license || "")}"></label>
       <label class="field">Chassis #<input name="chassis_no" value="${esc(row.chassis_no || "")}"></label>
+      ${truckingTicketMaterialFields({ ...row, debris_type: row.debris_type || row.tipping_fee || "", cy_ton: row.cy_ton || (Number(row.roll_off_tons) > 0 ? `${row.roll_off_tons} Ton` : Number(row.total_cy) > 0 ? `${row.total_cy} CY` : "") })}
       <label class="field">Material(s)<input name="material_description" value="${esc(row.material_description || "")}"></label>
       <label class="field">Unit of measurement<input name="unit_of_measurement" value="${esc(row.unit_of_measurement || "")}"></label>
       <label class="field">Weight (lb)<input type="number" min="0" step="0.01" name="weight_lb" value="${esc(row.weight_lb || "")}"></label>
@@ -31748,6 +33499,8 @@ async function openAssignedDriverTask(ticketNo) {
     </div>
     <label class="field">Completion notes<textarea name="notes">${esc(row.notes || "")}</textarea></label>
     <div class="actions"><button type="button" id="saveAssignedDriverDraft">Save</button><small>Save your progress without finalizing the ticket.</small></div>`;
+  truckingEnhanceSuggestInputs(modalBody);
+  ["debris_quantity", "debris_unit"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", () => syncTruckingTicketQuantity(modalBody)));
   const driverCanvas = $("truckDriverSignaturePad");
   const customerCanvas = $("truckCustomerSignaturePad");
   wireSignatureCanvas(driverCanvas);
@@ -31799,6 +33552,8 @@ function assignedDriverOperationalUpdate() {
     bl_no: value("bl_no"),
     truck_license: value("truck_license"),
     chassis_no: value("chassis_no"),
+    debris_type: value("debris_type").trim(),
+    cy_ton: value("cy_ton") || null,
     material_description: value("material_description"),
     unit_of_measurement: value("unit_of_measurement"),
     weight_lb: numeric("weight_lb"),
@@ -31841,6 +33596,9 @@ async function saveAssignedDriverTask(row, driverCanvas, customerCanvas) {
     customer_print: modalBody.querySelector('[name="customer_print"]')?.value.trim() || null,
     notes: modalBody.querySelector('[name="notes"]')?.value || row.notes || "",
   };
+  const timeError = truckingTimeOrderError(update.start_time, update.end_time);
+  if (timeError) return alert(timeError);
+  if (!operational.debris_type) return alert("Type of Debris is required for every ticket.");
   if (!assignedStandbyFitsClockTime(operational, update.start_time, update.end_time)) return;
   if (update.start_time && update.end_time) {
     const moves = await getAll("trucking_moves").catch(() => []);
@@ -31872,7 +33630,11 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const driverPrint = modalBody.querySelector('[name="driver_print"]')?.value.trim() || "";
   const customerPrint = modalBody.querySelector('[name="customer_print"]')?.value.trim() || "";
   if (!startTime || !endTime) return alert("Start time and end time are required.");
+  const timeError = truckingTimeOrderError(startTime, endTime);
+  if (timeError) return alert(timeError);
   if (!assignedStandbyFitsClockTime(operational, startTime, endTime)) return;
+  const materialError = truckingTicketMaterialError({ ...row, ...operational });
+  if (materialError) return alert(materialError);
   const existingMoves = await getAll("trucking_moves").catch(() => []);
   const conflict = truckingTimeOverlapConflict(existingMoves, { move_date: operational.move_date, driver_name: row.driver_name, start_time: startTime, end_time: endTime }, row);
   if (conflict) return alert(truckingOverlapMessage(conflict));
@@ -31888,15 +33650,15 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const now = new Date().toISOString();
   const isHourlyRate = /hour/i.test(String(row.rate_type || ""));
   const billedHours = isHourlyRate ? truckingBillableHours(startTime, endTime, 2) : null;
-  const tippingMultiplier = Number(operational.roll_off_tons || 0) || Number.parseFloat(String(row.service_size || "")) || 0;
-  const tippingCharge = Number(row.tipping_rate || 0) * tippingMultiplier;
-  const isVolumeService = ["Dump Truck", "End Dump"].includes(String(row.service || "").trim());
+  const { quantity, unit } = truckingQuantity(operational.cy_ton);
+  const debrisRate = truckingRateForUnit(truckingDebrisRates(operational.debris_type), unit);
+  const tippingCharge = Number(debrisRate?.rate || 0) * (truckingRateUnit(debrisRate?.rate_type) ? quantity : 1);
   const tripMultiplier = row.trip_type === "Round Trip" ? 2 : 1;
+  const quantityRate = truckingRateUnit(row.rate_type) ? manualTruckingRate(row.service, unit) : null;
+  if (truckingRateUnit(row.rate_type) && !quantityRate) return alert(`No active service rate for ${unit}. Select the correct unit or update the rate sheet.`);
   const originalCharge = isHourlyRate
     ? Number(row.rate || 0) * billedHours
-    : isVolumeService && Number(operational.total_cy || 0)
-      ? Number(row.rate || 0) * Number(operational.total_cy || 0) * tripMultiplier
-      : Number(row.amount || 0);
+    : quantityRate ? Number(quantityRate.rate || 0) * quantity * tripMultiplier : Number(row.amount || 0);
   const discountPercent = truckingDiscountPercent(row);
   const discountAmount = truckingDiscountAmount(originalCharge, tippingCharge, discountPercent);
   const { error } = await supabase.from("trucking_moves").update({
@@ -31912,6 +33674,10 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
     finalized_at: now,
     accepted_at: now,
     amount: originalCharge,
+    ...(quantityRate ? { rate: Number(quantityRate.rate), rate_type: quantityRate.rate_type } : {}),
+    tipping_fee: debrisRate?.service || null,
+    tipping_rate: Number(debrisRate?.rate || 0),
+    tipping_rate_type: debrisRate?.rate_type || null,
     tipping_charge: tippingCharge,
     discount_percent: discountPercent,
     discount_amount: discountAmount,
@@ -31975,13 +33741,14 @@ async function updateFinalizedEquipmentMoveAsset(move, finalizedAt = new Date().
 }
 
 async function renderTruckingTicketsView() {
+  if (!moduleListScope && currentView === 'truckingtickets' && moduleListSpec(currentView)) return loadView(currentView);
   $("viewTitle").textContent = "Tickets";
   $("viewSub").textContent = "Finalized and customer-accepted trucking tickets with both signatures.";
   truckingDashboardMonth ||= truckingToday().slice(0, 7);
   truckingDashboardYear ||= truckingToday().slice(0, 4);
   truckingDashboardTo ||= truckingToday();
-  let rows = (await getAll("trucking_moves").catch(() => [])).filter((row) =>
-    row.status === "Finalized" && row.driver_signature && row.customer_signature
+  let rows = (await getViewRows("trucking_moves")).filter((row) =>
+    row.status === "Finalized" && (row._listSigned || (row.driver_signature && row.customer_signature))
   );
   if (isTruckingDriverUser()) rows = rows.filter(truckingMoveBelongsToCurrentDriver);
   currentRows = rows.sort((a, b) => String(b.finalized_at || b.move_date || "").localeCompare(String(a.finalized_at || a.move_date || "")));
@@ -32107,7 +33874,8 @@ async function renderTruckingTicketsView() {
 async function renderTruckingTicketEntryView() {
   $("viewTitle").textContent = "Ticket Entry";
   $("viewSub").textContent = "Create a finalized ticket manually or upload completed ticket records using the standard trucking header.";
-  await loadTruckingLookups();
+  productMeta.truckingMoves=await getViewRows("trucking_moves");
+  productMeta.truckingLoaded=false;
   const allRows = [...(productMeta.truckingMoves || [])]
     .sort((a, b) => String(b.updated_at || b.finalized_at || b.created_at || b.move_date || "").localeCompare(String(a.updated_at || a.finalized_at || a.created_at || a.move_date || "")));
   // Ticket Entry is only for records created through manual entry or upload.
@@ -32163,18 +33931,105 @@ function truckingLaborDetailHtml(rows = []) {
     ${truckingSimpleTable(allocations.tickets.sort((a, b) => String(b.labor_date).localeCompare(String(a.labor_date)) || String(a.start_time).localeCompare(String(b.start_time))), ["labor_date", "ticket_no", "driver_name", "equipment_label", "start_time", "end_time", "run_hours", "driver_labor_cost", "trainee_labor_cost", "admin_labor_cost", "total_labor_cost", "ticket_income", "income_less_labor"], { labels: ["Date", "Ticket", "Driver", "Equipment Used", "Start", "End", "Run Hours", "Driver Labor", "Trainee / Ride-Along Labor", "Admin Allocation", "Total Labor", "Ticket Income", "Income Less Labor"], format: { labor_date: (value) => esc(formatDisplayDate(value)), start_time: (value) => esc(truckingClockLabel(truckingTimeMinutes(value))), end_time: (value) => esc(truckingClockLabel(truckingTimeMinutes(value))), run_hours: (value) => Number(value || 0).toFixed(2), driver_labor_cost: (value) => money(value || 0), trainee_labor_cost: (value) => money(value || 0), admin_labor_cost: (value) => money(value || 0), total_labor_cost: (value) => money(value || 0), ticket_income: (value) => money(value || 0), income_less_labor: (value) => `<strong>${money(value || 0)}</strong>` }, empty: "No run-level labor allocation was found." })}`;
 }
 
-async function renderTruckingLaborDetailsView() {
+async function readTruckingLaborRows(table, columns, signal) {
+  return getViewData(`labor:${table}:${columns}`, async signal => {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    let query = supabase.from(table).select(columns).order("id").range(from, from + 999).abortSignal(signal);
+    if (table === "trucking_moves") query = query.eq("status", "Finalized");
+    const { data, error } = await query;
+    if (error) throw new Error(`Could not load driver labor data (${table}): ${error.message || error}`);
+    rows.push(...(data || []));
+    if ((data || []).length < 1000) return rows;
+  }
+  }, 20000);
+}
+
+async function loadTruckingLaborLookups() {
+  const controller = new AbortController();
+  let timer;
+  try {
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error("Driver labor loading timed out. Check your connection and click Retry."));
+        controller.abort();
+      }, 20000);
+    });
+    const [moves, users, payrollHours] = await Promise.race([Promise.all([
+      readTruckingLaborRows("trucking_moves", "id,status,move_date,finalized_at,start_time,end_time,actual_hours,driver_name,ticket_no,equipment_label,amount,discount_amount,tipping_charge", controller.signal),
+      readTruckingLaborRows("app_profiles", "id,full_name,username,email,role,modules,trucking_labor_rate,trucking_admin_allocation,trucking_training,trucking_training_with_profile_id", controller.signal),
+      readTruckingLaborRows("trucking_payroll_hours", "*", controller.signal),
+    ]), timeout]);
+    productMeta.truckingLaborMoves = moves;
+    productMeta.truckingPayrollHours = payrollHours;
+  const defaultTruckingAdminNames = new Set(["allan reyes", "fred san nicolas"]);
+  const isDefaultTruckingAdmin = (user) => defaultTruckingAdminNames.has(String(user.full_name || user.username || user.email || "").trim().toLowerCase());
+  const isTruckingAdmin = (user) => Boolean(user.trucking_admin_allocation)
+    || isDefaultTruckingAdmin(user)
+    || /admin(?:istrator)?/i.test(String(user.role || ""));
+  productMeta.truckingDrivers = (users || [])
+    .filter((user) => {
+      if (isDefaultTruckingAdmin(user)) return false;
+      const assigned = normalizeModules(user.modules).map((moduleId) => String(moduleId || "").trim().toLowerCase());
+      return /trucking\s*driver/i.test(String(user.role || ""))
+        || assigned.includes("truckingassigned")
+        || assigned.includes("trucking_driver")
+        // Preserve drivers configured before the dedicated role/module was
+        // introduced. Their saved trucking rate is an explicit designation.
+        || (Number(user.trucking_labor_rate || 0) > 0 && !user.trucking_admin_allocation);
+    })
+    .map((user) => ({ id: user.id, name: user.full_name || user.username || user.email, email: user.email || "", hourly_labor_rate: Number(user.trucking_labor_rate || 0), training: Boolean(user.trucking_training), training_with_profile_id: user.trucking_training_with_profile_id || null }))
+    .filter((user) => user.name);
+  productMeta.truckingLaborProfiles = (users || []).map((user) => ({
+    id: user.id,
+    name: user.full_name || user.username || user.email,
+    email: user.email || "",
+    role: user.role || "",
+    hourly_labor_rate: Number(user.trucking_labor_rate || 0),
+    admin_allocation: isTruckingAdmin(user),
+    training: Boolean(user.trucking_training),
+    training_with_profile_id: user.trucking_training_with_profile_id || null,
+  })).filter((user) => user.name);
+  productMeta.truckingAllocatedAdmins = productMeta.truckingLaborProfiles.filter((user) => user.admin_allocation);
+  // Daily-hours entry and upload are intentionally rate-driven: a person is
+  // eligible only after a payroll/labor rate has been saved on their profile.
+  const payrollPeopleById = new Map(productMeta.truckingLaborProfiles
+    .filter((user) => Number(user.hourly_labor_rate || 0) > 0)
+    .map((user) => [String(user.id), user]));
+  productMeta.truckingPayrollPeople = [...payrollPeopleById.values()];
+
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+function rememberSavedTruckingPayrollHours(records) {
+  const key = row => String(row.payroll_date || "").slice(0, 10) + "|" + String(row.driver_name || "").trim().toLowerCase();
+  const saved = new Map((productMeta.truckingPayrollHours || []).map(row => [key(row), row]));
+  records.forEach(row => saved.set(key(row), { ...saved.get(key(row)), ...row }));
+  productMeta.truckingPayrollHours = [...saved.values()];
+}
+
+async function renderTruckingLaborDetailsView({ reload = true, savedMessage = "" } = {}) {
   $("viewTitle").textContent = "Driver Labor Details";
   $("viewSub").textContent = "Daily driver hours, overtime, supported and unsupported time, and labor cost consumed by each run.";
-  await loadTruckingLookups();
-  const rows = (productMeta.truckingMoves || []).filter((row) => row.status === "Finalized");
-  $("content").innerHTML = `<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Driver Labor Monitoring</strong><span>Monitoring only; no payroll or accounting entries are created.</span></div><div class="toolbar"><button type="button" id="truckingPayrollTemplateBtn">Daily Payroll Hours Template</button><button type="button" id="truckingPayrollUploadBtn">Upload Daily Payroll Hours</button><input type="file" id="truckingPayrollUploadInput" accept=".csv,.xlsx,.xls" hidden><button type="button" id="truckingPayrollManualBtn">Manual Daily Hours</button><button type="button" id="truckingDriverRatesBtn">Driver Labor Rates & Admin Allocation</button></div></div><div class="notice"><strong>Daily upload required:</strong> Enter only Work Date, Driver, and Total Hours for each employee/day. The saved rate is applied automatically. Regular time is limited to 8 hours per day and 40 hours per Monday–Sunday week; all excess hours are OT at 150%. Do not enter a weekly or covered-period total.</div>${truckingLaborDetailHtml(rows)}</section>`;
+  try {
+    if (reload) await loadTruckingLaborLookups();
+  const rows = (productMeta.truckingLaborMoves || productMeta.truckingMoves || []).filter((row) => row.status === "Finalized");
+  $("content").innerHTML = `<section class="panel">${savedMessage ? `<p class="notice" role="status">${esc(savedMessage)}</p>` : ""}<div class="panel-head"><div class="panel-title"><strong>Driver Labor Monitoring</strong><span>Monitoring only; no payroll or accounting entries are created.</span></div><div class="toolbar"><button type="button" id="truckingPayrollTemplateBtn">Daily Payroll Hours Template</button><button type="button" id="truckingPayrollUploadBtn">Upload Daily Payroll Hours</button><input type="file" id="truckingPayrollUploadInput" accept=".csv,.xlsx,.xls" hidden><button type="button" id="truckingPayrollManualBtn">Manual Daily Hours</button><button type="button" id="truckingDriverRatesBtn">Driver Labor Rates & Admin Allocation</button></div></div><div class="notice"><strong>Daily upload required:</strong> Enter only Work Date, Driver, and Total Hours for each employee/day. The saved rate is applied automatically. Regular time is limited to 8 hours per day and 40 hours per Monday–Sunday week; all excess hours are OT at 150%. Do not enter a weekly or covered-period total.</div>${truckingLaborDetailHtml(rows)}</section>`;
   $("truckingDriverRatesBtn").onclick = openTruckingDriverLaborRates;
   $("truckingPayrollTemplateBtn").onclick = downloadTruckingPayrollHoursTemplate;
   $("truckingPayrollUploadBtn").onclick = () => $("truckingPayrollUploadInput")?.click();
   $("truckingPayrollUploadInput").onchange = (event) => uploadTruckingPayrollHours(event.target.files?.[0], event.target);
   $("truckingPayrollManualBtn").onclick = openManualTruckingPayrollHours;
+  } catch (error) {
+    console.error("Driver Labor Details failed to load", error);
+    $("content").innerHTML = `<section class="panel"><p class="notice" role="alert">${savedMessage ? esc(savedMessage) + " " : ""}Driver Labor Details could not load: ${esc(error?.message || "Connection error")}</p><button type="button" id="retryTruckingLaborBtn">Retry</button></section>`;
+    $("retryTruckingLaborBtn").onclick = () => renderTruckingLaborDetailsView({ savedMessage });
+  }
 }
+
 
 function downloadTruckingPayrollHoursTemplate() {
   downloadCsv([["Payroll Date (MM/DD/YYYY)", "Driver", "Total Hours"]], `trucking-daily-payroll-hours-${truckingToday()}.csv`);
@@ -32461,6 +34316,7 @@ function openManualTruckingPayrollHours() {
   $("modalSave").textContent = "Save Daily Hours";
   $("modalCancel").textContent = "Cancel";
   $("modalSave").onclick = async () => {
+    if ($("modalSave").disabled) return;
     const entered = [...$("modalBody").querySelectorAll("[data-manual-payroll-row]")].filter((row) => String(row.querySelector("[data-manual-payroll-row-driver]")?.value || "").trim() || String(row.querySelector("[data-manual-payroll-row-hours]")?.value || "").trim());
     if (!entered.length) return alert("Add at least one driver/date entry.");
     const invalid = entered.find((row) => {
@@ -32493,10 +34349,11 @@ function openManualTruckingPayrollHours() {
     try {
       const { error } = await supabase.from("trucking_payroll_hours").upsert(records, { onConflict: "payroll_date,driver_name" });
       if (error) throw error;
-      await loadTruckingLookups();
+      rememberSavedTruckingPayrollHours(records);
+      const savedMessage = `Saved ${enteredCount} daily hour record(s). ${records.length} employee/day row(s) recalculated for daily and weekly overtime.`;
       closeModal();
-      await renderTruckingLaborDetailsView();
-      alert(`${enteredCount} daily hour record(s) entered and ${records.length} employee/day row(s) recalculated for daily and weekly overtime. No payroll or accounting entry was created.`);
+      alert(savedMessage);
+      await renderTruckingLaborDetailsView({ reload: false, savedMessage });
     } catch (error) {
       alert(error?.message || "Could not save the daily driver hours.");
     } finally {
@@ -32578,7 +34435,8 @@ function truckingDriverSummaryWithFuel(rows, dailyMode = false) {
     const date = dailyMode ? row.labor_date || "" : "";
     const key = date + "|" + driver.toLowerCase();
     const group = groups.get(key) || {date, driver, moves:0, run_hours:0, move_hours:0, actual_hours:0, hours_difference:0, missing_logged_hours:false, income:0, labor:0, fuel_cost:0, profit:0};
-    const isMove = !row.is_fuel_daily && !row.is_labor_daily;
+    // Fuel rows are already grouped by Report #; each report counts once.
+    const isMove = !row.is_labor_daily;
     group.moves += isMove ? 1 : 0;
     group.move_hours += isMove ? Number(row.run_hours || 0) : 0;
     group.run_hours += Number(row.run_hours || 0);
@@ -33010,7 +34868,7 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   const driverFuelSummary = truckingDriverSummaryWithFuel(driverMoveRows, dailyMode);
   const driverFuelColumns = [...(dailyMode ? ["date"] : []), "driver", "moves", "run_hours", "actual_hours", "hours_difference", "average", "income", "labor", "fuel_cost", "profit"];
   const driverFuelTotals = driverFuelSummary.reduce((sum,row) => { for (const field of ["moves","run_hours","actual_hours","hours_difference","move_hours","income","labor","fuel_cost","profit"]) sum[field] += row[field]; return sum; }, {moves:0,run_hours:0,actual_hours:0,hours_difference:0,move_hours:0,income:0,labor:0,fuel_cost:0,profit:0});
-  const driverFuelSummaryHtml = '<h3>Summary by Driver</h3>' + truckingSimpleTable(driverFuelSummary, driverFuelColumns, {
+  const driverFuelSummaryHtml = '<h3>Summary by Driver</h3><p class="muted">Moves includes trucking tickets and fuel reports. Each Fuel Report # counts once.</p>' + truckingSimpleTable(driverFuelSummary, driverFuelColumns, {
     labels: [...(dailyMode ? ["Date"] : []), "Driver", "Moves", "Run Hours", "Actual Hours Logged", "Actual − Run Hours", "Avg Run Hours / Move", "Income", "Total Labor", "Fuel Cost", "Profit"],
     wrapClass: "trucking-report-table trucking-report-summary-table",
     format: {actual_hours:(value,row)=>row.missing_logged_hours ? "Incomplete logs" : Number(value||0).toFixed(2), hours_difference:(value,row)=>row.missing_logged_hours ? "—" : Number(value||0).toFixed(2),run_hours:value=>Number(value||0).toFixed(2), average:(value,row)=>row.moves ? (row.move_hours/row.moves).toFixed(2) : "—", income:value=>money(value||0),labor:value=>money(value||0),fuel_cost:value=>money(value||0),profit:value=>'<strong>'+money(value||0)+'</strong>'},
@@ -33097,12 +34955,12 @@ function printTruckingManagementReport() {
 async function renderTruckingReportView() {
   $("viewTitle").textContent = "Trucking Report";
   $("viewSub").textContent = "Management summary of moves, income, driver labor, unsupported labor, administrative allocation, and monitoring profit.";
-  await Promise.all([loadTruckingLookups(), loadFuelTankState()]);
+  await Promise.all([loadTruckingLookups({ useCache: true }), loadFuelTankState({ useCache: true })]);
   const rows = (productMeta.truckingMoves || []).filter((row) => row.status === "Finalized");
   const [fuelRows, fuelRates, requestLines] = await Promise.all([
-    getAll("fuel_logs").catch(() => []),
-    getAll("fuel_pricing_periods").catch(() => []),
-    getAll("trucking_request_lines").catch(() => []),
+    getViewRows("fuel_logs").catch(() => []),
+    getViewRows("fuel_pricing_periods").catch(() => []),
+    getViewRows("trucking_request_lines").catch(() => []),
   ]);
   productMeta.truckingRequestLines = requestLines;
   const anchor = truckingToday();
@@ -33383,8 +35241,8 @@ function partsReportAggregate(rows, keyField, labelField = keyField) {
 }
 
 function managementReportTotalFooter(rows, columns) {
-  const sumFields = new Set(["lines", "units", "parts_revenue", "allocated_freight", "revenue", "freight", "cost", "profit", "amount", "receipts", "on_hand", "reorder_point", "inventory_value", "transactions", "outbound_transactions", "outbound_qty", "inbound_qty", "work_orders", "open", "closed", "labor_hours", "parts_cost", "labor_cost", "operational_cost", "income", "hours", "overtime_hours", "billing_value", "issues"]);
-  const moneyFields = new Set(["parts_revenue", "allocated_freight", "revenue", "freight", "cost", "profit", "amount", "inventory_value", "parts_cost", "labor_cost", "operational_cost", "income", "billing_value"]);
+  const sumFields = new Set(["lines", "units", "parts_revenue", "allocated_freight", "revenue", "freight", "cost", "profit", "amount", "receipts", "on_hand", "reorder_point", "inventory_value", "transactions", "outbound_transactions", "outbound_qty", "inbound_qty", "work_orders", "open", "closed", "labor_hours", "parts_cost", "labor_cost", "operational_cost", "income_to_date", "income", "hours", "overtime_hours", "billing_value", "issues"]);
+  const moneyFields = new Set(["parts_revenue", "allocated_freight", "revenue", "freight", "cost", "profit", "amount", "inventory_value", "parts_cost", "labor_cost", "operational_cost", "income_to_date", "income", "billing_value"]);
   const hourFields = new Set(["labor_hours", "hours", "overtime_hours"]);
   const totals = Object.fromEntries([...sumFields].map((field) => [field, rows.reduce((sum, row) => sum + Number(row?.[field] || 0), 0)]));
   const combinedRevenue = totals.revenue || totals.income || 0;
@@ -33440,7 +35298,7 @@ function printReportOnly(hostId, title) {
   popup.opener = null;
   popup.document.open();
   popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
-    @page{size:${useTabloid ? "17in 11in" : `${isRepairReport ? "Legal" : "Letter"} landscape`};margin:.3in}*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#172638;font-family:Arial,sans-serif;font-size:10px}body{padding:0}h3{margin:14px 0 6px;color:#075d73;font-size:16px;break-after:avoid}.report-document-heading{text-align:center;border-bottom:3px solid #075d73;padding:0 0 10px;margin-bottom:12px}.report-document-heading strong,.report-document-heading span,.report-document-heading small{display:block}.report-document-heading strong{color:#075d73;font-size:15px;letter-spacing:.08em}.report-document-heading span{font-size:23px;font-weight:800;margin:4px 0}.report-document-heading small{color:#526579;font-size:11px}.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:10px 0}.parts-income-stats{grid-template-columns:repeat(4,minmax(0,1fr))}.stat{border:1px solid #ccd7e0;border-radius:5px;padding:7px;break-inside:avoid}.stat span,.stat strong,.stat small{display:block}.stat strong{font-size:16px;margin:3px 0}.parts-report-section,.repair-report-section{margin:0 0 16px;break-inside:auto}.tablewrap{width:100%;overflow:visible}.tablewrap table{width:100%;border-collapse:collapse;table-layout:auto}.tablewrap thead{display:table-header-group}.tablewrap tr{break-inside:avoid}.tablewrap th{background:#eaf0f4;color:#19334c;font-size:8.5px;text-transform:uppercase}.tablewrap th,.tablewrap td{border-bottom:1px solid #d6dee5;padding:3px 2px;vertical-align:top;text-align:left;overflow-wrap:anywhere;word-break:normal}.tablewrap td{font-size:9px;line-height:1.25}.tablewrap [data-report-column="product_name"],.tablewrap [data-report-column="description"]{width:28%;min-width:150px;max-width:none}.tablewrap [data-report-column="date"],.tablewrap [data-report-column="document_no"],.tablewrap [data-report-column="source_ref"],.tablewrap [data-report-column="wo_no"],.tablewrap [data-report-column="invoice_no"],.tablewrap [data-report-column="asset"],.tablewrap [data-report-column="part_no"],.tablewrap [data-report-column="units"],.tablewrap [data-report-column="unit_price"],.tablewrap [data-report-column="parts_revenue"],.tablewrap [data-report-column="allocated_freight"],.tablewrap [data-report-column="revenue"],.tablewrap [data-report-column="unit_cost"],.tablewrap [data-report-column="cost"],.tablewrap [data-report-column="profit"],.tablewrap [data-report-column="margin"],.tablewrap [data-report-column="markup"]{width:1%;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}.tablewrap td.report-number-cell,.tablewrap td.report-numeric-cell,.tablewrap tfoot td{white-space:nowrap;overflow-wrap:normal;word-break:keep-all;font-size:8.5px;width:1%}.trucking-table-group-row td{width:auto!important;max-width:none;padding:5px 4px;font-size:10px}.repair-equipment-subheader{display:inline-block;margin-top:3px;color:#075d73;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.repair-report-table table{table-layout:fixed}.repair-report-table th{font-size:7.5px;overflow-wrap:normal;word-break:normal}.repair-report-table td{font-size:8px;overflow-wrap:break-word;word-break:normal}.repair-report-table [data-report-column="asset_description"]{width:12%}.repair-report-table [data-report-column="jobsite"],.repair-report-table [data-report-column="mechanics"]{width:10%}.repair-report-table [data-report-column="description"]{width:18%;min-width:0}.open-repair-aging-table [data-report-column="date"]{width:7%}.open-repair-aging-table [data-report-column="wo_no"]{width:7%}.open-repair-aging-table [data-report-column="priority"]{width:6%}.open-repair-aging-table [data-report-column="asset_tag"]{width:8%}.open-repair-aging-table [data-report-column="asset_description"]{width:14%}.open-repair-aging-table [data-report-column="jobsite"]{width:12%}.open-repair-aging-table [data-report-column="mechanics"]{width:10%}.open-repair-aging-table [data-report-column="description"]{width:20%;min-width:0}.open-repair-aging-table [data-report-column="open_age_days"]{width:5%}.open-repair-aging-table [data-report-column="operational_cost"]{width:6%}.open-repair-aging-table [data-report-column="status"]{width:5%}.open-work-orders-report-table [data-report-column="date"]{width:7%}.open-work-orders-report-table [data-report-column="wo_no"]{width:8%}.open-work-orders-report-table [data-report-column="asset_tag"]{width:9%}.open-work-orders-report-table [data-report-column="asset_description"]{width:16%}.open-work-orders-report-table [data-report-column="jobsite"]{width:14%}.open-work-orders-report-table [data-report-column="mechanics"]{width:13%}.open-work-orders-report-table [data-report-column="description"]{width:22%;min-width:0}.open-work-orders-report-table [data-report-column="issues"]{width:4%}.open-work-orders-report-table [data-report-column="labor_hours"]{width:6%}.open-work-orders-report-table [data-report-column="open_age_days"]{width:6%}.open-work-orders-report-table [data-report-column="status"]{width:6%}.repair-description-two-lines{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}.empty{padding:12px;color:#667}.badge{border:1px solid #ccd7e0;border-radius:10px;padding:2px 5px}${useTabloid ? ".tablewrap th{font-size:10px}.tablewrap td{font-size:11px;line-height:1.35}.repair-report-table th{font-size:9px}.repair-report-table td{font-size:10px}h3{font-size:19px}" : ""} @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.repair-report-section{break-before:page}.report-document-heading+.repair-report-section,.open-repair-counts{break-before:auto}}
+    @page{size:${useTabloid ? "17in 11in" : `${isRepairReport ? "Legal" : "Letter"} landscape`};margin:.3in}*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#172638;font-family:Arial,sans-serif;font-size:10px}body{padding:0}h3{margin:14px 0 6px;color:#075d73;font-size:16px;break-after:avoid}.report-document-heading{text-align:center;border-bottom:3px solid #075d73;padding:0 0 10px;margin-bottom:12px}.report-document-heading strong,.report-document-heading span,.report-document-heading small{display:block}.report-document-heading strong{color:#075d73;font-size:15px;letter-spacing:.08em}.report-document-heading span{font-size:23px;font-weight:800;margin:4px 0}.report-document-heading small{color:#526579;font-size:11px}.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:10px 0}.parts-income-stats{grid-template-columns:repeat(4,minmax(0,1fr))}.stat{border:1px solid #ccd7e0;border-radius:5px;padding:7px;break-inside:avoid}.stat span,.stat strong,.stat small{display:block}.stat strong{font-size:16px;margin:3px 0}.parts-report-section,.repair-report-section{margin:0 0 16px;break-inside:auto}.tablewrap{width:100%;overflow:visible}.tablewrap table{width:100%;border-collapse:collapse;table-layout:auto}.tablewrap thead{display:table-header-group}.tablewrap tr{break-inside:avoid}.tablewrap th{background:#eaf0f4;color:#19334c;font-size:8.5px;text-transform:uppercase}.tablewrap th,.tablewrap td{border-bottom:1px solid #d6dee5;padding:3px 2px;vertical-align:top;text-align:left;overflow-wrap:anywhere;word-break:normal}.tablewrap td{font-size:9px;line-height:1.25}.tablewrap [data-report-column="product_name"],.tablewrap [data-report-column="description"]{width:28%;min-width:150px;max-width:none}.tablewrap [data-report-column="date"],.tablewrap [data-report-column="document_no"],.tablewrap [data-report-column="source_ref"],.tablewrap [data-report-column="wo_no"],.tablewrap [data-report-column="invoice_no"],.tablewrap [data-report-column="asset"],.tablewrap [data-report-column="part_no"],.tablewrap [data-report-column="units"],.tablewrap [data-report-column="unit_price"],.tablewrap [data-report-column="parts_revenue"],.tablewrap [data-report-column="allocated_freight"],.tablewrap [data-report-column="revenue"],.tablewrap [data-report-column="unit_cost"],.tablewrap [data-report-column="cost"],.tablewrap [data-report-column="profit"],.tablewrap [data-report-column="margin"],.tablewrap [data-report-column="markup"]{width:1%;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}.tablewrap td.report-number-cell,.tablewrap td.report-numeric-cell,.tablewrap tfoot td{white-space:nowrap;overflow-wrap:normal;word-break:keep-all;font-size:8.5px;width:1%}.trucking-table-group-row td{width:auto!important;max-width:none;padding:5px 4px;font-size:10px}.repair-equipment-subheader{display:inline-block;margin-top:3px;color:#075d73;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.repair-report-table table{table-layout:fixed}.repair-report-table th{font-size:7.5px;overflow-wrap:normal;word-break:normal}.repair-report-table td{font-size:8px;overflow-wrap:break-word;word-break:normal}.repair-report-table [data-report-column="asset_description"]{width:12%}.repair-report-table [data-report-column="jobsite"],.repair-report-table [data-report-column="mechanics"]{width:10%}.repair-report-table [data-report-column="description"]{width:18%;min-width:0}.open-repair-aging-table [data-report-column="date"]{width:7%}.open-repair-aging-table [data-report-column="wo_no"]{width:7%}.open-repair-aging-table [data-report-column="priority"]{width:6%}.open-repair-aging-table [data-report-column="asset_tag"]{width:8%}.open-repair-aging-table [data-report-column="asset_description"]{width:14%}.open-repair-aging-table [data-report-column="jobsite"]{width:12%}.open-repair-aging-table [data-report-column="mechanics"]{width:10%}.open-repair-aging-table [data-report-column="description"]{width:20%;min-width:0}.open-repair-aging-table [data-report-column="open_age_days"]{width:5%}.open-repair-aging-table [data-report-column="income_to_date"]{width:6%}.open-repair-aging-table [data-report-column="status"]{width:5%}.open-work-orders-report-table [data-report-column="date"]{width:7%}.open-work-orders-report-table [data-report-column="wo_no"]{width:8%}.open-work-orders-report-table [data-report-column="asset_tag"]{width:9%}.open-work-orders-report-table [data-report-column="asset_description"]{width:16%}.open-work-orders-report-table [data-report-column="jobsite"]{width:14%}.open-work-orders-report-table [data-report-column="mechanics"]{width:13%}.open-work-orders-report-table [data-report-column="description"]{width:22%;min-width:0}.open-work-orders-report-table [data-report-column="issues"]{width:4%}.open-work-orders-report-table [data-report-column="labor_hours"]{width:6%}.open-work-orders-report-table [data-report-column="open_age_days"]{width:6%}.open-work-orders-report-table [data-report-column="status"]{width:6%}.repair-description-two-lines{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}.empty{padding:12px;color:#667}.badge{border:1px solid #ccd7e0;border-radius:10px;padding:2px 5px}${useTabloid ? ".tablewrap th{font-size:10px}.tablewrap td{font-size:11px;line-height:1.35}.repair-report-table th{font-size:9px}.repair-report-table td{font-size:10px}h3{font-size:19px}" : ""} @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.repair-report-section{break-before:page}.report-document-heading+.repair-report-section,.open-repair-counts{break-before:auto}}
     .open-repair-counts .stats{grid-template-columns:repeat(2,minmax(0,260px));justify-content:start}
     .repair-report-table th{font-size:8.5px}
     .repair-report-table td{font-size:9px;line-height:1.3}
@@ -33457,15 +35315,15 @@ function printReportOnly(hostId, title) {
 
 async function renderPartsReportView() {
   $("viewTitle").textContent = "Parts Reports";
-  $("viewSub").textContent = "Parts income, cost, gross profit, markup, purchasing, usage, movement, and inventory analysis. Reporting only; no accounting entries.";
+  $("viewSub").textContent = "Parts income, cost, gross profit, markup, purchasing, usage, movement, and inventory analysis. Edit active work-order priorities directly in the aging report. No accounting entries.";
   const [products, invoices, invoiceLines, receipts, movements, workOrders, workOrderParts] = await Promise.all([
-    getAll("products").catch(() => []),
-    getAll("invoices").catch(() => []),
-    getAll("invoice_lines").catch(() => []),
-    getAll("goods_receipts").catch(() => []),
-    getAll("stock_movements").catch(() => []),
-    getAll("work_orders").catch(() => []),
-    getAll("work_order_parts").catch(() => []),
+    getViewRows("products").catch(() => []),
+    getViewRows("invoices").catch(() => []),
+    getViewRows("invoice_lines").catch(() => []),
+    getViewRows("goods_receipts").catch(() => []),
+    getViewRows("stock_movements").catch(() => []),
+    getViewRows("work_orders").catch(() => []),
+    getViewRows("work_order_parts").catch(() => []),
   ]);
   const today = truckingToday();
   const start = new Date(`${today}T00:00:00`);
@@ -33775,13 +35633,62 @@ function exportRepairReport() {
   downloadCsv(rows, `repair-report-${truckingToday()}.csv`);
 }
 
+function workOrderDraftIncome(wo, parts, labor) {
+  const billable = Boolean(wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer));
+  const partsTotal = parts.filter(part => !/released|removed|cancelled|returned|void|revers/i.test(effectivePartStatus(part)))
+    .reduce((sum, part) => {
+      const qty = Number(part.accepted_qty || part.qty_needed || 0);
+      const rate = billable ? workOrderPartSellingPrice(part, {}, wo.bill_to_customer || wo.customer) : Number(part.unit_cost || 0);
+      return sum + (qty > 0 ? qty * rate : 0);
+    }, 0);
+  return partsTotal + labor.filter(row => !isReversedLabor(row) && laborHours(row) > 0).reduce((sum, row) =>
+    sum + Number(laborRegularHours(row).toFixed(2)) * Number(row.hourly_rate || 0)
+      + Number(laborOvertimeHours(row).toFixed(2)) * Number(row.hourly_rate || 0) * laborOvertimeMultiplier(row), 0);
+}
+
+function reportWorkOrderPriorityButton(value,row) {
+  const label=value || 'Medium';
+  if(!row?.id || !row.is_open || row.voided || !row.asset_tag)return badge(label);
+  return '<button type="button" class="badge" data-report-wo-priority="'+esc(row.id)+'" title="Change priority and save as this equipment’s starting priority" aria-label="Change priority for '+esc(row.wo_no)+'">'+esc(label)+'</button>';
+}
+
+function openReportWorkOrderPriority(wo,onSaved) {
+  $('modalSave').style.display='';$('modalSave').textContent='Save priority';$('modalSave').disabled=false;
+  $('modalTitle').textContent='Priority — '+wo.wo_no;
+  $('modalBody').innerHTML=productSelect('Priority','report_priority',['Low','Medium','High'],wo.priority || 'Medium')+'<p class="notice">Also use this as the starting priority for future work orders on '+esc(wo.asset_tag)+'. Other existing work orders keep their current priority.</p>';
+  $('modalSave').onclick=async()=>{
+    const button=$('modalSave');button.disabled=true;
+    try {
+      const priority=document.querySelector('[data-product-field="report_priority"]').value;
+      const {data,error}=await supabase.rpc('set_report_work_order_priority',{p_wo_id:wo.id,p_priority:priority,p_expected_priority:wo.priority ?? null,p_expected_asset:wo.asset_tag});
+      if(error)throw error;
+      Object.assign(wo,data);
+      invalidateChangedTable('work_orders');
+      invalidateChangedTable('equipment_work_order_priorities');
+      closeModal(true);onSaved();
+    }catch(error){alert(error.message || error);}finally{button.disabled=false;}
+  };
+  $('modal').style.display='flex';
+}
+
+async function fillNewWorkOrderStartingPriority(asset) {
+  const input=document.querySelector('[data-product-field="priority"]');
+  if(!input || !$('newWorkOrderEquipmentName') || input.dataset.priorityManual==='1')return;
+  const key=String(asset?.asset_tag || '').trim().toLowerCase();
+  input.dataset.priorityAsset=key;
+  const {data,error}=await supabase.from('equipment_work_order_priorities').select('priority').eq('asset_key',key).maybeSingle();
+  if(!input.isConnected || input.dataset.priorityAsset!==key || input.dataset.priorityManual==='1')return;
+  if(error){console.warn('Starting priority will be applied when saved',error);return;}
+  input.value=data?.priority || 'Medium';
+}
+
 async function renderRepairReportView() {
   $("viewTitle").textContent = "Repair Reports";
   $("viewSub").textContent = "Repair volume, turnaround, parts, labor, income, operational cost, and gross profit. Reporting only; no accounting entries.";
   const [workOrders, issues, parts, labor, assets, mechanics, invoices, invoiceLines] = await Promise.all([
-    getAll("work_orders").catch(() => []), getAll("work_order_issues").catch(() => []), getAll("work_order_parts").catch(() => []),
-    getAll("work_order_labor").catch(() => []), getAll("assets").catch(() => []), getAll("mechanics").catch(() => []),
-    getAll("invoices").catch(() => []), getAll("invoice_lines").catch(() => []),
+    getViewRows("work_orders").catch(() => []), getViewRows("work_order_issues").catch(() => []), getViewRows("work_order_parts").catch(() => []),
+    getViewRows("work_order_labor").catch(() => []), getViewRows("assets").catch(() => []), getViewRows("mechanics").catch(() => []),
+    getViewRows("invoices").catch(() => []), getViewRows("invoice_lines").catch(() => []),
   ]);
   const today = truckingToday();
   const first = new Date(`${today}T00:00:00`); first.setDate(1);
@@ -33830,18 +35737,18 @@ async function renderRepairReportView() {
   const repairPriorityRank = (value) => ({ emergency: 0, critical: 1, urgent: 2, high: 3, medium: 4, normal: 5, low: 6 })[String(value || "normal").trim().toLowerCase()] ?? 5;
   const openRepairAgingTable = (rows) => {
     const sorted = [...rows].sort((a, b) => String(a.customer || "Unspecified Customer").localeCompare(String(b.customer || "Unspecified Customer")) || String(a.asset_group || "Fleet Vehicle").localeCompare(String(b.asset_group || "Fleet Vehicle")) || repairPriorityRank(a.priority) - repairPriorityRank(b.priority) || String(a.date || "").localeCompare(String(b.date || "")));
-    const columns = ["date", "wo_no", "priority", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "operational_cost", "status"];
-    const labels = ["Opened", "WO #", "Priority", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Cost to Date", "Status"];
-    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging</h3>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, priority: (value) => badge(value || "Normal"), description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${row.asset_group || "Fleet Vehicle"}`, groupLabel: (key) => { const [customer, assetGroup] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">${esc(assetGroup)}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
+    const columns = ["date", "wo_no", "priority", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "income_to_date", "status"];
+    const labels = ["Opened", "WO #", "Priority", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Income to Date", "Status"];
+    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging</h3>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, priority: reportWorkOrderPriorityButton, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${row.asset_group || "Fleet Vehicle"}`, groupLabel: (key) => { const [customer, assetGroup] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">${esc(assetGroup)}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
   };
   const openRepairAgingByPriorityTable = (rows) => {
     const priorityLabel = (value) => String(value || "Normal").trim() || "Normal";
     const sorted = [...rows].sort((a, b) => String(a.customer || "Unspecified Customer").localeCompare(String(b.customer || "Unspecified Customer")) || repairPriorityRank(a.priority) - repairPriorityRank(b.priority) || String(a.date || "").localeCompare(String(b.date || "")));
-    const columns = ["date", "wo_no", "priority", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "operational_cost", "status"];
-    const labels = ["Opened", "WO #", "Priority", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Cost to Date", "Status"];
-    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging by Priority</h3>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, priority: (value) => badge(priorityLabel(value)), description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${priorityLabel(row.priority)}`, groupLabel: (key) => { const [customer, priority] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">Priority: ${esc(priorityLabel(priority))}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
+    const columns = ["date", "wo_no", "priority", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "income_to_date", "status"];
+    const labels = ["Opened", "WO #", "Priority", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Income to Date", "Status"];
+    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging by Priority</h3>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, priority: reportWorkOrderPriorityButton, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${priorityLabel(row.priority)}`, groupLabel: (key) => { const [customer, priority] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">Priority: ${esc(priorityLabel(priority))}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
   };
-  const formats = { labor_hours: (v) => Number(v || 0).toFixed(2), hours: (v) => Number(v || 0).toFixed(2), overtime_hours: (v) => Number(v || 0).toFixed(2), parts_cost: (v) => money(v || 0), labor_cost: (v) => money(v || 0), operational_cost: (v) => money(v || 0), freight: (v) => money(v || 0), income: (v) => money(v || 0), profit: (v) => `<strong>${money(v || 0)}</strong>`, margin: partsReportPercent, avg_turnaround: (v) => v == null ? "—" : `${Number(v).toFixed(1)} days`, turnaround_days: (v) => v == null ? "Open" : `${Number(v)} days`, unit_cost: (v) => money(v || 0), cost: (v) => money(v || 0), billing_value: (v) => money(v || 0) };
+  const formats = { income_to_date: (v) => money(v || 0), labor_hours: (v) => Number(v || 0).toFixed(2), hours: (v) => Number(v || 0).toFixed(2), overtime_hours: (v) => Number(v || 0).toFixed(2), parts_cost: (v) => money(v || 0), labor_cost: (v) => money(v || 0), operational_cost: (v) => money(v || 0), freight: (v) => money(v || 0), income: (v) => money(v || 0), profit: (v) => `<strong>${money(v || 0)}</strong>`, margin: partsReportPercent, avg_turnaround: (v) => v == null ? "—" : `${Number(v).toFixed(1)} days`, turnaround_days: (v) => v == null ? "Open" : `${Number(v)} days`, unit_cost: (v) => money(v || 0), cost: (v) => money(v || 0), billing_value: (v) => money(v || 0) };
   const preferenceKey = "lms.repairReport.preferences.v1";
   const apply = () => {
     let from = $("repairReportFrom").value; let to = $("repairReportTo").value;
@@ -33854,7 +35761,7 @@ async function renderRepairReportView() {
     saveManagementReportPreferences(preferenceKey, { period: $("repairReportPeriod").value, from, to, customer: customerFilter, status: $("repairReportStatus").value, search: $("repairReportSearch").value, sections: [...selected], sectionOrder: managementReportSectionOrder($("repairReportSections")) });
     const show = (name) => selected.has("all") || selected.has(name);
     const mappedRepairRows = workOrders.map((wo) => {
-      const asset = assetById.get(String(wo.asset_id || "")) || assetByTag.get(String(wo.asset_tag || "").trim().toLowerCase()) || {};
+      const asset = assetByTag.get(String(wo.asset_tag || "").trim().toLowerCase()) || assetById.get(String(wo.asset_id || "")) || {};
       const woParts = partsByWo.get(String(wo.id || "")) || [];
       const woLabor = (laborByWo.get(String(wo.id || "")) || []).filter((row) => !isReversedLabor(row) && laborHours(row) > 0);
       // An explicitly saved zero means the part has not been accepted/issued.
@@ -33875,7 +35782,7 @@ async function renderRepairReportView() {
       const reportAssetTag = String(wo.asset_tag || asset.asset_tag || "").trim();
       const assetGroup = ["Heavy Equipment", "Small Engine", "Fleet Vehicle"].find((value) => value.toLowerCase() === String(asset.general_type || "").trim().toLowerCase())
         || (/^LMS-FV/i.test(reportAssetTag) ? "Fleet Vehicle" : "Heavy Equipment");
-      return { id: wo.id, date: wo.wo_date, wo_no: wo.wo_no, asset_tag: wo.asset_tag || asset.asset_tag, asset_type: assetType, asset_group: assetGroup, asset_description: [asset.year, asset.make, asset.model, asset.name].filter(Boolean).join(" "), customer: wo.bill_to_customer || "Internal / LMS Imports", jobsite: wo.jobsite_location, priority: wo.priority, work_type: wo.work_type, description: wo.description, status: wo.status, invoice_no: wo.invoice_no || invoiceMeta.invoice_no, issues: (issuesByWo.get(String(wo.id || "")) || []).length, mechanics: [...new Set(woLabor.map((row) => row.mechanic).filter(Boolean))].join(", "), labor_hours: laborHoursTotal, parts_cost: partsCost, labor_cost: laborCostTotal, operational_cost: operationalCost, billing_value: partsBilling + laborBilling, freight, income, profit: income - operationalCost, margin: income ? (income - operationalCost) / income * 100 : 0, turnaround_days: daysBetween(wo.wo_date, closeDate), open_age_days: isOpen ? daysBetween(wo.wo_date, today) : 0, is_open: isOpen, voided: Boolean(wo.voided_at || wo.void_date || /void|cancel/i.test(wo.status || "")) };
+      return { id: wo.id, date: wo.wo_date, wo_no: wo.wo_no, asset_tag: wo.asset_tag || asset.asset_tag, asset_type: assetType, asset_group: assetGroup, asset_description: [asset.year, asset.make, asset.model, asset.name].filter(Boolean).join(" "), customer: wo.bill_to_customer || "Internal / LMS Imports", jobsite: wo.jobsite_location, priority: wo.priority, work_type: wo.work_type, description: wo.description, status: wo.status, invoice_no: wo.invoice_no || invoiceMeta.invoice_no, issues: (issuesByWo.get(String(wo.id || "")) || []).length, mechanics: [...new Set(woLabor.map((row) => row.mechanic).filter(Boolean))].join(", "), labor_hours: laborHoursTotal, parts_cost: partsCost, labor_cost: laborCostTotal, operational_cost: operationalCost, billing_value: partsBilling + laborBilling, income_to_date: workOrderDraftIncome(wo, woParts, woLabor), freight, income, profit: income - operationalCost, margin: income ? (income - operationalCost) / income * 100 : 0, turnaround_days: daysBetween(wo.wo_date, closeDate), open_age_days: isOpen ? daysBetween(wo.wo_date, today) : 0, is_open: isOpen, voided: Boolean(wo.voided_at || wo.void_date || /void|cancel/i.test(wo.status || "")) };
     });
     const matchesCommonRepairFilters = (row) => (!customerFilter || row.customer === customerFilter)
       && (!search || Object.values(row).some((value) => String(value || "").toLowerCase().includes(search)));
@@ -33924,6 +35831,11 @@ async function renderRepairReportView() {
     $("repairReportHost").innerHTML = report.join("");
     reorderRenderedManagementReportSections($("repairReportHost"), "[data-repair-report-section]", $("repairReportSections"));
   };
+  $('repairReportHost').onclick=event=>{
+    const button=event.target.closest('[data-report-wo-priority]');if(!button)return;
+    const wo=workOrders.find(row=>String(row.id)===button.dataset.reportWoPriority);
+    if(wo)openReportWorkOrderPriority(wo,apply);
+  };
   $("repairReportPeriod").onchange = () => { const mode = $("repairReportPeriod").value; const end = new Date(`${today}T00:00:00`); if (mode === "month") { const start = new Date(end); start.setDate(1); $("repairReportFrom").value = iso(start); $("repairReportTo").value = today; } if (mode === "year") { const start = new Date(end); start.setMonth(0, 1); $("repairReportFrom").value = iso(start); $("repairReportTo").value = today; } if (mode === "all") { $("repairReportFrom").value = ""; $("repairReportTo").value = ""; } apply(); };
   const sections = $("repairReportSections");
   sections.onchange = (event) => { const boxes = [...sections.querySelectorAll('input[type="checkbox"]')]; if (event.target.value === "all" && event.target.checked) boxes.forEach((box) => { if (box !== event.target) box.checked = false; }); else if (event.target.value !== "all" && event.target.checked) boxes.find((box) => box.value === "all").checked = false; if (!boxes.some((box) => box.checked)) boxes.find((box) => box.value === "all").checked = true; const checked = boxes.filter((box) => box.checked); $("repairReportSectionsSummary").textContent = checked.some((box) => box.value === "all") ? "All Sections" : checked.length === 1 ? managementReportSectionLabel(checked[0]) : `${checked.length} Sections Selected`; };
@@ -33951,18 +35863,18 @@ async function renderRepairReportView() {
   apply();
 }
 
-function manualTruckingRate(equipmentUsed = "") {
+function manualTruckingRate(equipmentUsed = "", unit = null) {
   const key = String(equipmentUsed || "").trim().toLowerCase();
   if (!key) return null;
   const active = (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "") && String(row.category || "").toLowerCase() !== "tipping fee");
-  return active.find((row) => [row.service, row.subcategory, row.parent_service]
-    .some((value) => String(value || "").trim().toLowerCase() === key)) || null;
+  const matches = active.filter((row) => [row.service, row.subcategory, row.parent_service]
+    .some((value) => String(value || "").trim().toLowerCase() === key));
+  return unit === null ? matches[0] || null : truckingRateForUnit(matches, unit);
 }
 
 function isRollOffEquipment(equipmentUsed = "") {
   const value = String(equipmentUsed || "").trim();
-  // Debris and CY/Ton belong to roll-off BIN service only. Flat racks may use
-  // the same roll-off truck, but they carry equipment/material rather than a bin load.
+  // Flat racks use the same truck but are not bin service.
   if (/flat[\s-]*rack/i.test(value)) return false;
   return /(?:\broll[\s-]*off\b.*\bbin\b|\bbin\b.*\broll[\s-]*off\b)/i.test(value);
 }
@@ -33978,52 +35890,35 @@ function isTruckingTrainingEntry(equipmentUsed = "") {
 }
 
 function updateManualRollOffFields(root = modalBody) {
-  const service = root.querySelector('[name="service"]')?.value || root.querySelector('[name="equipment_label"]')?.value || "";
-  const rollOff = isRollOffEquipment(service);
-  const needsCyTon = requiresTruckingCyTon(service);
-  const debrisInput = root.querySelector('[name="debris_type"]');
-  const debrisLabel = debrisInput?.closest("label");
-  if (debrisLabel) debrisLabel.style.display = rollOff ? "" : "none";
-  if (debrisInput) {
-    debrisInput.required = rollOff;
-    if (!rollOff) debrisInput.value = "";
-  }
-  const cyTonInput = root.querySelector('[name="cy_ton"]');
-  const cyTonLabel = cyTonInput?.closest("label");
-  if (cyTonLabel) cyTonLabel.style.display = needsCyTon ? "" : "none";
-  if (cyTonInput) {
-    cyTonInput.required = needsCyTon;
-    if (!needsCyTon) cyTonInput.value = "";
-  }
-  return rollOff;
+  syncTruckingTicketQuantity(root);
 }
 
 function manualFinalTicketCalculation(root = modalBody) {
   const field = (name) => root.querySelector(`[name="${name}"]`);
   const service = field("service")?.value || field("equipment_label")?.value || "";
-  const rate = manualTruckingRate(service);
+  const { quantity, unit } = truckingQuantity(field("cy_ton")?.value);
+  const rate = manualTruckingRate(service, unit);
   const startTime = field("start_time")?.value || "";
   const endTime = field("end_time")?.value || "";
   const hasCompleteTime = Boolean(startTime && endTime);
   const manualHours = Math.max(0, Number(field("worked_hours")?.value || 0));
   const workedHours = hasCompleteTime ? truckingWorkedHours(startTime, endTime) : manualHours;
   const billableHours = hasCompleteTime ? truckingBillableHours(startTime, endTime, 2) : Math.max(2, manualHours);
-  const quantity = Number(String(field("cy_ton")?.value || "").replace(/[^0-9.-]+/g, "")) || 0;
   const rateType = String(rate?.rate_type || "");
   let multiplier = 1;
   if (/hour/i.test(rateType)) multiplier = billableHours;
-  else if (/\/(?:cy|ton)/i.test(rateType)) multiplier = quantity;
+  else if (truckingRateUnit(rateType)) multiplier = quantity;
   const serviceAmount = Number((Number(rate?.rate || 0) * multiplier).toFixed(2));
   const debrisKey = String(field("debris_type")?.value || "").trim().toLowerCase();
-  const debrisRate = (productMeta.truckingRates || []).find((row) => String(row.category || "").toLowerCase() === "tipping fee" && String(row.service || "").trim().toLowerCase() === debrisKey);
-  const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (/\/(?:cy|ton)/i.test(debrisRate.rate_type || "") ? quantity : 1)).toFixed(2)) : 0;
+  const debrisRate = truckingRateForUnit(truckingDebrisRates(debrisKey), unit);
+  const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1)).toFixed(2)) : 0;
   const total = Number((serviceAmount + tippingCharge).toFixed(2));
   if (field("worked_hours")) {
     field("worked_hours").readOnly = hasCompleteTime;
     if (hasCompleteTime) field("worked_hours").value = workedHours.toFixed(2);
   }
   if (field("rate_display")) field("rate_display").value = rate ? `${money(rate.rate)} ${rateType}` : "No matching rate";
-  if (field("tipping_display")) field("tipping_display").value = tippingCharge.toFixed(2);
+  if (field("tipping_display")) field("tipping_display").value = debrisRate ? `${money(debrisRate.rate)} ${debrisRate.rate_type} = ${money(tippingCharge)}` : truckingDebrisRates(debrisKey).length ? "No matching rate for selected unit" : tippingCharge.toFixed(2);
   if (field("amount")) field("amount").value = total.toFixed(2);
   const note = root.querySelector("#manualTicketCalculationNote");
   if (note) note.textContent = rate
@@ -34060,7 +35955,12 @@ async function openExistingDuplicateTruckingTicket(rows, ticketNo) {
 }
 
 async function openManualFinalTruckingTicket(existingTicket = null) {
-  await loadTruckingLookups();
+  if(existingTicket?._listSigned || existingTicket?._listDetails) {
+    const full=(await workOrderScopedRows("trucking_moves","ticket_no",[existingTicket.ticket_no]))[0];
+    if(!full) throw new Error("Ticket could not be loaded. Please try again.");
+    existingTicket=full;
+  }
+  await loadTruckingLookups({formOnly:Boolean(existingTicket),ticket:existingTicket,requestNo:existingTicket?.request_no || ""});
   const existing = productMeta.truckingMoves || [];
   editingFinalTruckingTicket = existingTicket;
   const nextTicket = String(Math.max(100000, ...existing.map((row) => Number(String(row.ticket_no || "").replace(/\D/g, ""))).filter(Boolean)) + 1).padStart(6, "0");
@@ -34096,20 +35996,19 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
     <label class="field">Time In (optional)<input type="time" name="start_time" value="${esc(value("start_time"))}"></label>
     <label class="field">Time Out (optional)<input type="time" name="end_time" value="${esc(value("end_time"))}"></label>
     <label class="field">Project<input class="suggest-input" data-suggest-source="locations" name="project" value="${esc(value("project", value("jobsite")))}" placeholder="Search project or jobsite" autocomplete="off"></label>
-    <label class="field" style="display:none">Type of Debris<input name="debris_type" value="${esc(value("debris_type"))}"></label>
-    <label class="field" style="display:none">CY/Ton<input name="cy_ton" value="${esc(value("cy_ton"))}" placeholder="Example: 12 CY or 4.5 Ton"></label>
+    ${truckingTicketMaterialFields(existingTicket || {})}
     <label class="field">Actual Hours<input type="number" name="worked_hours" min="0" step="0.01" value="${esc(value("actual_hours"))}" placeholder="Enter when ticket has no times"></label>
     <label class="field">Rate Used<input name="rate_display" readonly></label>
     <label class="field">Debris / Tipping Fee<input name="tipping_display" readonly></label>
     <label class="field">Calculated Total<input name="amount" readonly></label>
     <label class="field wide">Description<textarea name="move_description" rows="3">${esc(description)}</textarea></label>
   </div><p class="notice" id="manualTicketCalculationNote">Select Service and enter Time In/Out to calculate the ticket.</p>
-  <p class="notice">${isDraft ? "Save Draft keeps incomplete information editable, or choose Finalize Ticket when all required information is ready." : existingTicket ? "Saving updates this finalized ticket and keeps it finalized. All operational and monitoring fields above may be corrected." : "Save Draft allows incomplete information; Save Final Ticket validates and finalizes it."} No accounting entry is created.</p>`;
+  <p class="notice">${isDraft ? "Type of Debris is required to save. Save Draft keeps other incomplete information editable, or choose Finalize Ticket when all required information is ready." : existingTicket ? "Saving updates this finalized ticket and keeps it finalized. All operational and monitoring fields above may be corrected." : "Type of Debris is required to save. Save Draft allows other information to remain incomplete; Save Final Ticket validates and finalizes it."} No accounting entry is created.</p>`;
   const recalculate = () => {
     updateManualRollOffFields(modalBody);
     manualFinalTicketCalculation(modalBody);
   };
-  ["service", "equipment_label", "start_time", "end_time", "worked_hours", "debris_type", "cy_ton"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", recalculate));
+  ["service", "equipment_label", "start_time", "end_time", "worked_hours", "debris_type", "debris_quantity", "debris_unit"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", recalculate));
   document.getElementById("manualTruckingDraftBtn")?.remove();
   const draftButton = document.createElement("button");
   draftButton.type = "button"; draftButton.id = "manualTruckingDraftBtn"; draftButton.textContent = isDraft ? "Save Draft Changes" : "Save Draft";
@@ -34126,6 +36025,8 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
 
 async function saveManualFinalTruckingTicket() {
   const values = Object.fromEntries([...modalBody.querySelectorAll("[name]")].map((el) => [el.name, el.value]));
+  const timeError = truckingTimeOrderError(values.start_time, values.end_time);
+  if (timeError) return alert(timeError);
   if (!values.ticket_no || !values.move_date || !values.driver_name || !values.service || !values.equipment_label || !values.customer) return alert("Date, Driver, Service, Equipment Used, Customer, and Ticket Number are required.");
   const selectedEquipment = truckingFindAsset(values.equipment_label);
   if (isTruckingContainerEquipment(selectedEquipment, values.equipment_label)) return alert("Containers can be moved, but cannot be selected as Service / Equipment Used. Choose the truck or operating equipment that performed the move.");
@@ -34133,8 +36034,8 @@ async function saveManualFinalTruckingTicket() {
   const hasEnd = Boolean(values.end_time);
   if (hasStart !== hasEnd) return alert("Enter both Time In and Time Out, or leave both blank and enter Actual Hours.");
   if (!hasStart && !(Number(values.worked_hours) > 0)) return alert("Enter Time In and Time Out, or enter Actual Hours for a ticket without times.");
-  if (isRollOffEquipment(values.service) && !String(values.debris_type || "").trim()) return alert("Type of Debris is required for Roll Off Bin service.");
-  if (requiresTruckingCyTon(values.service) && !String(values.cy_ton || "").trim()) return alert("CY/Ton is required for Roll Off Bin, Dump Truck, and End Dump tickets.");
+  const materialError = truckingTicketMaterialError(values);
+  if (materialError) return alert(materialError);
   const existing = await getAll("trucking_moves").catch(() => []);
   if (await openExistingDuplicateTruckingTicket(existing, values.ticket_no)) return;
   if (hasStart && hasEnd) {
@@ -34180,6 +36081,9 @@ async function saveManualFinalTruckingTicket() {
 
 async function saveManualTruckingTicketDraft() {
   const values = Object.fromEntries([...modalBody.querySelectorAll("[name]")].map((el) => [el.name, el.value]));
+  const timeError = truckingTimeOrderError(values.start_time, values.end_time);
+  if (timeError) return alert(timeError);
+  if (!String(values.debris_type || "").trim()) return alert("Type of Debris is required for every ticket.");
   const ticketNo = String(values.ticket_no || "").trim();
   if (!ticketNo) return alert("A Ticket Number is required to save the draft.");
   const selectedEquipment = truckingFindAsset(values.equipment_label);
@@ -34304,14 +36208,14 @@ function finalizedTruckingUploadRecord(row, batch, source) {
     import_source: source || null,
   };
   const trainingEntry = isTruckingTrainingEntry(service);
-  const rate = manualTruckingRate(service);
+  const { quantity, unit } = truckingQuantity(record.cy_ton);
+  const rate = manualTruckingRate(service, unit);
   const runHours = truckingBillableHours(record.start_time, record.end_time, 2);
-  const quantity = Number(String(record.cy_ton || "").replace(/[^0-9.-]+/g, "")) || 0;
   const rateType = trainingEntry ? "Training / Non-billable" : String(rate?.rate_type || "");
-  const multiplier = /hour/i.test(rateType) ? runHours : /\/(?:cy|ton)/i.test(rateType) ? quantity : 1;
+  const multiplier = /hour/i.test(rateType) ? runHours : truckingRateUnit(rateType) ? quantity : 1;
   const serviceAmount = Number((Number(rate?.rate || 0) * multiplier).toFixed(2));
-  const debrisRate = (productMeta.truckingRates || []).find((item) => String(item.category || "").toLowerCase() === "tipping fee" && String(item.service || "").trim().toLowerCase() === String(record.debris_type || "").trim().toLowerCase());
-  const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (/\/(?:cy|ton)/i.test(debrisRate.rate_type || "") ? quantity : 1)).toFixed(2)) : 0;
+  const debrisRate = truckingRateForUnit(truckingDebrisRates(record.debris_type), unit);
+  const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1)).toFixed(2)) : 0;
   return { ...record, billing_status: trainingEntry ? "Non-billable" : record.billing_status, rate: trainingEntry ? 0 : Number(rate?.rate || 0), rate_type: rateType, amount: trainingEntry ? 0 : serviceAmount, tipping_fee: trainingEntry ? null : (debrisRate?.service || null), tipping_rate: trainingEntry ? 0 : Number(debrisRate?.rate || 0), tipping_rate_type: trainingEntry ? null : (debrisRate?.rate_type || null), tipping_charge: trainingEntry ? 0 : tippingCharge, amount_to_bill: trainingEntry ? 0 : Number((serviceAmount + tippingCharge).toFixed(2)), discount_amount: 0, discount_percent: 0 };
 }
 
@@ -34357,11 +36261,11 @@ async function uploadFinalTruckingTickets(file, input) {
     if (invalid.length) throw new Error(`${invalid.length} ticket row(s) are missing Driver, Service, Equipment Used, or Customer.`);
     const containerEquipment = records.filter((row) => isTruckingContainerEquipment(truckingFindAsset(row.equipment_label), row.equipment_label));
     if (containerEquipment.length) throw new Error(`${containerEquipment.length} ticket row(s) use a container as Equipment Used. Enter the truck or operating equipment instead; the container may remain as the item being moved.`);
-    const rollOffDebrisMissing = records.filter((row) => isRollOffEquipment(row.service) && !row.debris_type);
-    if (rollOffDebrisMissing.length) throw new Error(`${rollOffDebrisMissing.length} Roll Off Bin row(s) are missing Type of Debris.`);
-    const cyTonMissing = records.filter((row) => requiresTruckingCyTon(row.service) && !row.cy_ton);
-    if (cyTonMissing.length) throw new Error(`${cyTonMissing.length} Roll Off Bin, Dump Truck, or End Dump row(s) are missing CY/Ton.`);
-    const missingRate = records.filter((row) => !isTruckingTrainingEntry(row.service) && !manualTruckingRate(row.service));
+    for (const record of records) {
+      const materialError = truckingTicketMaterialError(record);
+      if (materialError) throw new Error(`${record.ticket_no}: ${materialError}`);
+    }
+    const missingRate = records.filter((row) => !isTruckingTrainingEntry(row.service) && !manualTruckingRate(row.service, truckingQuantity(row.cy_ton).unit));
     if (missingRate.length) {
       const unmatched = [...new Set(missingRate.map((row) => String(row.service || "").trim()).filter(Boolean))];
       throw new Error(`${missingRate.length} row(s) have Service values that do not match an active Trucking Rate Sheet item. Unmatched: ${unmatched.join(", ")}. Training rows are accepted automatically as non-billable.`);
@@ -34374,6 +36278,8 @@ async function uploadFinalTruckingTickets(file, input) {
     if (!newRecords.length) throw new Error(`All ${records.length} ticket number(s) already exist. Nothing was imported.`);
     const overlapPool = [...existing];
     for (const record of newRecords) {
+      const timeError = truckingTimeOrderError(record.start_time, record.end_time);
+      if (timeError) throw new Error(`${record.ticket_no}: ${timeError}`);
       if (record.start_time && record.end_time) {
         const conflict = truckingTimeOverlapConflict(overlapPool, record);
         if (conflict) throw new Error(`${record.ticket_no}: ${truckingOverlapMessage(conflict)}`);
@@ -34916,15 +36822,20 @@ async function returnTruckingBillingGroupToUnbilled(customer, billingBatch = "")
 }
 
 async function printTruckingCustomerBillingSummary(customer, selectedTicketNos = [], targetWindow = null) {
+  const win = targetWindow || openInAppDocumentWindow("Trucking Billing Summary");
+  if (!win) return alert("Allow popups to view the billing summary.");
+  try {
+  win.document.write("<p>Preparing billing summary…</p>");
+  win.document.close();
   const selected = new Set(selectedTicketNos || []);
-  const rows = (await getAll("trucking_moves").catch(() => [])).filter((row) =>
+  const rows = (await workOrderScopedRows("trucking_moves", selected.size ? "ticket_no" : "customer", selected.size ? [...selected] : [customer])).filter((row) =>
     row.status === "Finalized"
     && row.driver_signature
     && row.customer_signature
     && String(row.customer || "").trim().toLowerCase() === String(customer || "").trim().toLowerCase()
     && (!selected.size || selected.has(row.ticket_no))
   ).sort((a, b) => String(a.move_date || "").localeCompare(String(b.move_date || "")) || String(a.ticket_no || "").localeCompare(String(b.ticket_no || "")));
-  if (!rows.length) return alert("No finalized tickets found for this customer.");
+  if (!rows.length) { win.close(); return alert("No finalized tickets found for this customer."); }
   const originalTotal = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const tippingTotal = rows.reduce((sum, row) => sum + Number(row.tipping_charge || 0), 0);
   const discountTotal = rows.reduce((sum, row) => sum + Number(row.discount_amount || 0), 0);
@@ -34964,23 +36875,46 @@ async function printTruckingCustomerBillingSummary(customer, selectedTicketNos =
       <tbody>${rows.map((row) => `<tr><td>${esc(row.ticket_no)}</td><td>${esc(formatDisplayDate(row.move_date))}</td><td class="hours-col">${billingSummaryHours(row).toFixed(2)}</td><td>${esc(row.service || "")}</td><td>${esc(row.move_description || row.notes || "")}</td><td>${esc(row.origin || "")}</td><td>${esc(row.destination || "")}</td><td>${esc(row.driver_name || "")}</td><td>${esc(row.po_no || "")}</td><td class="num base-rate-col">${money(billingSummaryBaseRate(row))}</td><td class="num">${money(row.tipping_charge || 0)}</td><td class="num">${money(row.amount || 0)}</td><td class="num">${truckingDiscountPercent(row).toFixed(2)}%</td><td class="num">${money(row.discount_amount || 0)}</td><td class="num"><strong>${money(truckingAmountToBill(row))}</strong></td><td class="rate-code">${billingSummaryRateCode(row)}</td></tr>`).join("")}</tbody></table>
       <div class="totals"><div><span>Tipping Fees (included)</span><strong>${money(tippingTotal)}</strong></div><div><span>Original Charges</span><strong>${money(originalTotal)}</strong></div><div><span>Total Discounts</span><strong>${money(discountTotal)}</strong></div><div class="due"><span>Amount to Be Billed</span><strong>${money(billedTotal)}</strong></div></div>
     </main>${ticketPages}<script>window.addEventListener("load",()=>Promise.all(Array.from(document.images,img=>img.complete?Promise.resolve():new Promise(resolve=>{img.onload=resolve;img.onerror=resolve}))).then(()=>setTimeout(()=>window.print(),250)));</script></body></html>`;
-  const win = targetWindow || openInAppDocumentWindow("Trucking Billing Summary");
-  if (!win) return alert("Allow popups to view the billing summary.");
+
   win.document.write(partNumberWording(html));
   win.document.close();
+  } catch (error) { if (!win.closed) win.close(); alert(error.message || error); }
 }
 
 async function openTruckingDispatchFromRequest(requestNo) {
-  await loadTruckingLookups();
-  const req = (await getAll("trucking_requests")).find((row) => row.request_no === requestNo);
-  const reqLines = (await getAll("trucking_request_lines")).filter((line) => line.request_no === requestNo && !line.ticket_no);
-  if (req?.status === "Cancelled") return alert("This move request has been cancelled and cannot be dispatched.");
-  if (!req || !reqLines.length) return alert("No undispatched request lines found.");
+  modalTitle.textContent = "Opening dispatch " + requestNo;
+  modalBody.innerHTML = '<div class="empty" role="status">Loading this move request...</div>';
+  const loadingNode = modalBody.firstElementChild;
+  modalSave.onclick = null;
+  modalSave.style.display = "none";
+  $("modalCancel").textContent = "Close";
+  $("modal").style.display = "flex";
+  const controller = new AbortController();
+  let timer;
+  try {
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error("The move request took too long to load. Please try again."));
+        controller.abort();
+      }, 20000);
+    });
+    const [requestResult, linesResult] = await Promise.race([Promise.all([
+      supabase.from("trucking_requests").select("*").eq("request_no", requestNo).abortSignal(controller.signal),
+      supabase.from("trucking_request_lines").select("*").eq("request_no", requestNo).abortSignal(controller.signal),
+      loadTruckingLookups({ useCache: true, dispatchOnly: true }),
+    ]), timeout]);
+    if (modalBody.firstElementChild !== loadingNode || $("modal").style.display === "none") return;
+    if (requestResult.error) throw requestResult.error;
+    if (linesResult.error) throw linesResult.error;
+    const req = (requestResult.data || [])[0];
+    const reqLines = (linesResult.data || []).filter(line => !line.ticket_no);
+    if (req?.status === "Cancelled") throw new Error("This move request has been cancelled and cannot be dispatched.");
+    if (!req || !reqLines.length) throw new Error("No undispatched request lines found. This request may already have been dispatched.");
   modalTitle.textContent = `Dispatch ${requestNo}`;
   modalBody.innerHTML = `
     <div class="dispatch-request-form">
     <div class="form-grid">
-      <label>Trucking Driver<input name="driver_name" list="truckDriverOptions" placeholder="Search Trucking Driver" required><small>Select a user configured as Trucking Driver.</small></label>
+      <label>Trucking Driver<input name="driver_name" class="suggest-input" data-suggest-source="trucking_drivers" autocomplete="off" list="truckDriverOptions" placeholder="Search Trucking Driver" required><small>Select a user configured as Trucking Driver.</small></label>
       <label>Dispatch Date<input type="date" name="move_date" value="${esc(truckingToday())}" required></label>
     </div>
     <div class="notice"><strong>Original Move Description:</strong><br>${esc(req.move_description || req.notes || "No move description was provided.")}</div>
@@ -34998,11 +36932,26 @@ async function openTruckingDispatchFromRequest(requestNo) {
     </div>
     ${truckingDatalists()}
     </div>`;
+  modalSave.style.display = "";
+  modalSave.disabled = false;
+  modalSave.textContent = "Dispatch";
   modalSave.onclick = () => saveTruckingDispatch(req, reqLines);
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   $("modal").style.display = "flex";
   truckingEnhanceSuggestInputs(modalBody);
+
+  } catch (error) {
+    if (modalBody.firstElementChild !== loadingNode || $("modal").style.display === "none") return;
+    console.error("Could not open trucking dispatch", error);
+    modalTitle.textContent = "Dispatch " + requestNo;
+    modalBody.innerHTML = `<p class="notice" role="alert">${esc(error?.message || "Could not load this move request.")} No dispatch was created.</p><button type="button" id="retryTruckingDispatchBtn">Retry</button>`;
+    $("retryTruckingDispatchBtn").onclick = () => openTruckingDispatchFromRequest(requestNo);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
 }
+
 
 async function cancelTruckingRequest(requestNo) {
   const request = (await getAll("trucking_requests").catch(() => [])).find((row) => row.request_no === requestNo);
@@ -35202,7 +37151,14 @@ async function saveTruckingDispatch(req, reqLines) {
   await loadView("trucking");
 }
 
+async function readTruckingTicket(ticketNo) {
+  const { data, error } = await supabase.from("trucking_moves").select("*").eq("ticket_no", ticketNo).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 async function openTruckingMoveForm(ticketNo = "") {
+  modalSave.style.display = "";
   const normalizedTicketNo = String(ticketNo || "").trim();
   if (normalizedTicketNo) {
     modalTitle.textContent = `Loading ticket ${normalizedTicketNo}`;
@@ -35211,16 +37167,18 @@ async function openTruckingMoveForm(ticketNo = "") {
     modalSave.onclick = null;
     $("modal").style.display = "flex";
   }
-  await loadTruckingLookups();
+  const loadingNode = normalizedTicketNo ? modalBody.firstElementChild : null;
+  try {
+  if (!productMeta.truckingLoaded) await loadTruckingLookups({ useCache: true });
   const visibleMatch = (currentRows || []).find((row) => String(row.ticket_no || "").trim() === normalizedTicketNo);
   const existing = normalizedTicketNo
-    ? visibleMatch || (await getAll("trucking_moves").catch(() => [])).find((row) => String(row.ticket_no || "").trim() === normalizedTicketNo)
+    ? await readTruckingTicket(normalizedTicketNo)
     : null;
-  if (normalizedTicketNo && !existing) return alert(`Ticket ${normalizedTicketNo} could not be loaded.`);
+  if (normalizedTicketNo && !existing) throw new Error(`Ticket ${normalizedTicketNo} could not be loaded.`);
   let requestedEquipment = existing?.requested_equipment_label || "";
-  if (!requestedEquipment) {
-    const requestLines = await getAll("trucking_request_lines").catch(() => []);
-    const ticketBase = String(number || normalizedTicketNo || "").trim().replace(/-\d+$/, "");
+  if (!requestedEquipment && existing?.request_no) {
+    const requestLines = await readMoveRequestRows("trucking_request_lines", existing.request_no);
+    const ticketBase = normalizedTicketNo.replace(/-\d+$/, "");
     const requestLine = requestLines.find((line) => {
       const requestRef = String(line.request_no || line.request_id || "").trim();
       return (requestRef === String(existing?.request_no || "").trim() || requestRef === ticketBase)
@@ -35229,6 +37187,7 @@ async function openTruckingMoveForm(ticketNo = "") {
     requestedEquipment = requestLine?.equipment_label || "";
   }
   const number = existing?.ticket_no || String(Math.max(100000, ...((productMeta.truckingMoves || []).map((row) => Number(String(row.ticket_no || "").replace(/\D/g, ""))).filter(Boolean))) + 1).padStart(6, "0");
+  if (loadingNode && (modalBody.firstElementChild !== loadingNode || $("modal").style.display === "none")) return;
   modalTitle.textContent = existing ? `Edit ticket ${number}` : `New trucking ticket ${number}`;
   modalBody.innerHTML = `
     <div class="trucking-ticket-form">
@@ -35291,6 +37250,12 @@ async function openTruckingMoveForm(ticketNo = "") {
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   $("modal").style.display = "flex";
   truckingEnhanceSuggestInputs(modalBody);
+  } catch (error) {
+    if (loadingNode && modalBody.firstElementChild !== loadingNode) return;
+    modalBody.innerHTML = '<div class="empty">Could not load ticket: ' + esc(error.message || error) + '<br><button type="button" id="retryTruckingTicket">Retry</button></div>';
+    $("retryTruckingTicket").onclick = () => openTruckingMoveForm(normalizedTicketNo);
+    modalSave.style.display = "none";
+  }
 }
 
 async function cancelTruckingMove(ticketNo = "") {
@@ -35324,6 +37289,8 @@ async function saveTruckingMove() {
   // time columns accept NULL for an unentered value, but reject an empty string.
   payload.start_time = String(payload.start_time || "").trim() || null;
   payload.end_time = String(payload.end_time || "").trim() || null;
+  const timeError = truckingTimeOrderError(payload.start_time, payload.end_time);
+  if (timeError) return alert(timeError);
   if (!payload.ticket_no) return alert("Ticket # is required.");
   if (!payload.driver_name) return alert("Driver is required.");
   if (!payload.equipment_label) return alert("Equipment is required.");
@@ -35333,6 +37300,10 @@ async function saveTruckingMove() {
   if (!driver) return alert("Select a user configured as a Trucking Driver.");
   const existingMove = (currentRows || []).find((row) => String(row.ticket_no || "") === String(payload.ticket_no || ""))
     || (productMeta.truckingMoves || []).find((row) => String(row.ticket_no || "") === String(payload.ticket_no || ""));
+  if (String(payload.status || "").toLowerCase() === "finalized") {
+    const materialError = truckingTicketMaterialError({ ...existingMove, ...payload });
+    if (materialError) return alert(materialError);
+  }
   const driverChanged = !!existingMove
     && String(existingMove.driver_name || "").trim().toLowerCase() !== String(driver.name || "").trim().toLowerCase();
   payload.driver_name = driver.name;
@@ -35389,9 +37360,10 @@ async function saveTruckingMove() {
 async function printTruckingTicket(ticketNo) {
   const win = openInAppDocumentWindow(`Trucking Ticket ${ticketNo}`);
   if (!win) return alert("Allow popups to view or print the ticket.");
+  try {
   win.document.write(`<title>Loading ticket ${esc(ticketNo)}</title><body style="font-family:Arial;padding:30px">Loading ticket ${esc(ticketNo)}...</body>`);
   win.document.close();
-  const row = (await getAll("trucking_moves").catch(() => [])).find((move) => String(move.ticket_no || "").trim() === String(ticketNo || "").trim());
+  const row = (await workOrderScopedRows("trucking_moves", "ticket_no", [ticketNo])).find((move) => String(move.ticket_no || "").trim() === String(ticketNo || "").trim());
   if (!row) {
     win.close();
     return alert("Ticket not found.");
@@ -35401,7 +37373,7 @@ async function printTruckingTicket(ticketNo) {
   // the ticket PDF always shows both what was requested and what was used.
   let requestedEquipment = row.requested_equipment_label || "";
   if (!requestedEquipment && row.request_no) {
-    const requestLines = await getAll("trucking_request_lines").catch(() => []);
+    const requestLines = await workOrderScopedRows("trucking_request_lines", "request_no", [row.request_no]);
     const requestLine = requestLines.find((line) =>
       String(line.request_no || line.request_id || "").trim() === String(row.request_no || "").trim()
       && (!row.request_line_no || String(line.line_no || line.request_line_no || "").trim() === String(row.request_line_no || "").trim())
@@ -35432,6 +37404,7 @@ async function printTruckingTicket(ticketNo) {
   win.document.open();
   win.document.write(partNumberWording(html));
   win.document.close();
+  } catch (error) { if (!win.closed) win.close(); alert(error.message || error); }
 }
 
 function truckingQuoteLineAmount(line = {}) {
@@ -35528,8 +37501,8 @@ async function renderTruckingQuotationsView() {
   currentCfg = tableMap.truckingquotes;
   $("viewTitle").textContent = "Trucking Quotations";
   $("viewSub").textContent = "Quote multiple trucking moves, record acceptance, and create dispatch-ready Move Requests.";
-  await loadTruckingLookups();
-  const [quotes, lines] = await Promise.all([getAll("trucking_quotations").catch(() => []), getAll("trucking_quotation_lines").catch(() => [])]);
+  await loadTruckingLookups({ useCache: true });
+  const [quotes, lines] = await Promise.all([getViewRows("trucking_quotations").catch(() => []), getViewRows("trucking_quotation_lines").catch(() => [])]);
   productMeta.truckingQuotationLines = lines;
   currentRows = quotes.map((quote) => ({ ...quote, line_count: lines.filter((line) => line.quote_no === quote.quote_no).length }))
     .sort((a, b) => String(b.quote_date || "").localeCompare(String(a.quote_date || "")) || String(b.quote_no || "").localeCompare(String(a.quote_no || "")));
@@ -35611,20 +37584,25 @@ async function acceptTruckingQuotation(quoteNo = "") {
 }
 
 async function printTruckingQuotation(quoteNo = "") {
-  const quote = (await getAll("trucking_quotations")).find((row) => row.quote_no === quoteNo);
-  const lines = (await getAll("trucking_quotation_lines")).filter((line) => line.quote_no === quoteNo).sort((a, b) => a.line_no - b.line_no);
-  if (!quote) return alert("Quotation not found.");
   const win = openInAppDocumentWindow(`Trucking Quotation ${quoteNo}`);
   if (!win) return alert("Allow popups to print the quotation.");
+  try {
+  win.document.write("<p>Preparing quotation…</p>");
+  win.document.close();
+  const quote = (await workOrderScopedRows("trucking_quotations", "quote_no", [quoteNo])).find((row) => row.quote_no === quoteNo);
+  const lines = (await workOrderScopedRows("trucking_quotation_lines", "quote_no", [quoteNo])).filter((line) => line.quote_no === quoteNo).sort((a, b) => a.line_no - b.line_no);
+  if (!quote) { win.close(); return alert("Quotation not found."); }
+
   win.document.write(`<!doctype html><html><head><title>${esc(quoteNo)}</title><style>@page{size:Letter;margin:.45in}body{font-family:Arial;color:#17212b}h1{margin-bottom:2px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0}table{width:100%;border-collapse:collapse;font-size:10px}th,td{border:1px solid #9aa8b5;padding:6px;text-align:left}th{background:#eaf1f5}.num{text-align:right}.totals{width:42%;margin:12px 0 0 auto}.totals div{display:flex;justify-content:space-between;padding:6px;border-bottom:1px solid #aaa}.grand{font-size:16px;font-weight:900}</style></head><body><h1>Trucking Quotation</h1><strong>${esc(quoteNo)}</strong><div class="meta"><div><b>Customer:</b> ${esc(quote.customer || "")}</div><div><b>Date:</b> ${esc(formatDisplayDate(quote.quote_date))}</div><div><b>Project / Jobsite:</b> ${esc(quote.project_jobsite || "")}</div><div><b>Valid Until:</b> ${esc(formatDisplayDate(quote.valid_until))}</div></div><table><thead><tr><th>#</th><th>Move</th><th>Trip</th><th>Qty / Hours</th><th>Rate</th><th>Description</th><th class="num">Amount</th></tr></thead><tbody>${lines.map((line) => `<tr><td>${line.line_no}</td><td>${esc(truckingQuoteRateLabel(line))}</td><td>${esc(line.trip_type)}</td><td>${esc(line.quantity)}</td><td>${money(line.unit_rate)} ${esc(line.rate_type || "")}</td><td>${esc(line.description || "")}</td><td class="num">${money(line.line_total)}</td></tr>`).join("")}</tbody></table><div class="totals"><div><span>Subtotal</span><b>${money(quote.subtotal)}</b></div><div><span>Discount</span><b>${money(quote.discount_amount)}</b></div><div class="grand"><span>Total</span><b>${money(quote.total)}</b></div></div><p>${esc(quote.notes || "")}</p><script>window.addEventListener('load',()=>window.print())</script></body></html>`);
   win.document.close();
+  } catch (error) { if (!win.closed) win.close(); alert(error.message || error); }
 }
 
 async function renderTruckingRatesView() {
   currentCfg = tableMap.truckingrates;
   $("viewTitle").textContent = "Trucking Rate Sheet";
   $("viewSub").textContent = "Rates and tipping fees for trucking support. No accounting entries are created.";
-  currentRows = await getAll("trucking_rates").catch(() => []);
+  currentRows = await getViewRows("trucking_rates").catch(() => []);
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="truckRateSearch" placeholder="Search super parent, move type, size, rate key, fee, or category"></div>
     <section class="panel">
@@ -35782,17 +37760,32 @@ if (typeof window !== "undefined") {
   });
 }
 
+async function refreshFuelListBalances() {
+  const host = $("fuelListBalances");
+  if (!host) return;
+  try {
+    const tanks = await getPagedViewRows("fuel_tanks");
+    if (!host.isConnected || currentView !== "fuel") return;
+    productMeta.fuelTanks = tanks;
+    host.innerHTML = fuelTankBalanceCards();
+  } catch (error) {
+    if (!host.isConnected) return;
+    host.textContent = "Tank balances could not load. ";
+    const retry = document.createElement("button"); retry.textContent = "Retry balances";
+    retry.onclick = refreshFuelListBalances; host.append(retry);
+  }
+}
+
 async function renderFuelPortalView() {
   currentCfg = tableMap.fuel;
   $("viewTitle").textContent = isFuelUser() ? "Fuel Report" : "Fuel Portal";
   $("viewSub").textContent = isFuelUser()
     ? "Enter fuel refills by jobsite, equipment, gallons, and receiver signature."
     : "Daily fuel refill reports by jobsite, driver, equipment, gallons, time, and receiver signature.";
-  await loadFuelLookups();
-  await loadFuelTankState();
-  currentRows = (await getAll("fuel_logs").catch(() => []))
+
+  currentRows = (await getViewRows("fuel_logs"))
     .sort((a, b) => String(b.fuel_date || "").localeCompare(String(a.fuel_date || "")) || String(b.report_no || "").localeCompare(String(a.report_no || "")));
-  if (isFuelUser()) return renderFuelMobileView();
+  if (isFuelUser()) { renderFuelMobileView(); void refreshFuelListBalances(); return; }
   $("content").innerHTML = `
     <div class="toolbar">
       <input class="searchbox" id="fuelSearch" placeholder="Search fuel report, jobsite, driver, equipment, asset, receiver">
@@ -35802,7 +37795,7 @@ async function renderFuelPortalView() {
         <div class="panel-title"><strong>Fuel Logs</strong><span>${esc(currentRows.length)} line${currentRows.length === 1 ? "" : "s"} shown.</span></div>
         <div class="actions"><button id="fuelCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button id="fuelVarianceBtn">Fuel balance / variance</button><button id="fuelSimpleReconciliationBtn">Fuel reconciliation</button><button id="fuelReconciliationPeriodsBtn">Fuel reconciliation periods</button>${isAdminUser() ? `<button id="fuelBeginningBtn">Set beginning balance</button><button id="fuelPricingPeriodsBtn">Fuel pricing periods</button>` : ""}<button id="fuelRefillHistoryBtn">Refill history</button><button id="fuelRefillBtn">Tank refill</button><button class="danger" id="fuelEmptyBtn">Tank is empty</button><button class="primary" id="newFuelReportBtn">New fuel report</button></div>
       </div>
-      <div class="panel-body">${fuelTankBalanceCards()}</div>
+      <div class="panel-body" id="fuelListBalances" role="status">Loading tank balances…</div>
       <div id="fuelHost">${fuelReportTable(currentRows)}</div>
     </section>`;
   $("fuelVarianceBtn")?.insertAdjacentHTML("afterend", '<button id="fuelDailyJobsiteBtn" type="button">Daily fuel by jobsite</button>');
@@ -35820,6 +37813,7 @@ async function renderFuelPortalView() {
   $("newFuelReportBtn").onclick = openFuelReportModal;
   bindFuelReportActions();
   bindFuelTableFilters();
+  void refreshFuelListBalances();
 }
 
 function fuelPricingPeriodRow(row = {}) {
@@ -36011,7 +38005,7 @@ function fuelReportTable(rows) {
             <td>${esc(row.gallons)}</td>
             <td>${esc(row.mileage_hours)}</td>
             <td>${esc(row.receiver_name)}</td>
-            <td>${row.receiver_signature ? `<img class="signature-thumb" src="${esc(row.receiver_signature)}" alt="signature">` : ""}</td>
+            <td>${row._listDetails ? `<button type="button" data-fuel-open="${esc(row.report_no)}">View report</button>` : row.receiver_signature ? `<img class="signature-thumb" src="${esc(row.receiver_signature)}" alt="signature">` : ""}</td>
             <td>${badge(row.status || "Posted")}</td>
             ${isAdminUser() ? `<td class="rowactions"><button type="button" data-fuel-edit="${esc(row.report_no || "")}">Edit</button>${/reversed|void/i.test(row.status || "") ? badge("Reversed") : `<button class="danger" data-fuel-reverse="${esc(row.report_no || "")}">Reverse</button>`}</td>` : ""}
           </tr>`).join("") : `<tr><td class="empty" colspan="${headers.length}">No fuel logs yet.</td></tr>`;
@@ -36082,7 +38076,7 @@ function renderFuelMobileView() {
         <div><span class="mechanic-label">Fuel Portal</span><h2>${esc(profile?.full_name || profile?.username || "Fuel Driver")}</h2><small>One report can include multiple equipment for the same jobsite.</small></div>
         <div class="actions"><button id="mobileFuelRefillBtn">Tank refill</button><button class="danger" id="mobileFuelEmptyBtn">Tank is empty</button><button class="primary" id="mobileFuelNewBtn">New fuel report</button></div>
       </div>
-      <div class="fuel-card">${fuelTankBalanceCards()}</div>
+      <div class="fuel-card" id="fuelListBalances" role="status">Loading tank balances…</div>
       <div class="fuel-card">
         <input class="searchbox" id="fuelSearch" placeholder="Search reports, jobsite, equipment, asset">
       </div>
@@ -36132,7 +38126,7 @@ function isKnownFuelJobsite(value) {
 }
 
 async function openFuelReportModal(reportNo = "", options = {}) {
-  await Promise.all([loadFuelLookups(), loadFuelTankState()]);
+  await Promise.all([loadFuelLookups({ useCache: true }), loadFuelTankState({ useCache: true })]);
   $("modalSave").style.display = "";
   $("modalCancel").textContent = "Cancel";
   $("modalCancel").onclick = async () => {
@@ -36141,7 +38135,7 @@ async function openFuelReportModal(reportNo = "", options = {}) {
     if (options.returnToSimpleReconciliation) await openSimpleFuelReconciliationModal(simpleFuelReconciliationReturnState || {});
   };
   const cleanReportNo = String(reportNo || "").trim();
-  const editRows = cleanReportNo ? currentRows.filter((row) => String(row.report_no || "").trim() === cleanReportNo) : [];
+  const editRows = cleanReportNo ? await workOrderScopedRows("fuel_logs", "report_no", [cleanReportNo]) : [];
   const editing = editRows.length > 0;
   if (editing && !isAdminUser()) return alert("Only administrators can edit posted fuel reports.");
   const first = editRows[0] || {};
@@ -36406,47 +38400,40 @@ async function saveFuelReport() {
     await supabase.from("fuel_jobsites").upsert({ name: jobsite }, { onConflict: "name" });
     const persistedLines = lines.map(({ _asset_table, _asset_key_field, _asset_key, _blocked_container, _id, ...line }) => ({ ...line, _id }));
     if (editing) {
-      const retainedIds = new Set(persistedLines.map((line) => String(line._id || "")).filter(Boolean));
-      for (const line of persistedLines) {
-        const { _id, ...payload } = line;
-        const query = _id
-          ? supabase.from("fuel_logs").update(payload).eq("id", _id)
-          : supabase.from("fuel_logs").insert(payload);
-        const { error } = await query;
-        if (error) throw error;
-      }
-      const removedIds = originalRows.map((row) => String(row.id || "")).filter((id) => id && !retainedIds.has(id));
-      if (removedIds.length) {
-        const { error } = await supabase.from("fuel_logs").delete().in("id", removedIds);
-        if (error) throw error;
-      }
+      const { error } = await supabase.rpc("correct_fuel_report", {
+        p_report_no: editReportNo,
+        p_lines: persistedLines,
+      });
+      if (error) throw error;
     } else {
       const insertLines = persistedLines.map(({ _id, ...line }) => line);
       const { error } = await supabase.from("fuel_logs").insert(insertLines);
       if (error) throw error;
     }
-    const hasTankLedgerEntry = (productMeta.fuelTankLedger || []).some((entry) =>
-      entry.event_type === "Fuel Dispensed"
-      && String(entry.report_no || "").trim() === reportNo
-    );
-    const historicalClosedPeriodEdit = editing
-      && !hasTankLedgerEntry
-      && sourceTank?.balance_status !== "Active";
-    const tankRpc = (reconciliationCorrection && !editing) || historicalClosedPeriodEdit
-      ? "sync_missing_closed_fuel_report"
-      : "sync_fuel_tank_report";
-    const tankPayload = {
-      p_report_no: reportNo,
-      p_asset_tag: fuelTruck,
-      p_event_date: fuelDate,
-      p_total_gallons: totalGallons,
-      p_actor: driverName,
-    };
-    if (tankRpc === "sync_fuel_tank_report") tankPayload.p_tank_empty = physicalTankEmpty;
-    const { error: tankError } = await supabase.rpc(tankRpc, tankPayload);
-    if (tankError) {
-      if (!editing) await supabase.from("fuel_logs").delete().eq("report_no", reportNo);
-      throw tankError;
+    if (!editing) {
+      const hasTankLedgerEntry = (productMeta.fuelTankLedger || []).some((entry) =>
+        entry.event_type === "Fuel Dispensed"
+        && String(entry.report_no || "").trim() === reportNo
+      );
+      const historicalClosedPeriodEdit = editing
+        && !hasTankLedgerEntry
+        && sourceTank?.balance_status !== "Active";
+      const tankRpc = (reconciliationCorrection && !editing) || historicalClosedPeriodEdit
+        ? "sync_missing_closed_fuel_report"
+        : "sync_fuel_tank_report";
+      const tankPayload = {
+        p_report_no: reportNo,
+        p_asset_tag: fuelTruck,
+        p_event_date: fuelDate,
+        p_total_gallons: totalGallons,
+        p_actor: driverName,
+      };
+      if (tankRpc === "sync_fuel_tank_report") tankPayload.p_tank_empty = physicalTankEmpty;
+      const { error: tankError } = await supabase.rpc(tankRpc, tankPayload);
+      if (tankError) {
+        if (!editing) await supabase.from("fuel_logs").delete().eq("report_no", reportNo);
+        throw tankError;
+      }
     }
     await updateFuelAssetLocationsFromFuel(lines, jobsite, fuelDate);
     if (!editing) await incrementSequence("fuel");
@@ -36481,8 +38468,8 @@ async function renderEquipmentRequestsView() {
   $("viewTitle").textContent = usesEquipmentRequestMobileView() ? "" : "Equipment Requests";
   $("viewSub").textContent = usesEquipmentRequestMobileView() ? "" : "Equipment requests with date ranges, PO numbers, signatures, and approvals.";
   const [requests, assets] = await Promise.all([
-    getAll("equipment_requests").catch(() => []),
-    getAll("assets"),
+    getViewRows("equipment_requests").catch(() => []),
+    getViewRows("assets"),
   ]);
   productMeta.assets = assets;
   currentRows = requests.sort((a, b) => String(b.request_date || "").localeCompare(String(a.request_date || "")) || String(b.request_no || "").localeCompare(String(a.request_no || "")));
@@ -36864,6 +38851,23 @@ function setupPoAttachmentUpload() {
   if (field && !field.dataset.poDropzoneReady) {
     field.dataset.poDropzoneReady = "1";
     field.classList.add("file-dropzone");
+    if (input.matches('[data-asset-file="photo_url"]')) {
+      const saved = field.querySelector('[data-product-field="photo_url"]');
+      const remove = document.createElement('button');
+      remove.type='button'; remove.className='rowbtn danger'; remove.textContent='Remove photo';
+      remove.onclick=()=>{
+        input.value='';
+        if(saved)saved.value='';
+        field.querySelectorAll('img').forEach(img=>{
+          if(img.dataset.previewUrl)URL.revokeObjectURL(img.dataset.previewUrl);
+          img.remove();
+        });
+        const status=field.querySelector('.upload-compression-status');
+        if(status)status.textContent='Photo removed. Save to apply, or choose a replacement.';
+      };
+      input.insertAdjacentElement('beforebegin',remove);
+    }
+
     const hint = document.createElement("div");
     hint.className = "file-drop-hint";
     hint.textContent = "Drop customer PO here or click Choose File. Image POs are compressed automatically.";
@@ -37353,7 +39357,8 @@ function repairRequestText(asset) {
 
 function renderFilteredEquipmentRepairQueue() {
   const q = ($("repairAssetSearch")?.value || "").toLowerCase();
-  const rows = currentRows.filter((row) => !q || [Object.values(row).join(" "), row._openWoIssue].join(" ").toLowerCase().includes(q));
+  document.querySelectorAll('[data-repair-queue-tab]').forEach(button=>button.classList.toggle('active',button.dataset.repairQueueTab===equipmentRepairQueueTab));
+  const rows = currentRows.filter(row=>equipmentRepairQueueTab==='assigned'?Boolean(row._openWo):equipmentRepairQueueTab==='completed'?(!row._openWo && Boolean(row._completedWo)):(!row._openWo && !row._completedWo)).map(row=>equipmentRepairQueueTab==='completed'?{...row,_openWo:row._completedWo,_openWoIssue:[row._completedWo.wo_no,row._completedWo.description].filter(Boolean).join(' - ')}:row).filter((row) => !q || [Object.values(row).join(" "), row._openWoIssue].join(" ").toLowerCase().includes(q));
   $("repairAssetHost").innerHTML = equipmentRepairQueueTable(rows);
   bindEquipmentRepairQueue();
 }
@@ -38068,6 +40073,7 @@ function setupImageDropzones(root = document) {
 function previewDroppedImage(input, field) {
   const file = input.files?.[0];
   if (!file || !file.type.startsWith("image/")) return;
+  if(input.matches('[data-asset-file="photo_url"]')) field.querySelectorAll('img:not(.upload-preview)').forEach(img=>img.remove());
   let preview = field.querySelector(".upload-preview");
   if (!preview) {
     preview = document.createElement("img");
@@ -38214,7 +40220,7 @@ async function validateMechanicWorkDonePhotos(input, woNo) {
   if (status) status.textContent = `Preparing ${files.length} photo${files.length === 1 ? "" : "s"} for upload...`;
   const accepted = [];
   const rejected = [];
-  for (const file of files.slice(0, 8)) {
+  for (const file of files) {
     try {
       const result = await workDonePhotoQuality(file);
       if (result.ok) accepted.push(file);
@@ -38241,6 +40247,13 @@ function openAssetLocationModal(asset, options = {}) {
   const scannedAt = new Date();
   $("modalTitle").textContent = `Scanned asset ${asset.asset_tag}`;
   $("modalBody").innerHTML = `
+    <section aria-label="Scanned equipment information" class="notice">
+      <strong>Equipment information</strong>
+      <p>Check these details against the actual equipment before submitting.</p>
+      <div class="form-grid">
+        ${[["Equipment name", asset.name], ["Make", asset.make], ["Model", asset.model], ["Serial # / VIN", asset.vin_serial]].map(([label, value]) => `<div class="field"><label>${esc(label)}<input readonly value="${esc(String(value ?? "").trim() || "Not recorded")}"></label></div>`).join("")}
+      </div>
+    </section>
     <div class="form-grid">
       ${productSelect("Scan action", "scan_action", ["Update location", "Update photo", "Update location and photo", "Ask for repair"], "Update location")}
       ${productSelect("Location", "location", productMeta.locations || [], asset.location || "", "New location")}
@@ -38668,7 +40681,7 @@ async function handleSharedDocumentHash() {
   if (!documentType || !reference || hash === lastHandledSharedDocumentHash) return;
   const routes = {
     invoice: { view: "invoices", open: () => printCustomerInvoice(reference) },
-    "purchase-order": { view: "purchasing", open: () => printPurchaseOrder(reference) },
+    "purchase-order": { view: "purchasing", open: () => printScopedPurchaseOrder(reference) },
     "work-order": { view: "repairs", open: () => printWorkOrderDraft(reference) },
     "trucking-ticket": { view: "truckingtickets", open: () => printTruckingTicket(reference) },
   };
@@ -38676,8 +40689,7 @@ async function handleSharedDocumentHash() {
   if (!route) return;
   lastHandledSharedDocumentHash = hash;
   try {
-    await loadView(route.view);
-    if (currentView !== route.view) throw new Error("Your user does not have access to this document module.");
+    if (!session || !canAccess(route.view)) throw new Error("Your user does not have access to this document module.");
     await route.open();
   } catch (error) {
     lastHandledSharedDocumentHash = "";
@@ -38734,6 +40746,46 @@ function showPublicScanSuccess(asset, action) {
 }
 
 let productModalSourceView = null;
+
+async function openProductCopyModal(source) {
+  if (!source) return;
+  await openProductModal();
+  const markup = Number(source.markup_percent || 0);
+  const copiedValues = {
+    name: source.name || "",
+    category: source.category || "",
+    unit: source.unit || "",
+    warehouse: source._primary_warehouse || source.warehouse || "",
+    bin_shelf: source._primary_bin_shelf || source.bin_shelf || "",
+    reorder_point: source.reorder_point ?? 0,
+    cost: source.cost ?? "",
+    markup_percent: markup > 0 ? source.markup_percent : "",
+    selling_price: markup > 0 ? "" : (source.selling_price ?? ""),
+    source_vendor: source.source_vendor || "",
+    barcode: "",
+    batch_lot: "",
+    expiry_date: "",
+    status: "Active",
+    compatible_with: source.compatible_with || "",
+    notes: source.notes || "",
+    photo_url: "",
+  };
+  Object.entries(copiedValues).forEach(([field, value]) => {
+    const input = document.querySelector(`[data-product-field="${field}"]`);
+    if (input) input.value = value ?? "";
+  });
+  $("modalTitle").textContent = `Copy product: ${source.sku}`;
+  $("modalSave").textContent = "Create copied part";
+  const form = document.querySelector(".product-form");
+  form?.insertAdjacentHTML("beforebegin", `<p class="notice"><strong>Creating a new part from ${esc(source.sku)}.</strong> Enter the new Part # and review the copied details. Quantity starts at zero; the original photo, barcode, batch, expiry, alternate numbers, cross-references, component links, and transaction history are not copied.</p>`);
+  const skuInput = document.querySelector('[data-product-field="sku"]');
+  skuInput?.focus();
+  skuInput?.select();
+}
+
+function isSelectableProduct(product) {
+  return Boolean(product) && !/inactive|deactivated|discontinued|void/i.test(String(product.status || ""));
+}
 
 async function openProductModal(row = null) {
   editing = row;
@@ -38814,42 +40866,6 @@ async function openProductModal(row = null) {
   };
   bindMotherPartComponentRows();
   setupImageDropzones($("modalBody"));
-}
-
-async function openProductCopyModal(source) {
-  if (!source) return;
-  await openProductModal();
-  const markup = Number(source.markup_percent || 0);
-  const copiedValues = {
-    name: source.name || "",
-    category: source.category || "",
-    unit: source.unit || "",
-    warehouse: source._primary_warehouse || source.warehouse || "",
-    bin_shelf: source._primary_bin_shelf || source.bin_shelf || "",
-    reorder_point: source.reorder_point ?? 0,
-    cost: source.cost ?? "",
-    markup_percent: markup > 0 ? source.markup_percent : "",
-    selling_price: markup > 0 ? "" : (source.selling_price ?? ""),
-    source_vendor: source.source_vendor || "",
-    barcode: "",
-    batch_lot: "",
-    expiry_date: "",
-    status: "Active",
-    compatible_with: source.compatible_with || "",
-    notes: source.notes || "",
-    photo_url: "",
-  };
-  Object.entries(copiedValues).forEach(([field, value]) => {
-    const input = document.querySelector(`[data-product-field="${field}"]`);
-    if (input) input.value = value ?? "";
-  });
-  $("modalTitle").textContent = `Copy product: ${source.sku}`;
-  $("modalSave").textContent = "Create copied part";
-  const form = document.querySelector(".product-form");
-  form?.insertAdjacentHTML("beforebegin", `<p class="notice"><strong>Creating a new part from ${esc(source.sku)}.</strong> Enter the new Part # and review the copied details. Quantity starts at zero; the original photo, barcode, batch, expiry, alternate numbers, cross-references, component links, and transaction history are not copied.</p>`);
-  const skuInput = document.querySelector('[data-product-field="sku"]');
-  skuInput?.focus();
-  skuInput?.select();
 }
 
 function motherPartComponentRows(links = [], motherProductId = "") {
@@ -39144,13 +41160,7 @@ async function approveProductMasterCreation(record, editingProduct = null) {
   const enteredSku = String(record.sku || "").trim();
   const exact = candidates.find((product) => String(product.sku || "").trim().toLowerCase() === enteredSku.toLowerCase());
   if (exact) {
-    const status = String(exact.status || "Active").trim() || "Active";
-    const location = [exact.warehouse, exact.bin_shelf].map((value) => String(value || "").trim()).filter(Boolean).join(" / ") || "No location entered";
-    const openExisting = confirm(`This Part # already exists in Product Master.\n\n${exact.sku} - ${exact.name || "Product Master item"}\nStatus: ${status}\nLocation: ${location}\n\nIt may be under the Deactivated tab or outside the current filters.\n\nOK = Open the existing part now\nCancel = Return to the new-part form`);
-    if (openExisting) {
-      closeQuickPartOverlay();
-      await openProductModal(exact);
-    }
+    alert(`Duplicate part blocked.\n\n${exact.sku} - ${exact.name || "Product Master item"}\n\nSelect the existing part instead of creating another record.`);
     return false;
   }
   const compactSku = normalizedPartNumber(enteredSku);
@@ -39345,7 +41355,6 @@ async function saveProductModal() {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value);
   if (editing) record.cost = editing.cost;
-  record.photo_url = String(record.photo_url || "").trim() || null;
   record.expiry_date = String(record.expiry_date || "").trim() || null;
   const file = document.querySelector("[data-product-file]")?.files?.[0];
   const validation = validateProductRecord(record);
@@ -39354,6 +41363,11 @@ async function saveProductModal() {
     return;
   }
   try {
+    if (file) {
+      setProductPhotoStatus("Compressing and uploading product photo...");
+      record.photo_url = await uploadProductPhoto(record.sku, file);
+      setProductPhotoStatus("Product photo uploaded.");
+    }
     const wasNew = !editing;
     record.qty = editing ? Number(editing.qty || 0) : 0;
     ["qty", "reorder_point", "cost", "selling_price", "markup_percent"].forEach((k) => {
@@ -39369,11 +41383,6 @@ async function saveProductModal() {
       record.source_vendor = vendor.name;
     }
     if (!await approveProductMasterCreation(record, editing)) return;
-    if (file) {
-      setProductPhotoStatus("Compressing and uploading product photo...");
-      record.photo_url = await uploadProductPhoto(record.sku, file);
-      setProductPhotoStatus("Product photo uploaded.");
-    }
     // Do not send a stale displayed cost back over a newer receipt cost.
     if (!wasNew) delete record.cost;
     const saved = wasNew ? await insertNewProduct(record) : await upsertOne("products", record, "sku");
@@ -40043,7 +42052,8 @@ async function beginningInventoryGlBalance(postingDate) {
 }
 
 async function nextRefPreview(key, prefix, table, column) {
-  const { data } = await supabase.from("app_sequences").select("*").eq("key", key).maybeSingle();
+  const { data, error } = await supabase.from("app_sequences").select("*").eq("key", key).maybeSingle();
+  if (error && key === "po") throw new Error(`Could not load purchase order numbering: ${error.message}`);
   if (data) return `${data.prefix}${data.next_number}`;
   const rows = await getAll(table);
   const nums = rows.map((r) => Number(String(r[column] || "").replace(/\D/g, ""))).filter(Boolean);
@@ -40331,6 +42341,7 @@ function openExcelFilterMenu(button) {
   const values = isProductMaster
     ? [...new Set((filteredProductRows() || []).map((product) => excelFilterValue(productColumnFilterValue(product, productKey))))].sort(compareTableValues)
     : getExcelColumnValues(table, col);
+  const dateColumn = /\bdate\b/i.test(title) || (values.length > 0 && values.filter(value => value !== "(Blanks)").every(value => tableFilterDateKey(value) !== null));
   const selected = isProductMaster ? (productColumnExcelFilterState[productKey] || []) : selectedExcelFilterValues(input);
   const active = new Set(selected.length ? selected : values);
   const popup = document.createElement("div");
@@ -40338,8 +42349,8 @@ function openExcelFilterMenu(button) {
   popup.innerHTML = `
     <div class="excel-filter-title">${esc(title)}</div>
     <div class="excel-filter-actions">
-      <button type="button" data-sort="asc">Sort A-Z</button>
-      <button type="button" data-sort="desc">Sort Z-A</button>
+      <button type="button" data-sort="asc">${dateColumn ? "Oldest first" : "Sort A-Z"}</button>
+      <button type="button" data-sort="desc">${dateColumn ? "Newest first" : "Sort Z-A"}</button>
     </div>
     <input class="excel-filter-search" type="search" placeholder="Search values">
     <label class="excel-filter-check excel-filter-select-all"><input type="checkbox" ${active.size === values.length ? "checked" : ""}> Select all</label>
@@ -40461,9 +42472,24 @@ function applyColumnFilters(event) {
   rememberTransientTableState(table.closest(".table-wrap"));
 }
 
+function tableFilterDateKey(value) {
+  const text = String(value || "").trim();
+  const us = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!us && !iso) return null;
+  const year = Number(us ? us[3] : iso[1]);
+  const month = Number(us ? us[1] : iso[2]);
+  const day = Number(us ? us[2] : iso[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return year * 10000 + month * 100 + day;
+}
+
 function compareTableValues(a, b) {
   const ax = String(a || "").trim();
   const bx = String(b || "").trim();
+  const ad = tableFilterDateKey(ax), bd = tableFilterDateKey(bx);
+  if (ad !== null && bd !== null) return ad - bd;
   const an = Number(ax.replace(/[$,%(),\s]/g, "").replace(/^-\s*/, "-"));
   const bn = Number(bx.replace(/[$,%(),\s]/g, "").replace(/^-\s*/, "-"));
   if (!Number.isNaN(an) && !Number.isNaN(bn) && (/\d/.test(ax) || /\d/.test(bx))) return an - bn;
@@ -40871,6 +42897,7 @@ function closeModal(force = false) {
   resetModalSaveButton();
   $("modalSave").textContent = "Save";
   document.getElementById("poReceiveBtn")?.remove();
+  document.getElementById("poPdfBtn")?.remove();
   document.getElementById("closeFinalizeWoBtn")?.remove();
   document.getElementById("workOrderSaveOnlyBtn")?.remove();
   document.getElementById("parkForPartsIssuanceWoBtn")?.remove();
@@ -40882,8 +42909,8 @@ function closeModal(force = false) {
   document.getElementById("salesOrderInvoiceHistoryModalBtn")?.remove();
   document.getElementById("salesOrderCreatePoModalBtn")?.remove();
   document.getElementById("manualTruckingDraftBtn")?.remove();
-  document.getElementById("productHistoryModalBtn")?.remove();
   document.getElementById("productCopyModalBtn")?.remove();
+  document.getElementById("productHistoryModalBtn")?.remove();
   document.querySelector(".modalbox")?.classList.remove("wide-modal");
   const modalBox = document.querySelector(".modalbox");
   if (modalBox) {
@@ -41062,33 +43089,29 @@ async function deactivateMasterRow(key) {
   loadView(currentView);
 }
 
-async function getAll(table) {
-  const pageSize = 1000;
-  const productLookupTable = ["products", "product_alternates", "product_cross_references"].includes(table);
-  const pageQuery = (count = false) => {
-    const query = supabase.from(table).select("*", count ? { count: "exact" } : undefined);
-    return productLookupTable ? query.order("id", { ascending: true }) : query;
-  };
-  const firstPage = await pageQuery(true).range(0, pageSize - 1);
-  if (firstPage.error) {
-    if (productLookupTable) throw new Error(`Could not load ${table}: ${firstPage.error.message}`);
-    return [];
+async function getAll(table, { strict = false, signal, columns = "*", beforePage } = {}) {
+  const pageSize = ["fuel_logs", "trucking_moves"].includes(table) ? 50 : 250;
+  const required = strict || ["fuel_logs", "trucking_moves", "products", "product_alternates", "product_cross_references", "work_orders", "purchase_orders", "purchase_order_lines", "goods_receipts"].includes(table);
+  const rows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    if (signal?.aborted) throw new Error("Record loading was cancelled.");
+    if (beforePage) await beforePage(signal);
+    let result;
+    try {
+      result = await pacedReadPage(pageSignal => (["app_sequences", "transaction_reset_backups", "jobsite_merges"].includes(table) ? supabase.from(table).select(columns) : supabase.from(table).select(columns).order("id", { ascending: true })).range(offset, offset + pageSize - 1).abortSignal(pageSignal), signal);
+    } catch (error) {
+      if (required || rows.length) throw new Error("Could not load " + table + ": " + (error.message || error));
+      return [];
+    }
+    rows.push(...(result.data || []).map(row => canonicalizePartyFields(row, table)));
+    if ((result.data || []).length < pageSize) break;
   }
-  const count = Number(firstPage.count || firstPage.data?.length || 0);
-  let rows = [...(firstPage.data || []).map((row) => canonicalizePartyFields(row, table))];
-  if (count > pageSize) {
-    const ranges = [];
-    for (let from = pageSize; from < count; from += pageSize) ranges.push([from, Math.min(from + pageSize - 1, count - 1)]);
-    const pages = await Promise.all(ranges.map(([from, to]) => pageQuery().range(from, to)));
-    const failedPage = pages.find((page) => page.error);
-    if (productLookupTable && failedPage) throw new Error(`Could not load the complete Product Master: ${failedPage.error.message}`);
-    rows = rows.concat(pages.flatMap((page) => page.error ? [] : (page.data || [])).map((row) => canonicalizePartyFields(row, table)));
-  }
-  return table === "products" ? decorateProductsWithLookupAliases(rows) : rows;
+  return table === "products" ? decorateProductsWithLookupAliases(rows, signal) : rows;
 }
 
-async function decorateProductsWithLookupAliases(products = []) {
+async function decorateProductsWithLookupAliases(products = [], signal) {
   if (!products.length) return products;
+  const withSignal = query => signal ? query.abortSignal(signal) : query;
   const [alternatesResult, crossReferencesResult] = await Promise.all([
     getAll("product_alternates"),
     getAll("product_cross_references"),

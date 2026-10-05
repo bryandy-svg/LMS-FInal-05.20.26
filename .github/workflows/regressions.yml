@@ -1,0 +1,16 @@
+name: Regression checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+      - run: node scripts/release-manifest.cjs
+      - run: npm run build

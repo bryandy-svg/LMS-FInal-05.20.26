@@ -1,0 +1,15 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const s=fs.readFileSync('supabase-app/app.js','utf8');
+const a=s.indexOf('let moduleSearchDebounce;'),b=s.indexOf('function finishModuleListScope',a);
+let queued=new Map(),id=0,calls=[],listeners={};
+const c=vm.createContext({document:{addEventListener:(type,fn,capture)=>{assert(capture);listeners[type]=fn;}},session:{},currentView:'repairs',moduleListTimer:0,moduleListSpec:()=>true,prioritizeInteractiveRead:()=>{},clearTimeout:key=>queued.delete(key),setTimeout:fn=>{queued.set(++id,fn);return id;},loadView:(...args)=>calls.push(args)});
+vm.runInContext(s.slice(a,b),c);
+const flush=()=>{const f=[...queued.values()];queued.clear();f.forEach(fn=>fn());};
+const input=value=>({value,isConnected:true,oninput:()=>{throw Error('obsolete local handler');},matches:()=>true});
+let field=input('W08758');listeners.input({target:field});flush();assert.equal(calls.at(-1)[1].query,'W08758');assert.equal(field.oninput,null);
+field=input('W100003');listeners.input({target:field});flush();assert.equal(calls.at(-1)[1].query,'W100003');
+field.value='';listeners.input({target:field});flush();assert.equal(calls.at(-1)[1].query,'');
+field.value='W1';listeners.input({target:field});field.value='W100';listeners.input({target:field});flush();assert.equal(calls.length,4);assert.equal(calls.at(-1)[1].query,'W100');
+listeners.input({target:field,isComposing:true});flush();assert.equal(calls.length,4);listeners.compositionend({target:field});flush();assert.equal(calls.length,5);
+listeners.input({target:field});c.currentView='orders';flush();assert.equal(calls.length,5);
+console.log('PASS repeated searches, replaced inputs, clearing search, debounce, composition, module navigation');

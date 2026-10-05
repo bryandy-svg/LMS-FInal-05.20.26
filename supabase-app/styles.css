@@ -383,8 +383,8 @@ h1, h2, h3 { margin: 0; letter-spacing: 0; }
   z-index: 40;
   box-shadow: 0 -2px 8px rgba(24, 43, 56, .18);
 }
+.frozen-table-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
 .frozen-table-scroll.screen-scroll-source::-webkit-scrollbar {
-  width: 12px;
   height: 0;
 }
 .table-top-scroll[hidden] { display: none; }
@@ -3532,3 +3532,4 @@ body.trucking-requestor-mode #fullTourBtn {
 @media print {
   #truckingManagementReportHost [data-management-report-section] + [data-management-report-section] { break-before: page; page-break-before: always; }
 }
+
