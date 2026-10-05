@@ -52,5 +52,6 @@
   "work-order-invoice-safeguards",
   "work-order-po-price",
   "session-retention",
-  "recovery-contracts"
+  "recovery-contracts",
+  "bank-live-collections"
 ]
