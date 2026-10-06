@@ -54,5 +54,6 @@
   "session-retention",
   "recovery-contracts",
   "bank-live-collections",
-  "bank-section-state"
+  "bank-section-state",
+  "posting-date-prompts"
 ]

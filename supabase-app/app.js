@@ -9042,8 +9042,9 @@ async function reverseDirectApToEdit(data, reference, invoiceNo = "", receiptGro
 
 async function reversePurchaseOrderApToEdit(data, apRow, receiptGroupKey = "") {
   if (apRow.paid || /paid|written off/i.test(`${apRow.payment || ""} ${apRow.status || ""}`)) return alert("This payable has already been paid or written off and cannot be reversed to edit.");
-  const reversalDate = today();
-  if (isLockedAccountingDate(reversalDate)) return alert("Today's reversal date is inside the closed accounting period.");
+  const reversalDate = await chooseAccountingPostingDate('Reversal posting date');
+  if (!reversalDate) return;
+  if (isLockedAccountingDate(reversalDate)) return alert("The reversal date is inside the closed accounting period.");
   const reason = prompt(`Reason for reversing ${apRow.po_no}${apRow.invoice_no ? ` / ${apRow.invoice_no}` : ""}`);
   if (reason === null || !reason.trim()) return alert("Reversal reason is required.");
   const invoiceKey = normalizeCheckRunDocumentKey(apRow.invoice_no);
@@ -9081,16 +9082,33 @@ async function reversePurchaseOrderApToEdit(data, apRow, receiptGroupKey = "") {
   }
 }
 
+async function chooseAccountingPostingDate(label, defaultDate = today()) {
+  try { await loadAccountingCloseDate(true); } catch(error) { alert(error.message); return null; }
+  let suggested=formatDisplayDate(defaultDate);
+  while (true) {
+    const entered=prompt(label + '\n\nPosting date (MM/DD/YYYY). This determines the accounting period. Cancel leaves this action unposted.', suggested);
+    if (entered === null) return null;
+    const text=entered.trim();
+    const match=text.match(/^(\d{4})-(\d{2})-(\d{2})$/) || text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    const iso=match ? (text.includes('-') ? text : match[3]+'-'+match[1].padStart(2,'0')+'-'+match[2].padStart(2,'0')) : '';
+    const parsed=iso ? new Date(iso+'T00:00:00Z') : null;
+    if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0,10)!==iso) { alert('Enter a valid date as MM/DD/YYYY.'); suggested=text; continue; }
+    if (isLockedAccountingDate(iso)) { alert('This posting date is in a closed accounting period. Choose an open date.'); suggested=text; continue; }
+    return iso;
+  }
+}
+
 async function reverseManualJournal(reference) {
   const reason = prompt(`Reason for reversing journal ${reference}`);
   if (reason === null || !reason.trim()) return alert("Reversal reason is required.");
-  const reversalDate = today();
+  const reversalDate = await chooseAccountingPostingDate('Reversal posting date');
+  if (!reversalDate) return;
   if (isLockedAccountingDate(reversalDate)) return alert("The reversal date is inside the closed accounting period.");
   const { data: rows, error } = await supabase.from("general_ledger").select("*").eq("reference", reference).eq("source", "Manual Journal");
   if (error) return alert(error.message);
   const activeRows = (rows || []).filter((row) => !/reversed|void/i.test(row.status || ""));
   if (!activeRows.length) return alert(`Journal ${reference} is already reversed or was not found.`);
-  if (!confirm(`Reverse all ${activeRows.length} line(s) of journal ${reference}?`)) return;
+  if (!confirm(`Reverse all ${activeRows.length} line(s) of journal ${reference} on ${formatDisplayDate(reversalDate)}?`)) return;
   const reversalReference = `REV-${reference}`;
   const reversalRows = activeRows.map((row) => ({
     entry_date: reversalDate,
@@ -10616,17 +10634,17 @@ async function postGoodsReceiptLedger(receipts) {
   invalidateViewReads();
 }
 
-async function postGoodsReceiptReversalLedger(gr) {
+async function postGoodsReceiptReversalLedger(gr, postingDate) {
   const po = await purchaseOrderForReceipt(gr);
   const { inventoryAmount: amount, productVendorAmount, landedAccrualAmount } = goodsReceiptPostingAmounts(po, gr);
   if (!amount) return;
   const reference = `REV-${gr.gr_no}`;
 
   const rows = [
-    { entry_date: today(), posting_date: today(), account: "Parts Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse product accrual ${gr.gr_no}`, reference, debit: productVendorAmount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" },
-    { entry_date: today(), posting_date: today(), account: "Parts Inventory", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse inventory ${gr.gr_no}`, reference, debit: 0, credit: amount, source: "Goods Receipt Reversal", status: "Posted" },
+    { entry_date: postingDate, posting_date: postingDate, account: "Parts Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse product accrual ${gr.gr_no}`, reference, debit: productVendorAmount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" },
+    { entry_date: postingDate, posting_date: postingDate, account: "Parts Inventory", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse inventory ${gr.gr_no}`, reference, debit: 0, credit: amount, source: "Goods Receipt Reversal", status: "Posted" },
   ];
-  if (landedAccrualAmount) rows.push({ entry_date: today(), posting_date: today(), account: "Landed Cost Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse landed cost accrual ${gr.gr_no}`, reference, debit: landedAccrualAmount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" });
+  if (landedAccrualAmount) rows.push({ entry_date: postingDate, posting_date: postingDate, account: "Landed Cost Accrual", vendor: gr.vendor, invoice_no: gr.vendor_invoice_no || null, invoice_date: gr.vendor_invoice_date || null, due_date: null, description: `Reverse landed cost accrual ${gr.gr_no}`, reference, debit: landedAccrualAmount, credit: 0, source: "Goods Receipt Reversal", status: "Posted" });
   assertBalancedLedgerRows(rows, reference);
   const { error } = await supabase.rpc("replace_goods_receipt_ledger", {
     p_references: [reference], p_source: "Goods Receipt Reversal", p_rows: rows,
@@ -12625,7 +12643,7 @@ function getAccountingCloseDate() {
   return accountingCloseDateCache || localStorage.getItem("lms.accountingCloseDate") || "";
 }
 
-async function loadAccountingCloseDate() {
+async function loadAccountingCloseDate(strict = false) {
   if (!session) return getAccountingCloseDate();
   const { data, error } = await supabase
     .from("accounting_periods")
@@ -12633,6 +12651,7 @@ async function loadAccountingCloseDate() {
     .eq("status", "Closed")
     .order("closed_through_date", { ascending: false })
     .limit(1);
+  if (strict && error) throw new Error('Could not verify the open accounting period. Please retry.');
   if (!error && data?.[0]?.closed_through_date) {
     accountingCloseDateCache = data[0].closed_through_date;
     localStorage.setItem("lms.accountingCloseDate", accountingCloseDateCache);
@@ -16180,7 +16199,6 @@ async function reverseLinkedGoodsReceiptsOnly(poNo) {
     if (await hasPostedApForPurchaseOrder(poNo)) {
       return alert(`${poNo} has a posted Accounts Payable entry. Reverse the AP posting before reversing its Goods Receipt.`);
     }
-    if (isLockedAccountingDate(today())) return alert("Today's date is inside a closed accounting period. The Goods Receipt cannot be reversed into a closed period.");
     openGoodsReceiptReversalSelector(po, batches);
   } catch (error) {
     alert(`Could not reverse the linked Goods Receipt for ${poNo}.\n\n${error.message || error}`);
@@ -16225,9 +16243,11 @@ async function reverseSelectedGoodsReceiptBatch(po, batches) {
   if (!reason) return alert("A Goods Receipt reversal reason is required.");
   const detail = goodsReceiptBatchDetails(batch);
   if (!confirm(`Reverse receiving ${batch.key}?\n\nDate: ${formatDisplayDate(detail.first.gr_date)}\nInvoice: ${detail.invoices.join(", ") || "No invoice entered"}\nItems: ${detail.items}\nTotal: ${money(detail.amount)}\n\nOnly this receiving batch will be reversed. ${po.po_no} will reopen for the applicable remaining quantity.`)) return;
+  const postingDate=await chooseAccountingPostingDate('Reverse receipt ' + batch.key);
+  if(!postingDate)return;
   try {
     $("modalSave").disabled = true;
-    for (const receipt of batch.rows) await reverseGoodsReceiptRecord(receipt, { reason });
+    for (const receipt of batch.rows) await reverseGoodsReceiptRecord(receipt, { reason, postingDate });
     await refreshPurchaseOrderFlow(po.po_no, { reopenAfterReceiptReversal: true });
     closeModal(true);
     purchasingTab = "open";
@@ -17861,7 +17881,9 @@ async function reverseGoodsReceipt(grNo) {
       alert("This PO is already posted to Accounts Payable. Reverse or clear the AP posting first, then reverse the goods receipt.");
       return;
     }
-    await reverseGoodsReceiptRecord(gr);
+    const postingDate=await chooseAccountingPostingDate('Reverse receipt ' + gr.gr_no);
+    if(!postingDate)return;
+    await reverseGoodsReceiptRecord(gr, {postingDate});
     if (gr.po_no) await refreshPurchaseOrderFlow(gr.po_no, { reopenAfterReceiptReversal: true });
     await renderPurchasingView();
   } catch (error) {
@@ -17869,8 +17891,9 @@ async function reverseGoodsReceipt(grNo) {
   }
 }
 
-async function reverseGoodsReceiptRecord(gr, { reason = "" } = {}) {
+async function reverseGoodsReceiptRecord(gr, { reason = "", postingDate } = {}) {
   if (!gr?.gr_no) throw new Error("The linked Goods Receipt number is missing.");
+  if (!postingDate || isLockedAccountingDate(postingDate)) throw new Error('An open reversal posting date is required.');
   const product = (productMeta.products || []).find((p) => p.id === gr.product_id || p.sku === gr.sku);
   const qty = Number(gr.received_qty || 0);
   const unitCost = Number(gr.unit_cost || product?.cost || 0);
@@ -17896,7 +17919,7 @@ async function reverseGoodsReceiptRecord(gr, { reason = "" } = {}) {
   }
   await upsertOneWithOptionalColumns("stock_movements", {
     reference_no: `REV-${gr.gr_no}`,
-    movement_date: today(),
+    movement_date: postingDate,
     type: "Goods Receipt Reversal",
     product_id: gr.product_id || product?.id || null,
     sku: gr.sku,
@@ -17918,7 +17941,7 @@ async function reverseGoodsReceiptRecord(gr, { reason = "" } = {}) {
     if (!(productRows || []).length) throw new Error(`Receipt ${gr.gr_no} was reversed, but inventory for ${gr.sku || gr.product_name} could not be updated.`);
     product.qty = nextQty;
   }
-  await postGoodsReceiptReversalLedger(gr);
+  await postGoodsReceiptReversalLedger(gr, postingDate);
   await writeAuditLog({ tableName: "goods_receipts", action: "Reversed", beforeData: gr, afterData: reversedRows[0], reason: reason || "Goods Receipt reversal" });
   return { repaired: false, gr_no: gr.gr_no, qty_reversed: qty };
 }
@@ -20131,9 +20154,11 @@ async function reverseSalesOrder(orderNo) {
   const reason = prompt(`Reason for reversing ${orderNo}:`);
   if (!reason?.trim()) return;
   if (!confirm(`Reverse ${orderNo} and reopen it for invoicing? Shipped stock will be returned, invoice accounting reversed, and freight and deposits retained. Original records remain in Invoice History.`)) return;
+  const postingDate = await chooseAccountingPostingDate('Reverse sales order ' + orderNo);
+  if (!postingDate) return;
   try {
     const { error } = await supabase.rpc("reverse_sales_order_and_reopen", {
-      p_order_no: orderNo, p_reason: reason.trim(), p_posting_date: today(),
+      p_order_no: orderNo, p_reason: reason.trim(), p_posting_date: postingDate,
       p_expected_invoice_no: order.invoice_no || null,
       p_expected_delivered_at: order.delivered_at || null,
     });
@@ -22676,6 +22701,8 @@ async function mechanicPortalAcceptPart(partId, mode) {
     return;
   }
   if (!confirm(`Accept parts now?\n\nWork order: ${wo.wo_no}\nPart: ${partDisplayName(part)}\nQty: ${qty}\n\nThis will deduct the quantity from inventory.`)) return;
+  const postingDate=await chooseAccountingPostingDate('Post accepted parts for ' + wo.wo_no);
+  if(!postingDate)return;
   try {
     const acceptedQty = Number(part.accepted_qty || 0) + qty;
     const fullAccepted = acceptedQty >= Number(part.qty_needed || 0);
@@ -22692,7 +22719,7 @@ async function mechanicPortalAcceptPart(partId, mode) {
     if (productError) throw productError;
     await upsertOneWithOptionalColumns("stock_movements", {
       reference_no: `SM-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      movement_date: today(),
+      movement_date: postingDate,
       type: "Repair",
       product_id: product.id,
       sku: product.sku,
@@ -22707,7 +22734,7 @@ async function mechanicPortalAcceptPart(partId, mode) {
       entered_by: currentMechanicName(),
       reason: `${wo.wo_no} - ${part.issue || "Work order part"} [WO part:${part.id}]`,
     }, "reference_no", ["from_bin_shelf"], "Part accepted. Run the multi-location SQL update so bin/shelf details can be stored.");
-    await postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCost);
+    await postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCost, postingDate);
     await refreshWorkOrderWaitingPartsStatus(wo);
     alert("Part accepted and inventory deducted.");
     await renderRepairsView(wo);
@@ -22716,7 +22743,8 @@ async function mechanicPortalAcceptPart(partId, mode) {
   }
 }
 
-async function postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCost) {
+async function postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCost, postingDate) {
+  if (!postingDate || isLockedAccountingDate(postingDate)) throw new Error('An open parts posting date is required.');
   const total = Number(qty || 0) * Number(unitCost || 0);
   if (!total) return;
   const customer = wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer) ? wo.bill_to_customer : null;
@@ -22724,8 +22752,8 @@ async function postWorkOrderPartAcceptanceLedger(wo, part, product, qty, unitCos
   const debitAccount = customer ? "Work Order Parts - WIP" : "Repairs & Maintenance";
   const reference = `${wo.wo_no}-PART-${part.id || product.sku}-${Date.now()}`;
   await upsertMany("general_ledger", [
-    { entry_date: today(), posting_date: today(), account: debitAccount, customer, asset: wo.asset_tag || null, description: `${customer ? "Parts issued to WIP" : "Internal repair part used"} ${wo.wo_no} | ${product.sku} - ${product.name || part.product_name || ""}`, reference, debit: total, credit: 0, source: "Work Order Parts", status: "Posted" },
-    { entry_date: today(), posting_date: today(), account: "Parts Inventory", customer, asset: wo.asset_tag || null, description: `Inventory relief ${product.sku} - ${product.name || part.product_name || ""}`, reference, debit: 0, credit: total, source: "Work Order Parts", status: "Posted" },
+    { entry_date: postingDate, posting_date: postingDate, account: debitAccount, customer, asset: wo.asset_tag || null, description: `${customer ? "Parts issued to WIP" : "Internal repair part used"} ${wo.wo_no} | ${product.sku} - ${product.name || part.product_name || ""}`, reference, debit: total, credit: 0, source: "Work Order Parts", status: "Posted" },
+    { entry_date: postingDate, posting_date: postingDate, account: "Parts Inventory", customer, asset: wo.asset_tag || null, description: `Inventory relief ${product.sku} - ${product.name || part.product_name || ""}`, reference, debit: 0, credit: total, source: "Work Order Parts", status: "Posted" },
   ], "id");
 }
 
@@ -23862,9 +23890,11 @@ async function saveWorkOrderPartEdits(wo) {
       job.record.component_ids=selected;
     }
   }
+  const partsPostingDate = (acceptanceJobs.length || upserts.some(part => Number(part.accepted_qty || 0) > 0)) ? await chooseAccountingPostingDate('Post work-order parts ' + wo.wo_no) : today();
+  if (!partsPostingDate) throw new Error('Parts posting cancelled.');
   if(acceptanceJobs.length)await ensureWorkOrderAccountingAccounts(Boolean(wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)));
   const {data:savedRows,error:saveError}=await supabase.rpc('save_work_order_parts_atomic',{
-    p_wo_id:wo.id,p_rows:upserts,p_expected:wo._parts || [],p_posting_date:today(),p_actor:acceptedBy
+    p_wo_id:wo.id,p_rows:upserts,p_expected:wo._parts || [],p_posting_date:partsPostingDate,p_actor:acceptedBy
   });
   if(saveError)throw saveError;
   const savedById = new Map((wo._parts || []).map((part) => [part.id, part]));
@@ -24948,9 +24978,11 @@ async function voidWorkOrderPart(wo, partId) {
   if(!confirm('Void this part? Issued stock and its accounting will be returned together.'))return;
   const reason=prompt('Reason for voiding this part:','Entered in error')?.trim();
   if(!reason)return;
+  const postingDate=await chooseAccountingPostingDate('Void work-order part');
+  if(!postingDate)return;
   let completed=false;
   try {
-    const {error}=await supabase.rpc('void_work_order_part_atomic',{p_part_id:partId,p_posting_date:today(),p_reason:reason,p_actor:profile?.full_name || profile?.username || session?.user?.email || 'Admin'});
+    const {error}=await supabase.rpc('void_work_order_part_atomic',{p_part_id:partId,p_posting_date:postingDate,p_reason:reason,p_actor:profile?.full_name || profile?.username || session?.user?.email || 'Admin'});
     if(error)throw error;
     completed=true;
     await renderRepairsView(wo);
@@ -25924,6 +25956,8 @@ async function applyMechanicPartAcceptances(wo, mechanic) {
     const qtyInput = [...document.querySelectorAll('[data-accept-part="qty"]')].find((input) => input.dataset.partId === partId);
     return { part, mode: select.value, qty: Number(qtyInput?.value || 0) };
   }).filter((row) => row.part && row.mode !== "No");
+  const postingDate=rows.some(row=>row.mode !== 'Remove Reserved') ? await chooseAccountingPostingDate('Post accepted parts for ' + wo.wo_no) : null;
+  if(rows.some(row=>row.mode !== 'Remove Reserved') && !postingDate) throw new Error('Parts posting cancelled.');
   for (const row of rows) {
     const part = row.part;
     if ((!part.product_id || !part.sku || /^TBD$/i.test(part.sku || "")) && row.mode !== "Remove Reserved") {
@@ -25961,7 +25995,7 @@ async function applyMechanicPartAcceptances(wo, mechanic) {
     await supabase.from("products").update({ qty: Number(availableNow || 0) - qty }).eq("id", product.id);
     await upsertOneWithOptionalColumns("stock_movements", {
       reference_no: `SM-${wo.wo_no}-${part.sku}-${Date.now().toString().slice(-5)}`,
-      movement_date: today(),
+      movement_date: postingDate,
       type: "Repair",
       product_id: product.id,
       sku: product.sku,
@@ -25976,7 +26010,7 @@ async function applyMechanicPartAcceptances(wo, mechanic) {
       entered_by: mechanic,
       reason: `Accepted for ${part.issue || "General"} on ${wo.wo_no}`,
     }, "reference_no", ["from_bin_shelf"], "Part accepted. Run the multi-location SQL update so bin/shelf details can be stored.");
-    await postWorkOrderPartAcceptanceLedger(wo, part, product, qty, Number(part.unit_cost || product.cost || 0));
+    await postWorkOrderPartAcceptanceLedger(wo, part, product, qty, Number(part.unit_cost || product.cost || 0), postingDate);
   }
   await refreshWorkOrderWaitingPartsStatus(wo);
 }
@@ -28385,8 +28419,9 @@ async function reverseCustomerPayment(receiptNo) {
   const reason = prompt(`Reason for reversing ${receiptNo}`, "Returned / entered in error");
   if (reason === null || !reason.trim()) return;
   if (!confirm(`Reverse customer payment ${receiptNo}? This reopens the invoice balance and posts reversing ledger entries.`)) return;
+  const date = await chooseAccountingPostingDate('Reverse customer payment ' + receiptNo);
+  if (!date) return;
   try {
-    const date = today();
     const amount = Number(payment.amount || 0);
     await supabase.from("customer_payments").update({ status: "Reversed", notes: [payment.notes, `Reversed ${new Date().toLocaleString()}: ${reason.trim()}`].filter(Boolean).join("\n") }).eq("receipt_no", receiptNo);
     await upsertManyWithOptionalColumns("general_ledger", [
