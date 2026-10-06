@@ -3263,12 +3263,20 @@ function positionFloatingActionMenu(menu) {
   panel.style.right = "auto";
   panel.style.bottom = "auto";
   panel.style.maxHeight = `${Math.max(120, window.innerHeight - margin * 2)}px`;
-  const width = Math.min(Math.max(panel.offsetWidth || 190, 190), window.innerWidth - margin * 2);
+  // Page menus must stay inside the page region, clear of the raised sidebar.
+  // Dialog menus have no .main ancestor and retain the full viewport bounds.
+  const main = menu.closest('.main');
+  const mainLeft = main?.getBoundingClientRect().left || 0;
+  const minLeft = Math.max(margin, Math.min(mainLeft + margin, window.innerWidth - margin - 1));
+  const availableWidth = Math.max(1, window.innerWidth - minLeft - margin);
+  const width = Math.min(Math.max(panel.offsetWidth || 190, 190), availableWidth);
+  panel.style.minWidth = '0px';
   const height = Math.min(panel.scrollHeight || panel.offsetHeight || 0, window.innerHeight - margin * 2);
   const availableBelow = window.innerHeight - anchor.bottom - gap - margin;
   const availableAbove = anchor.top - gap - margin;
   const openAbove = height > availableBelow && availableAbove > availableBelow;
-  const left = Math.min(Math.max(margin, anchor.right - width), window.innerWidth - width - margin);
+  const preferredLeft = anchor.right - width < minLeft ? anchor.left : anchor.right - width;
+  const left = Math.min(Math.max(minLeft, preferredLeft), window.innerWidth - width - margin);
   const top = openAbove
     ? Math.max(margin, anchor.top - height - gap)
     : Math.min(window.innerHeight - height - margin, anchor.bottom + gap);

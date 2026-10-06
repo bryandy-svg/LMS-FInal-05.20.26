@@ -58,5 +58,6 @@
   "posting-date-prompts",
   "sidebar-flyout",
   "startup-order",
-  "compact-workspace-state"
+  "compact-workspace-state",
+  "action-menu-bounds"
 ]
