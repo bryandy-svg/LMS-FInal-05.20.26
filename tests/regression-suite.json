@@ -57,5 +57,6 @@
   "bank-section-state",
   "posting-date-prompts",
   "sidebar-flyout",
-  "startup-order"
+  "startup-order",
+  "compact-workspace-state"
 ]

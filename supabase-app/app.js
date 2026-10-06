@@ -293,7 +293,7 @@ function installModulePeriodControls(state,bar) {
   controls.style.cssText='display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0;padding:0;border:0;background:transparent;font-size:12px;max-width:100%';
   controls.querySelectorAll('label').forEach(label=>label.style.cssText='display:flex;align-items:center;gap:4px;margin:0;white-space:nowrap');
   controls.querySelectorAll('input,select,button').forEach(input=>input.style.cssText='width:auto;min-height:30px;padding:4px 7px;font-size:12px;margin:0');
-  const title=$('content').querySelector('.panel-head .panel-title');
+  const title = state.view === 'truckingtickets' ? $('truckingTicketDetailTitle')?.closest('.panel-title') : $('content').querySelector('.panel-head .panel-title');
   if(title) {
     title.style.cssText+=';display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px 16px;flex:1;min-width:0';
     const heading=title.querySelector('strong');
@@ -1623,9 +1623,17 @@ function handleCreatePartButtonClick(event) {
   openQuickPartOverlay();
 }
 
+function usesCompactModuleWorkspace(view = currentView) {
+  return ['purchasing', 'repairs', 'partsissues', 'truckingtickets', 'inventory', 'fuel'].includes(view);
+}
+
+function moduleWorkspaceStatePrefix() {
+  return usesCompactModuleWorkspace() ? 'workspace:' + (session?.user?.id || 'guest') : String(transientViewEpoch);
+}
+
 function moduleSearchStorageKey(input) {
   const field = input.id || input.name || input.placeholder || "search";
-  return `${transientViewEpoch}:${currentView}:${field}`;
+  return `${moduleWorkspaceStatePrefix()}:${currentView}:${field}`;
 }
 
 function isPersistentModuleSearch(input) {
@@ -1654,8 +1662,9 @@ function restoreModuleSearches() {
 
 function clearTransientViewState() {
   transientViewEpoch += 1;
-  transientModuleSearchState.clear();
-  transientTableFilterState.clear();
+  // Keep module-specific controls across navigation; keys include the signed-in user.
+  for (const key of transientModuleSearchState.keys()) if (!key.startsWith('workspace:')) transientModuleSearchState.delete(key);
+  for (const key of transientTableFilterState.keys()) if (!key.startsWith('workspace:')) transientTableFilterState.delete(key);
   productColumnFilterState = {};
   productColumnExcelFilterState = {};
 }
@@ -1665,7 +1674,7 @@ function transientTableKey(wrap) {
   if (!table) return "";
   const heads = [...table.querySelectorAll("thead tr:first-child th")].map((th) => getHeaderLabel(th)).join("|");
   const peers = [...document.querySelectorAll("#content .table-wrap")];
-  return `${transientViewEpoch}:${currentView}:${peers.indexOf(wrap)}:${heads}`;
+  return `${moduleWorkspaceStatePrefix()}:${currentView}:${peers.indexOf(wrap)}:${heads}`;
 }
 
 function rememberTransientTableState(wrap) {
@@ -3295,7 +3304,7 @@ function enhanceTables() {
       </div>`;
     wrap.parentNode?.insertBefore(tools, wrap);
     refreshSavedViewList(wrap);
-    if (wrap.closest('.accounting-workspace')) {
+    if (wrap.closest('.accounting-workspace') || (usesCompactModuleWorkspace() && wrap.closest('#content'))) {
       wrap.classList.add('filters-hidden');
       tableFilterRows(wrap).forEach(row => { row.hidden = true; });
       tools.querySelector('[data-toggle-table-filters]').textContent = 'Show filters';
@@ -3705,14 +3714,66 @@ function enhanceWorkflowBars() {
   });
   const search=$('content')?.querySelector('input.searchbox');
   const workflow=$('content')?.querySelector('.workflow-bar');
-  if(search && workflow && search.parentElement!==workflow) {
+  if(search && workflow && !usesCompactModuleWorkspace() && search.parentElement!==workflow) {
     const previous=search.parentElement;
     workflow.style.flexWrap='wrap';
     search.style.cssText='flex:1 1 280px;width:auto;min-width:180px;max-width:600px;margin:0 0 0 auto;padding:8px 12px;min-height:36px;box-sizing:border-box';
     workflow.append(search);
     if(previous?.classList.contains('toolbar') && !previous.children.length)previous.remove();
   }
+  enhanceCompactModuleWorkspace();
+}
 
+
+function enhanceCompactModuleWorkspace() {
+  const root = $('content');
+  if (!root) return;
+  const enabled = usesCompactModuleWorkspace();
+  root.classList.toggle('compact-module-workspace', enabled);
+  if (!enabled) return;
+  const search = root.querySelector('input.searchbox');
+  const panel = search && (search.closest('.panel') || root.querySelector('.panel'));
+  if (!search || !panel) return; // Leave the dedicated mobile portals intact.
+  let target = root.querySelector('.tabbar');
+  if (!target) target = panel.querySelector('.workflow-bar');
+  if (!target) {
+    target = panel.querySelector('.module-workspace-tools');
+    if (!target) {
+      target = document.createElement('div');
+      target.className = 'module-workspace-tools';
+      const head = panel.querySelector('.panel-head');
+      if (head) head.after(target); else panel.prepend(target);
+    }
+  }
+  target.classList.add('module-workspace-tools');
+  if (search.parentElement !== target) {
+    const previous = search.parentElement;
+    search.classList.add('module-workspace-search');
+    target.append(search); // Preserve the input node, caret, and bound handlers.
+    if (previous?.classList.contains('toolbar') && !previous.children.length) previous.remove();
+  }
+  // Inventory uses a point-in-time balance, not a transaction date range.
+  const asOf = $('inventoryAsOf')?.closest('label');
+  const title = panel.querySelector('.panel-title');
+  if (currentView === 'inventory' && asOf && title && asOf.parentElement !== title) {
+    title.classList.add('module-title-with-date');
+    title.append(asOf, $('inventoryApplyAsOf'));
+  }
+  const stats = root.querySelector(':scope > .stats');
+  if (stats && !root.querySelector('#moduleSummaryToggle')) {
+    const key = 'lms.workspace.summary:' + (session?.user?.id || 'guest') + ':' + currentView;
+    const button = document.createElement('button');
+    button.id = 'moduleSummaryToggle';
+    button.type = 'button';
+    const set = hidden => {
+      stats.hidden = hidden;
+      button.textContent = hidden ? 'Show summary' : 'Hide summary';
+      button.setAttribute('aria-expanded', String(!hidden));
+    };
+    set(localStorage.getItem(key) === '1');
+    button.onclick = () => { set(!stats.hidden); localStorage.setItem(key, stats.hidden ? '1' : '0'); };
+    target.append(button);
+  }
 }
 
 function tableFilterRows(wrap) {

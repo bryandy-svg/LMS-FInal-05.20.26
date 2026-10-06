@@ -3580,3 +3580,28 @@ body.trucking-requestor-mode #fullTourBtn {
  .accounting-workspace .accounting-command-center { display:none; }
  .accounting-ledger.ledger-compact :is(th,td) { display:table-cell; }
 }
+
+/* Shared compact list workspaces; controls wrap rather than widening the page. */
+.compact-module-workspace > .stats { gap:8px; margin-bottom:10px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+.compact-module-workspace > .stats[hidden] { display:none; }
+.compact-module-workspace > .stats .stat { padding:10px 12px; min-height:0; box-shadow:none; }
+.compact-module-workspace > .stats .stat strong { font-size:23px; margin-top:3px; }
+.compact-module-workspace > .stats .stat small { font-size:11px; }
+.compact-module-workspace .panel-head { padding:10px 12px; gap:8px; flex-wrap:wrap; }
+.compact-module-workspace .panel-head .actions { flex-wrap:wrap; gap:6px; }
+.compact-module-workspace .panel-head button,
+.compact-module-workspace .module-workspace-tools button { font-size:12px; padding:8px 10px; }
+.compact-module-workspace .module-workspace-tools { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:8px 12px; min-width:0; }
+.compact-module-workspace .module-workspace-search { flex:1 1 260px; width:auto; min-width:180px; max-width:600px; margin:0 0 0 auto; padding:8px 12px; min-height:36px; box-sizing:border-box; font-size:13px; }
+.compact-module-workspace .module-title-with-date { flex-direction:row; align-items:center; flex-wrap:wrap; gap:6px 12px; }
+.compact-module-workspace .module-title-with-date > span { flex-basis:100%; order:2; }
+.compact-module-workspace #inventoryAsOf { width:155px; min-width:0; padding:6px 8px; }
+.compact-module-workspace .table-tools { padding:6px 10px; gap:6px; }
+.compact-module-workspace .table-tools button { font-size:11px; padding:6px 8px; }
+.compact-module-workspace .workflow-bar { padding:6px 12px; gap:6px; }
+.compact-module-workspace .workflow-step { font-size:11px; }
+@media(max-width:820px) {
+ .compact-module-workspace .module-workspace-search { flex-basis:100%; max-width:none; min-width:0; margin:0; }
+ .compact-module-workspace .module-workspace-tools button { min-height:40px; }
+}
+@media print { .compact-module-workspace .module-workspace-tools { display:none !important; } }
