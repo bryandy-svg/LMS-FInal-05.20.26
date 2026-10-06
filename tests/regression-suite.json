@@ -55,5 +55,6 @@
   "recovery-contracts",
   "bank-live-collections",
   "bank-section-state",
-  "posting-date-prompts"
+  "posting-date-prompts",
+  "sidebar-flyout"
 ]

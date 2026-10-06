@@ -4279,11 +4279,12 @@ function renderNav() {
   ` + visibleModules.map((group) => `
     <details class="nav-group nav-major" data-nav-group="${esc(group.group)}" ${group.items.some(([id]) => id === currentView) ? "open" : ""}>
       <summary class="nav-title nav-major-title"><span>${esc(group.group)}</span><span class="nav-major-count">${group.items.length}</span></summary>
-      <div class="nav-segments">${group.items.map(([id, label]) => `<button class="nav-btn" data-view="${id}">${esc(label)}</button>`).join("")}</div>
+      <div class="nav-segments">${group.items.map(([id, label]) => `<button class="nav-btn" data-view="${id}"><span>${esc(label)}</span>${tableMap[id]?.sub ? `<small class="nav-description">${esc(tableMap[id].sub)}</small>` : ""}</button>`).join("")}</div>
     </details>
   `).join("");
   document.querySelectorAll("[data-view]").forEach((btn) => btn.onclick = async () => {
     closeSystemSearchResults();
+    if (matchMedia("(min-width: 821px)").matches) btn.closest(".nav-major").open = false;
     await loadView(btn.dataset.view);
   });
   document.querySelectorAll("#nav .nav-major").forEach((group) => {
@@ -4291,6 +4292,7 @@ function renderNav() {
     if (!group.querySelector(`.nav-btn[data-view="${CSS.escape(currentView)}"]`)) group.open = localStorage.getItem(key) === "1";
     group.ontoggle = () => localStorage.setItem(key, group.open ? "1" : "0");
   });
+  initializeSidebarFlyouts();
   $("moduleSearch").oninput = scheduleSystemSearch;
   $("moduleSearch").onfocus = () => {
     if ($("moduleSearch").value.trim()) scheduleSystemSearch();
@@ -4307,6 +4309,46 @@ function renderNav() {
       firstMatch.click();
     }
   };
+}
+
+
+let sidebarFlyoutListeners;
+function initializeSidebarFlyouts() {
+  sidebarFlyoutListeners?.abort();
+  sidebarFlyoutListeners=new AbortController();
+  const signal=sidebarFlyoutListeners.signal;
+  const nav=$('nav');
+  const groups=[...nav.querySelectorAll('.nav-major')];
+  const desktop=()=>matchMedia('(min-width: 821px)').matches;
+  const close=except=>groups.forEach(group=>{if(group!==except)group.open=false;});
+  const position=group=>{
+    const panel=group.querySelector('.nav-segments');
+    const rect=group.querySelector('summary').getBoundingClientRect();
+    const edge=document.querySelector('.side').getBoundingClientRect().right;
+    panel.style.left=(edge+6)+'px';
+    panel.style.width=Math.min(340,window.innerWidth-edge-18)+'px';
+    panel.style.maxHeight=(window.innerHeight-24)+'px';
+    panel.style.top=Math.max(12,Math.min(rect.top,window.innerHeight-panel.scrollHeight-12))+'px';
+  };
+  if(desktop())close();
+  for(const group of groups){
+    group.querySelector('summary').addEventListener('click',event=>{
+      if(!desktop())return;
+      event.preventDefault();
+      const open=!group.open;close();group.open=open;
+      if(open)position(group);
+    },{signal});
+  }
+  document.addEventListener('pointerdown',event=>{if(desktop()&&!nav.contains(event.target))close();},{signal});
+  document.addEventListener('keydown',event=>{
+    if(!desktop()||event.key!=='Escape')return;
+    const open=groups.find(group=>group.open);
+    if(open){close();open.querySelector('summary').focus();event.preventDefault();}
+  },{signal});
+  window.addEventListener('resize',()=>close(),{signal});
+  document.querySelector('.side').addEventListener('scroll',()=>{
+    if(desktop())for(const group of groups)if(group.open)position(group);
+  },{signal});
 }
 
 function navGroupStorageKey(group) {
@@ -4938,7 +4980,8 @@ async function loadView(view, listOptions = {}) {
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   const activeNavButton = document.querySelector(`.nav-btn[data-view="${CSS.escape(view)}"]`);
   const activeMajor = activeNavButton?.closest(".nav-major");
-  if (activeMajor) activeMajor.open = true;
+  if (activeMajor && !matchMedia("(min-width: 821px)").matches) activeMajor.open = true;
+  document.querySelectorAll("#nav .nav-major").forEach(group => group.classList.toggle("has-active-module", group === activeMajor));
   if (!keepListScreen && !listOptions.append && listOptions.query == null) $('content').innerHTML = '<div class="empty">Loading the first records and their actions…</div>';
   if(keepListScreen) {
     $('moduleRefreshStatus')?.remove();

@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');let desktop=true;const listeners={};
+const groups=[0,1].map(()=>({open:true,summary:{handlers:{},getBoundingClientRect:()=>({top:300}),addEventListener(k,v){this.handlers[k]=v},focus(){this.focused=true}},panel:{style:{},scrollHeight:1000},querySelector(s){return s==='summary'?this.summary:this.panel}}));
+const side={getBoundingClientRect:()=>({right:220}),addEventListener(){}};
+const nav={querySelectorAll:()=>groups,contains:t=>t==='inside'};
+const ctx={sidebarFlyoutListeners:null,AbortController,$:()=>nav,matchMedia:()=>({matches:desktop}),document:{querySelector:()=>side,addEventListener:(k,v)=>listeners[k]=v},window:{innerWidth:1000,innerHeight:720,addEventListener:(k,v)=>listeners[k]=v}};vm.createContext(ctx);vm.runInContext(functions(['initializeSidebarFlyouts']),ctx);ctx.initializeSidebarFlyouts();assert(groups.every(g=>!g.open));
+groups[0].summary.handlers.click({preventDefault(){}});assert(groups[0].open);assert.equal(groups[0].panel.style.left,'226px');assert.equal(groups[0].panel.style.top,'12px');
+groups[1].summary.handlers.click({preventDefault(){}});assert(!groups[0].open&&groups[1].open);
+listeners.keydown({key:'Escape',preventDefault(){}});assert(!groups[1].open&&groups[1].summary.focused);
+groups[0].summary.handlers.click({preventDefault(){}});listeners.pointerdown({target:'outside'});assert(!groups[0].open);
+desktop=false;let intercepted=false;groups[0].summary.handlers.click({preventDefault(){intercepted=true}});assert(!intercepted,'Small screens retain native disclosure interaction');
+console.log('Sidebar flyout opening, positioning, dismissal and mobile fallback passed');
