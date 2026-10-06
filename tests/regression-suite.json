@@ -56,5 +56,6 @@
   "bank-live-collections",
   "bank-section-state",
   "posting-date-prompts",
-  "sidebar-flyout"
+  "sidebar-flyout",
+  "startup-order"
 ]

@@ -894,7 +894,8 @@ const money = (n) => {
 const today = () => new Date().toISOString().slice(0, 10);
 const localToday = () => dateTimeLocalValue(new Date().toISOString()).slice(0, 10);
 
-boot().catch((error) => {
+// Start after all module-level state has initialized, including navigation state.
+Promise.resolve().then(boot).catch((error) => {
   console.error("LMS Imports startup failed", error);
 
   // Keep the shell usable even when authentication, profile loading, or a
@@ -908,7 +909,7 @@ boot().catch((error) => {
 
   const content = $("content");
   if (content) {
-    const message = escapeHtml(error?.message || "The application could not finish loading.");
+    const message = esc(error?.message || "The application could not finish loading.");
     content.innerHTML = `
       <section class="card" style="max-width:760px;margin:24px auto;padding:24px;">
         <h2>Unable to finish loading</h2>
