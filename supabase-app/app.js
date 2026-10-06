@@ -391,6 +391,52 @@ async function refreshPostedAccounting(data, poNo) {
   notice.textContent='Posting completed. AP status and counts are updated.';
   $('content').prepend(notice);
 }
+const remoteWorkOrderInputs = new WeakMap();
+function queueWorkOrderSearch(input) {
+  if (!isWorkOrderSuggestInput(input)) return;
+  const term = String(input.value || '').split('|')[0].trim();
+  const user = session?.user?.id;
+  let state = remoteWorkOrderInputs.get(input);
+  if (state?.term === term && state.user === user) return;
+  clearTimeout(state?.timer);
+  state?.controller?.abort();
+  state = {term, user, loading: Boolean(term), error: '', rows: []};
+  remoteWorkOrderInputs.set(input, state);
+  if (!term) return;
+  prioritizeInteractiveRead();
+  state.timer = setTimeout(async () => {
+    const controller = new AbortController();
+    state.controller = controller;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const escaped = term.replace(/[\\%_]/g, '\\const remotePartInputs=new WeakMap();');
+      let query = supabase.from('work_orders').select('*');
+      for (const token of term.split(/\s+/).filter(Boolean)) {
+        const pattern = JSON.stringify('%' + token.replace(/[\\%_]/g, '\\const remotePartInputs=new WeakMap();') + '%');
+        query = query.or(['wo_no', 'asset_tag', 'bill_to_customer', 'status'].map(field => field + '.ilike.' + pattern).join(','));
+      }
+      const [matches, exact] = await Promise.all([
+        query.order('wo_no', {ascending: false}).limit(80).abortSignal(controller.signal),
+        supabase.from('work_orders').select('*').ilike('wo_no', escaped).limit(1).abortSignal(controller.signal)
+      ]);
+      if (matches.error) throw matches.error;
+      if (exact.error) throw exact.error;
+      if (remoteWorkOrderInputs.get(input) !== state || session?.user?.id !== user) return;
+      state.rows = [...(matches.data || []), ...(exact.data || [])];
+      const rows = new Map((productMeta.workOrders || []).map(row => [String(row.wo_no), row]));
+      state.rows.forEach(row => rows.set(String(row.wo_no), row));
+      productMeta.workOrders = [...rows.values()];
+      productMeta.openWorkOrders = productMeta.workOrders.filter(isOpenWorkOrder);
+    } catch (error) {
+      if (remoteWorkOrderInputs.get(input) === state) state.error = 'Could not load work orders. Focus this field again to retry.';
+    } finally {
+      clearTimeout(timeout);
+      state.loading = false;
+      if (input.isConnected && document.activeElement === input && remoteWorkOrderInputs.get(input) === state && session?.user?.id === user) showSuggestMenu(input);
+    }
+  }, 250);
+}
+
 const remotePartInputs=new WeakMap();
 function queuePartSearch(input) {
   if(!isProductSuggestInput(input))return;
@@ -2551,9 +2597,10 @@ function equipmentSuggestOptions(input) {
 }
 
 function workOrderSuggestRows(input) {
-  return input?.dataset?.suggestSource === "open_work_orders"
-    ? (productMeta.openWorkOrders || [])
-    : (productMeta.workOrders || []);
+  const remote = remoteWorkOrderInputs.get(input);
+  const rows = new Map([...(productMeta.openWorkOrders || []), ...(productMeta.workOrders || [])].map(row => [String(row.wo_no), row]));
+  if (remote?.user === session?.user?.id) (remote.rows || []).forEach(row => rows.set(String(row.wo_no), row));
+  return [...rows.values()].filter(row => input?.dataset?.suggestSource !== 'open_work_orders' || isOpenWorkOrder(row));
 }
 
 function normalizeProductLookupText(value) {
@@ -2933,6 +2980,7 @@ function invoiceSuggestOptionMarkup(value) {
 function showSuggestMenu(input) {
   if (!isSuggestPicker(input)) return;
   queuePartSearch(input);
+  queueWorkOrderSearch(input);
   activeSuggestInput = input;
   const menu = ensureSuggestMenu(input);
   const options = matchingSuggestOptions(input);
@@ -2964,6 +3012,14 @@ function showSuggestMenu(input) {
   menu.hidden = false;
   if (typeof menu.showPopover === "function" && !menu.matches(":popover-open")) {
     try { menu.showPopover(); } catch { /* The fixed-position fallback remains visible. */ }
+  }
+  const workOrderState = remoteWorkOrderInputs.get(input);
+  if (isWorkOrderSuggestInput(input) && (workOrderState?.loading || workOrderState?.error)) {
+    const status = document.createElement('div');
+    status.className = 'suggest-empty';
+    status.setAttribute('role', 'status');
+    status.textContent = workOrderState.error || 'Searching work orders…';
+    if (!options.length) menu.replaceChildren(status); else menu.prepend(status);
   }
   input.classList.add("picker-open");
 }
@@ -3021,6 +3077,7 @@ function setupSeamlessDropdowns() {
   }, true);
   document.addEventListener("focusin", (event) => {
     if(remotePartInputs.get(event.target)?.error) remotePartInputs.delete(event.target);
+    if(remoteWorkOrderInputs.get(event.target)?.error) remoteWorkOrderInputs.delete(event.target);
     useLmsSuggestPicker(event.target);
     if (isSuggestPicker(event.target)) {
       event.target.dataset.suggestShowAll = "1";
@@ -3043,7 +3100,7 @@ function setupSeamlessDropdowns() {
   });
   document.addEventListener("focusout", (event) => {
     if (isSuggestPicker(event.target)) setTimeout(() => {
-      if (!activeSuggestMenu?.contains(document.activeElement)) hideSuggestMenu();
+      if (activeSuggestInput === event.target && !activeSuggestMenu?.contains(document.activeElement)) hideSuggestMenu();
     }, 120);
   });
   window.addEventListener("scroll", refreshSuggestMenu, true);

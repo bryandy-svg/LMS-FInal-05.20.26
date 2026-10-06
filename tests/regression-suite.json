@@ -59,5 +59,6 @@
   "sidebar-flyout",
   "startup-order",
   "compact-workspace-state",
-  "action-menu-bounds"
+  "action-menu-bounds",
+  "work-order-lookup"
 ]
