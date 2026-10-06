@@ -3295,6 +3295,11 @@ function enhanceTables() {
       </div>`;
     wrap.parentNode?.insertBefore(tools, wrap);
     refreshSavedViewList(wrap);
+    if (wrap.closest('.accounting-workspace')) {
+      wrap.classList.add('filters-hidden');
+      tableFilterRows(wrap).forEach(row => { row.hidden = true; });
+      tools.querySelector('[data-toggle-table-filters]').textContent = 'Show filters';
+    }
     restoreTransientTableState(wrap);
     updateTableState(wrap);
   });
@@ -6380,6 +6385,8 @@ function renderLoadedAccountingView(source) {
   const data = buildAccountingData({ ...source, gl: source.allGl || source.gl, reportFrom, reportTo, reportTab: accountingTab });
   const s = data.summary;
   const accountingSummaryCollapsed = localStorage.getItem(ACCOUNTING_SUMMARY_STORAGE_KEY) === "1";
+  const retainedSearch = $("accountingSearch")?.value ?? sessionStorage.getItem("lms.accountingSearch") ?? "";
+  const retainedSections = captureReconciliationSections($("content"));
   $("content").innerHTML = `
     <div class="accounting-summary-shell ${accountingSummaryCollapsed ? "collapsed" : ""}">
       <div class="summary-toggle-line">
@@ -6392,8 +6399,8 @@ function renderLoadedAccountingView(source) {
         ${stat("Net Position", money(s.net), "Revenue minus expenses")}
       </div>
     </div>
-    <section class="panel">
-      <div class="toolbar"><input class="searchbox" id="accountingSearch" placeholder="Search accounting by account, customer, vendor, invoice, reference, amount, status"></div>
+    <section class="panel accounting-workspace">
+      <div class="toolbar accounting-search-toolbar"><input class="searchbox" id="accountingSearch" placeholder="Search accounting by account, customer, vendor, invoice, reference, amount, status"></div>
       <div class="accounting-command-center">
         <div class="tabs accounting-module-tabs">
           ${[
@@ -6476,6 +6483,33 @@ function renderLoadedAccountingView(source) {
     </section>`;
   bindAccountingView(data);
   groupAccountingToolbarControls();
+  $("accountingSearch").value = retainedSearch;
+  applyAccountingSearch();
+  restoreReconciliationSections($("content"), retainedSections);
+  const ledger = $("accountingTableHost").querySelector('.table-wrap');
+  if (accountingTab === 'gl' && ledger) {
+    ledger.classList.add('accounting-ledger');
+    // Mark actual fields before saved layouts can reorder their cells.
+    const secondary = new Set(['Customer', 'Vendor', 'Invoice #', 'Invoice Date', 'Due Date', 'Mechanic', 'Asset', 'Bank Reference']);
+    const heads = [...ledger.querySelectorAll('thead tr:first-child th')];
+    heads.forEach((head, index) => {
+      if (secondary.has(head.textContent.trim())) ledger.querySelectorAll('tr').forEach(row => row.children[index]?.classList.add('ledger-secondary'));
+    });
+    const detailed = localStorage.getItem('lms.accountingDetailedLedger') === '1';
+    ledger.classList.toggle('ledger-compact', !detailed);
+    const button = document.createElement('button');
+    button.id = 'accountingLedgerColumns';
+    button.textContent = detailed ? 'Essential columns' : 'All ledger columns';
+    button.setAttribute('aria-pressed', String(detailed));
+    button.onclick = () => {
+      const showAll = ledger.classList.contains('ledger-compact');
+      ledger.classList.toggle('ledger-compact', !showAll);
+      localStorage.setItem('lms.accountingDetailedLedger', showAll ? '1' : '0');
+      button.textContent = showAll ? 'Essential columns' : 'All ledger columns';
+      button.setAttribute('aria-pressed', String(showAll));
+    };
+    document.querySelector('.accounting-action-groups').prepend(button);
+  }
 }
 
 async function syncPostedManualJournalSubledgers({ gl = [], invoices = [], invoiceLines = [], pos = [] } = {}) {
@@ -10704,7 +10738,9 @@ function collectProductModalFields() {
 }
 
 function applyAccountingSearch() {
-  const q = $("accountingSearch")?.value?.toLowerCase() || "";
+  const value = $("accountingSearch")?.value || "";
+  sessionStorage.setItem("lms.accountingSearch", value);
+  const q = value.toLowerCase();
   document.querySelectorAll("#accountingTableHost tbody tr").forEach((tr) => {
     tr.style.display = !q || tr.textContent.toLowerCase().includes(q) ? "" : "none";
   });
@@ -11871,7 +11907,12 @@ function groupAccountingToolbarControls() {
   const actions = document.querySelector('.accounting-action-groups');
   // Navigation belongs in Accounting views, not duplicated in Actions.
   actions?.querySelectorAll('[data-accounting-switch]').forEach((button) => button.remove());
-  group(actions, 'Accounting actions', actions ? [...actions.children] : []);
+  group(actions, 'Accounting actions', actions ? [...actions.children].filter(node => node.id !== 'newJournalBtn') : []);
+  const center = document.querySelector('.accounting-command-center');
+  const search = document.querySelector('.accounting-search-toolbar');
+  if (center && search) center.insertBefore(search, center.querySelector('.accounting-actions-bar'));
+  const journal = document.getElementById('newJournalBtn');
+  if (journal) journal.textContent = 'New journal';
   const bankToolbar = document.getElementById('bankRecSaveBtn')?.parentElement;
   group(bankToolbar, 'Reconciliation actions', bankToolbar ? [...bankToolbar.children].filter((node) => node.tagName === 'BUTTON') : []);
 }
