@@ -1,0 +1,21 @@
+const assert = require('node:assert/strict'), vm = require('node:vm');
+const {functions, source} = require('../source.cjs');
+const storage = new Map([['lms.productColumns', JSON.stringify(['sku','cost','selling_price'])]]);
+const c = { money: n => '$'+Number(n).toFixed(2), esc: String, formatDisplayDate: String,
+  localStorage: {getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)} };
+vm.createContext(c);
+vm.runInContext(source.slice(source.indexOf('const productColumnDefs ='), source.indexOf('const assetColumnDefs =')) + functions(['productPricingCost','productCellHtml','productColumnFilterValue','productExportValue','productVisibleColumns']), c);
+const p = {sku:'TEST',cost:80,_cost_history:[{date:'2026-10-07',reference:'GR-1',base_unit_cost:100,unit_cost:125,cost_split_known:true}]};
+assert.equal(c.productPricingCost(p,'purchase_unit_cost'),100);
+assert.equal(c.productPricingCost(p,'purchase_landed_unit_cost'),125);
+assert.equal(c.productExportValue(p,'purchase_unit_cost'),100);
+assert.match(c.productCellHtml(p,'purchase_landed_unit_cost'),/125.00/);
+assert.match(c.productColumnFilterValue(p,'purchase_unit_cost'),/100.00/);
+assert.equal(c.productPricingCost({},'purchase_unit_cost'),null);
+assert.equal(c.productPricingCost({_cost_history:[{unit_cost:125}]},'purchase_unit_cost'),null);
+assert.equal(c.productPricingCost({_cost_history:[{base_unit_cost:0,unit_cost:5,cost_split_known:true}]},'purchase_unit_cost'),0);
+assert.equal(p.cost,80,'Pricing display must not overwrite inventory cost');
+assert(c.productVisibleColumns().some(([key])=>key==='purchase_unit_cost'));
+storage.set('lms.productColumns',JSON.stringify(['sku','cost']));
+assert(!c.productVisibleColumns().some(([key])=>key==='purchase_unit_cost'),'User can hide new columns after first migration');
+console.log('Pricing cost display/export, missing split, zero purchase cost and column preferences passed');

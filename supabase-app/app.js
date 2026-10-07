@@ -914,6 +914,7 @@ const productColumnDefs = [
   ["photo", "Photo"], ["sku", "SKU"], ["name", "Product"], ["source_vendor", "Preferred Vendor"], ["category", "Category"], ["unit", "Unit"],
   ["mother_parts", "Mother Parts"],
   ["warehouse", "Warehouse"], ["bin_shelf", "Bin / Shelf"], ["qty", "Qty"], ["reserved_qty", "Reserved"], ["available_qty", "Available"], ["customer_issued_qty", "Issued"], ["reorder_point", "Reorder"], ["cost", "Cost"],
+  ["purchase_unit_cost", "Unit Cost Before Landed (Latest)"], ["purchase_landed_unit_cost", "Landed Unit Cost (Latest)"],
   ["selling_price", "Price"], ["markup_percent", "Markup %"], ["status", "Status"], ["issued_to_work_order", "Issued to Work Order"], ["compatible_with", "Compatible With"], ["barcode", "Barcode"], ["batch_lot", "Batch / Lot"], ["expiry_date", "Expiry Date"], ["notes", "Notes"],
 ];
 const assetColumnDefs = [
@@ -13340,6 +13341,8 @@ async function renderProductsView() {
       base_unit_cost: baseUnitCost,
       landed_unit_cost: landedUnitCost,
       unit_cost: inventoryUnitCost,
+      cost_split_known: receipt.base_unit_cost != null || receipt.landed_cost_amount != null,
+      vendor_invoice_no: receipt.vendor_invoice_no || '',
       base_total: qty * baseUnitCost,
       landed_total: qty * landedUnitCost,
       total: qty * inventoryUnitCost,
@@ -13660,7 +13663,18 @@ function productRowsMatchingColumnFilters(rows, columns = productVisibleColumns(
   });
 }
 
+function productPricingCost(product, key) {
+  const latest = product._cost_history?.[0];
+  if (!latest) return null;
+  const value = key === 'purchase_unit_cost' ? (latest.cost_split_known ? latest.base_unit_cost : null) : latest.unit_cost;
+  return value != null && Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
 function productColumnFilterValue(product, key) {
+  if (key === 'purchase_unit_cost' || key === 'purchase_landed_unit_cost') {
+    const value = productPricingCost(product, key);
+    return value == null ? 'Not available' : `${value} ${money(value)}`;
+  }
   if (key === "status") return productStatus(product);
   if (key === "photo") return product.photo_url ? "Photo" : "No photo";
   if (key === "cost" || key === "selling_price") return `${Number(product[key] || 0)} ${money(product[key])}`;
@@ -13669,6 +13683,7 @@ function productColumnFilterValue(product, key) {
 }
 
 function productExportValue(product, key) {
+  if (key === 'purchase_unit_cost' || key === 'purchase_landed_unit_cost') return productPricingCost(product, key) ?? '';
   if (key === "photo") return product.photo_url || "";
   if (key === "status") return productStatus(product);
   if (key === "expiry_date") return formatDisplayDate(product[key]);
@@ -13711,6 +13726,13 @@ function productRowHtml(p, columns = productVisibleColumns()) {
 }
 
 function productCellHtml(p, key) {
+  if (key === 'purchase_unit_cost' || key === 'purchase_landed_unit_cost') {
+    const value = productPricingCost(p, key);
+    if (value == null) return '<span title="No receipt with a reliable cost breakdown is available">Not available</span>';
+    const latest = p._cost_history[0];
+    const detail = `Latest receipt: ${latest.reference || ''} ${formatDisplayDate(latest.date)}. ${latest.vendor_invoice_no ? 'Supplier invoice: ' + latest.vendor_invoice_no + '.' : 'Receipt cost; supplier invoice not yet recorded.'} ${key === 'purchase_unit_cost' ? 'Supplier unit cost excluding freight, duty and other landed charges.' : 'Supplier unit cost plus allocated freight, duty and other landed charges.'}`;
+    return `<button class="linkbtn" type="button" data-product-cost-history="${esc(p.sku)}" title="${esc(detail)}">${money(value)}</button>`;
+  }
   if (key === "photo") return p.photo_url ? `<button class="thumb-btn" type="button" data-product-photo="${esc(p.photo_url)}" data-product-photo-title="${esc(p.sku || p.name || "Product photo")}"><img class="thumb" src="${esc(p.photo_url)}" alt="Photo"></button>` : `<span class="badge">No photo</span>`;
   if (key === "sku") return `<button class="linkbtn" type="button" data-product-edit="${esc(p.sku)}" title="Edit product and view history">${esc(p.sku)}</button>`;
   if (key === "name") return `<strong>${esc(p.name)}</strong>`;
@@ -13734,6 +13756,12 @@ function productCellHtml(p, key) {
 function productVisibleColumns() {
   const saved = JSON.parse(localStorage.getItem("lms.productColumns") || "null");
   const keys = Array.isArray(saved) && saved.length ? [...saved] : productColumnDefs.filter(([key]) => key !== "markup_percent").map(([key]) => key);
+  if (!localStorage.getItem('lms.productPricingColumns.v1')) {
+    const additions = ['purchase_unit_cost', 'purchase_landed_unit_cost'].filter(key => !keys.includes(key));
+    keys.splice(keys.includes('cost') ? keys.indexOf('cost') + 1 : keys.length, 0, ...additions);
+    localStorage.setItem('lms.productColumns', JSON.stringify(keys));
+    localStorage.setItem('lms.productPricingColumns.v1', '1');
+  }
   if (!keys.includes("mother_parts")) {
     const unitIndex = keys.indexOf("unit");
     keys.splice(unitIndex >= 0 ? unitIndex + 1 : keys.length, 0, "mother_parts");
