@@ -3118,12 +3118,15 @@ function installActionButtonFeedback() {
     if (typeof handler !== "function" || handler._actionFeedback) return;
     const wrapped = function (...args) {
       if (button._actionPending) return;
+      // Capture the idle state before handlers such as runExclusiveModalSave
+      // synchronously change it to Saving. Never restore their busy state.
+      const label = button.innerHTML;
+      const wasDisabled = button.disabled;
+      const managedSave = button.classList?.contains('modal-save-busy');
       let result;
       try { result = handler.apply(this, args); }
       catch (error) { alert(error.message || String(error)); return; }
-      if (!result || typeof result.then !== "function") return result;
-      const label = button.innerHTML;
-      const wasDisabled = button.disabled;
+      if (!result || typeof result.then !== "function" || managedSave) return result;
       button._actionPending = true;
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
