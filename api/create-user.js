@@ -60,7 +60,10 @@ async function getRequester(req) {
       Authorization: `Bearer ${token}`,
     },
   });
-  if (!response.ok) throw Object.assign(new Error("Login session expired. Please log out and log in again."), { status: 401 });
+  if (!response.ok) {
+    const expired = response.status === 401 || response.status === 403;
+    throw Object.assign(new Error(expired ? "Your session could not be renewed. Please sign in again; your form remains open." : "Login verification is temporarily unavailable. Please retry."), { status: expired ? 401 : 503, code: expired ? 'SESSION_EXPIRED' : 'AUTH_UNAVAILABLE' });
+  }
   return response.json();
 }
 
@@ -177,6 +180,6 @@ module.exports = async function handler(req, res) {
 
     send(res, 200, { ok: true, profile: saved?.[0] || profile, mechanic });
   } catch (error) {
-    send(res, error.status || 500, { error: friendlyCreateUserError(error) });
+    send(res, error.status || 500, { error: friendlyCreateUserError(error), code: error.code });
   }
 };

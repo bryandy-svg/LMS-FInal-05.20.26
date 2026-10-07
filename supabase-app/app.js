@@ -17999,13 +17999,11 @@ function bytesToBase64(bytes) {
 async function createPublicPdfDownloadLink({ documentType, reference, fileName, html, promptLabel }) {
   if (!html) throw new Error("The printable document could not be generated.");
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) throw new Error("Your login session expired. Please log in again.");
   const blob = await printableHtmlToPdfBlob(html, fileName);
   const fileBase64 = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
-  const response = await fetch("/api/share-document", {
+  const response = await authenticatedAppFetch("/api/share-document", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${session.access_token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ documentType, reference, fileName, fileBase64 }),
@@ -43142,6 +43140,27 @@ function bindUserRoleAccessDefaults() {
   roleInput.oninput = apply;
 }
 
+async function authenticatedAppFetch(path, options) {
+  const expectedUser = session?.user?.id;
+  const authorize = async (refresh = false) => {
+    const { data, error } = await (refresh ? supabase.auth.refreshSession() : supabase.auth.getSession());
+    if (error) throw error;
+    const current = data?.session;
+    if (!current?.access_token) throw new Error('Please sign in again. Your form has been kept open.');
+    if (expectedUser && current.user?.id !== expectedUser) throw new Error('The signed-in user changed. Reopen this form under the correct account.');
+    session = current;
+    return current.access_token;
+  };
+  const send = async token => fetch(path, { ...options, headers: { ...options.headers, Authorization: `Bearer ${token}` } });
+  let response = await send(await authorize());
+  if (response.status === 401) {
+    const failure = await response.clone().json().catch(() => ({}));
+    // Only retry authentication failures raised before the endpoint performs writes.
+    if (failure.code === 'SESSION_EXPIRED') response = await send(await authorize(true));
+  }
+  return response;
+}
+
 async function saveUserModal() {
   const read = (field) => document.querySelector(`[data-user-field="${field}"]`)?.value?.trim() || "";
   const modulesPicked = [...document.querySelectorAll("[data-user-module]:checked")].map((el) => el.dataset.userModule);
@@ -43155,11 +43174,10 @@ async function saveUserModal() {
     modules: modulesPicked.includes("all") ? ["all"] : modulesPicked.filter(Boolean),
   };
   if (!payload.modules.length) payload.modules = ["dashboard"];
-  const response = await fetch("/api/create-user", {
+  const response = await authenticatedAppFetch("/api/create-user", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${session?.access_token || ""}`,
     },
     body: JSON.stringify(payload),
   });
