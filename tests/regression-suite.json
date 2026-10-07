@@ -65,5 +65,6 @@
   "product-pricing-costs",
   "work-order-nonposting-save",
   "save-feedback-recovery",
-  "api-session-refresh"
+  "api-session-refresh",
+  "manual-ap-vendor-credit"
 ]
