@@ -9286,6 +9286,17 @@ async function reversePurchaseOrderApToEdit(data, apRow, receiptGroupKey = "") {
   }
 }
 
+async function workOrderPartsPostingDate(wo) {
+  try {
+    await loadAccountingCloseDate(true);
+    const date = $("workOrderPostingDateInput")?.value || wo.posting_date || today();
+    const parsed = new Date(date + 'T00:00:00Z');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0,10) !== date) throw new Error('Check the work-order posting date in its posting controls.');
+    if (isLockedAccountingDate(date)) throw new Error('The work-order posting date is in a closed accounting period. Choose an open date in its posting controls.');
+    return date;
+  } catch (error) { alert(error.message); return null; }
+}
+
 async function chooseAccountingPostingDate(label, defaultDate = today()) {
   try { await loadAccountingCloseDate(true); } catch(error) { alert(error.message); return null; }
   let suggested=formatDisplayDate(defaultDate);
@@ -22912,7 +22923,7 @@ async function mechanicPortalAcceptPart(partId, mode) {
     return;
   }
   if (!confirm(`Accept parts now?\n\nWork order: ${wo.wo_no}\nPart: ${partDisplayName(part)}\nQty: ${qty}\n\nThis will deduct the quantity from inventory.`)) return;
-  const postingDate=await chooseAccountingPostingDate('Post accepted parts for ' + wo.wo_no);
+  const postingDate=await workOrderPartsPostingDate(wo);
   if(!postingDate)return;
   try {
     const acceptedQty = Number(part.accepted_qty || 0) + qty;
@@ -24101,7 +24112,7 @@ async function saveWorkOrderPartEdits(wo) {
       job.record.component_ids=selected;
     }
   }
-  const partsPostingDate = (acceptanceJobs.length || upserts.some(part => Number(part.accepted_qty || 0) > 0)) ? await chooseAccountingPostingDate('Post work-order parts ' + wo.wo_no) : today();
+  const partsPostingDate = await workOrderPartsPostingDate(wo);
   if (!partsPostingDate) throw new Error('Parts posting cancelled.');
   if(acceptanceJobs.length)await ensureWorkOrderAccountingAccounts(Boolean(wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)));
   const {data:savedRows,error:saveError}=await supabase.rpc('save_work_order_parts_atomic',{
@@ -25189,7 +25200,7 @@ async function voidWorkOrderPart(wo, partId) {
   if(!confirm('Void this part? Issued stock and its accounting will be returned together.'))return;
   const reason=prompt('Reason for voiding this part:','Entered in error')?.trim();
   if(!reason)return;
-  const postingDate=await chooseAccountingPostingDate('Void work-order part');
+  const postingDate=await workOrderPartsPostingDate(wo);
   if(!postingDate)return;
   let completed=false;
   try {
@@ -26167,7 +26178,7 @@ async function applyMechanicPartAcceptances(wo, mechanic) {
     const qtyInput = [...document.querySelectorAll('[data-accept-part="qty"]')].find((input) => input.dataset.partId === partId);
     return { part, mode: select.value, qty: Number(qtyInput?.value || 0) };
   }).filter((row) => row.part && row.mode !== "No");
-  const postingDate=rows.some(row=>row.mode !== 'Remove Reserved') ? await chooseAccountingPostingDate('Post accepted parts for ' + wo.wo_no) : null;
+  const postingDate=rows.some(row=>row.mode !== 'Remove Reserved') ? await workOrderPartsPostingDate(wo) : null;
   if(rows.some(row=>row.mode !== 'Remove Reserved') && !postingDate) throw new Error('Parts posting cancelled.');
   for (const row of rows) {
     const part = row.part;
@@ -29489,7 +29500,9 @@ async function openCustomerEquipmentForm(type, existing = null, allRows = [], so
   productMeta.workOrders = workOrders;
   partyMasterMeta.customers = customers;
   const base = existing || sourceDropoff || {};
-  const formNo = existing?.form_no || nextCustomerEquipmentFormNo(allRows, type);
+  // The database assigns a free number if another user saves this preview first.
+  const numberRows = existing?.id ? [] : await getPagedViewRows("customer_equipment_forms", { columns: "form_no" });
+  const formNo = existing?.form_no || nextCustomerEquipmentFormNo(numberRows, type);
   $("modalTitle").textContent = `${existing ? "Edit" : "New"} ${type === "Drop-Off" ? "Customer Equipment Drop-Off" : "Customer Acceptance / Release"} ${formNo}`;
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   const dropoffs = allRows.filter((row) => row.form_type === "Drop-Off");
@@ -29533,9 +29546,10 @@ async function openCustomerEquipmentForm(type, existing = null, allRows = [], so
     if (type === "Acceptance/Release" && (!$("cefWorkCompleted").value.trim() || !$("cefReleaseCondition").value.trim())) return alert("Work completed and release condition are required.");
     const payload = { ...collectForm(), customer_name: customer.name, customer_reference: customer.reference || "", asset_source: equipment.source, asset_tag: equipment.tag, created_by: existing?.created_by || profile?.email || session?.user?.email || "", updated_at: new Date().toISOString() };
     const query = existing?.id ? supabase.from("customer_equipment_forms").update(payload).eq("id", existing.id) : supabase.from("customer_equipment_forms").insert(payload);
-    const { error } = await query;
+    const { data: savedForm, error } = await query.select("form_no").single();
     if (error) return alert(error.message);
     closeModal(true); customerEquipmentFormTab = type; await renderCustomerEquipmentFormsView();
+    if (savedForm.form_no !== formNo) alert(`Saved as ${savedForm.form_no}. The preview number was already used by another form.`);
   };
 }
 

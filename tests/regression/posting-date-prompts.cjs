@@ -6,7 +6,11 @@ const c={today:()=> '2026-10-06',formatDisplayDate:x=>x,prompt:()=>answers.shift
  answers=['08/31/2026','02/30/2026','bad','2026-09-30'];assert.equal(await c.chooseAccountingPostingDate('Post'),'2026-09-30');assert.equal(alerts.length,3);
  answers=[null];assert.equal(await c.chooseAccountingPostingDate('Post'),null);
  c.loadAccountingCloseDate=async()=>{throw Error('offline')};answers=['09/30/2026'];assert.equal(await c.chooseAccountingPostingDate('Post'),null);assert.equal(answers.length,1);
- for(const name of ['reverseManualJournal','reversePurchaseOrderApToEdit','reverseCustomerPayment','reverseSalesOrder','voidWorkOrderPart','reverseSelectedGoodsReceiptBatch','reverseGoodsReceipt','mechanicPortalAcceptPart','applyMechanicPartAcceptances'])assert.match(functions([name]),/chooseAccountingPostingDate/);
+ for(const name of ['reverseManualJournal','reversePurchaseOrderApToEdit','reverseCustomerPayment','reverseSalesOrder','reverseSelectedGoodsReceiptBatch','reverseGoodsReceipt'])assert.match(functions([name]),/chooseAccountingPostingDate/);
+ for(const name of ['voidWorkOrderPart','mechanicPortalAcceptPart','applyMechanicPartAcceptances','saveWorkOrderPartEdits']) {
+   assert.doesNotMatch(functions([name]),/chooseAccountingPostingDate/);
+   assert.match(functions([name]),/workOrderPartsPostingDate\(wo\)/);
+ }
  // Execute GL cancellation: no database operation may occur.
  let queries=0;c.prompt=()=> 'Duplicate';c.chooseAccountingPostingDate=async()=>null;c.supabase={from:()=>{queries++;throw Error('unexpected write')}};vm.runInContext(functions(['reverseManualJournal']),c);await c.reverseManualJournal('JE-0926045');assert.equal(queries,0);
  assert.match(functions(['reverseGoodsReceiptRecord']),/movement_date: postingDate/);
