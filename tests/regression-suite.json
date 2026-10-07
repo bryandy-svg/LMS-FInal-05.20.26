@@ -63,5 +63,6 @@
   "work-order-lookup",
   "work-order-parts-posting-date",
   "product-pricing-costs",
-  "work-order-nonposting-save"
+  "work-order-nonposting-save",
+  "save-feedback-recovery"
 ]
