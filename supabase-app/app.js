@@ -6053,7 +6053,7 @@ function apAgingDetailRows(asOf, source = productMeta.aging || {}) {
       _po_no: row.po_no,
     }, asOf));
   const hasControlPosting = (row) => row.beginning_ap || cutoffGl.some((line) =>
-    subledgerAccountMatches(line.account, "Accounts Payable") && Number(line.credit || 0) > 0.004
+    subledgerAccountMatches(line.account, "Accounts Payable") && (row.unapplied_vendor_credit ? Number(line.debit || 0) > 0.004 : Number(line.credit || 0) > 0.004)
     && String(line.reference || "").trim() === String(row.reference || "").trim()
     && canonicalPartyName(line.vendor).toLowerCase() === canonicalPartyName(row.name).toLowerCase()
     && (!row.partial_receipt || normalizeCheckRunDocumentKey(line.invoice_no) === normalizeCheckRunDocumentKey(row.invoice_no)));
@@ -6122,6 +6122,9 @@ function agingControlReviewHtml(type, search = "") {
 }
 
 function clearAgingCreditsByParty(rows = []) {
+  // Explicit unapplied vendor credits reduce the vendor total, never an invoice.
+  const unapplied = rows.filter((row) => row.unapplied_vendor_credit);
+  rows = rows.filter((row) => !row.unapplied_vendor_credit);
   const bucketFields = ["current", "days30", "days60", "days90", "over90"];
   const withBalance = (row, balance) => {
     const bucket = bucketFields.find((field) => Math.abs(Number(row[field] || 0)) > 0.004) || "current";
@@ -6133,7 +6136,7 @@ function clearAgingCreditsByParty(rows = []) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   });
-  const cleared = [];
+  const cleared = [...unapplied];
   groups.forEach((partyRows) => {
     const positives = partyRows.filter((row) => Number(row.balance || 0) > 0.004)
       .map((row) => ({ ...row }))
@@ -7376,8 +7379,11 @@ function accountsPayableRows(data) {
   // hide the journal's updated WO, jobsite, and equipment details.
   const poReferences = new Set(poRows.filter((row) => !row.manual_journal_ap).map((row) => String(row.po_no || "").trim().toLowerCase()));
   const manualGroups = new Map();
-  (data.allGl || data.gl || []).filter((row) => /manual journal/i.test(row.source || "") && !/reverse|void/i.test(row.status || "")).forEach((row) => {
-    const reference = String(row.reference || "").trim();
+  // Keep originals and their dated reversals together, including historical cutoffs.
+  (data.allGl || data.gl || []).filter((row) => /manual journal/i.test(row.source || "") && !/void|draft|unposted/i.test(row.status || "")).forEach((row) => {
+    const reference = /^manual journal reversal$/i.test(row.source || "")
+      ? String(row.reference || "").trim().replace(/^REV-/i, "")
+      : String(row.reference || "").trim();
     if (!reference || poReferences.has(reference.toLowerCase())) return;
     if (!manualGroups.has(reference)) manualGroups.set(reference, []);
     manualGroups.get(reference).push(normalizeGlRow(row));
@@ -7385,7 +7391,7 @@ function accountsPayableRows(data) {
   const directRows = [...manualGroups.entries()].map(([reference, rows]) => {
     const apLines = rows.filter((row) => subledgerAccountMatches(row.account, "Accounts Payable"));
     const amount = apLines.reduce((sum, row) => sum + Number(row.credit || 0) - Number(row.debit || 0), 0);
-    if (amount <= 0.005) return null;
+    if (Math.abs(amount) <= 0.005) return null;
     const apLine = apLines[0] || rows[0];
     const firstValue = (field) => rows.find((row) => String(row?.[field] || "").trim())?.[field] || "";
     const workOrderNo = firstValue("work_order_no");
@@ -7404,8 +7410,9 @@ function accountsPayableRows(data) {
       written_off: 0,
       balance: amount,
       match: "Matched",
-      payment: "Ready to Pay",
-      status: "Direct AP",
+      payment: amount < 0 ? "Unapplied Credit" : "Ready to Pay",
+      status: amount < 0 ? "Unapplied Vendor Credit" : "Direct AP",
+      unapplied_vendor_credit: amount < 0,
       ap_posted: true,
       beginning_ap: false,
       landed_cost_ap: false,
@@ -7424,6 +7431,7 @@ function accountsPayableRows(data) {
   }).filter(Boolean);
   return [...poRows.filter((row) => !row.manual_journal_ap), ...directRows]
     .map((row) => {
+      if (row.unapplied_vendor_credit) return { ...row, paid: false };
       const paidRun = checkRunPaymentForApRow(row, data.checkRuns || []);
       if (!paidRun) return { ...row, paid: /paid/i.test(`${row.payment || ""} ${row.status || ""}`) };
       return { ...row, balance: 0, paid: true, payment: paidRun.label, payment_reference: paidRun.reference, payment_check_run: paidRun.run.check_run_no || paidRun.run.reference || "" };
@@ -7866,7 +7874,7 @@ function purchaseAccountingRows(data) {
 
 function apRowActions(row) {
   const needsResolve = /mismatch|pending|awaiting/i.test(`${row.match} ${row.status}`) || Number(row.invoice_amount || 0) !== Number(row.received || row.po_total || 0);
-  const canPay = row.ap_posted && /matched/i.test(row.match || "") && !/paid/i.test(row.payment || "");
+  const canPay = Number(row.balance || 0) > 0.005 && row.ap_posted && /matched/i.test(row.match || "") && !/paid/i.test(row.payment || "");
   const canReverse = row.ap_posted && !row.paid && (row.direct_ap || !row.landed_cost_ap) && !/paid|written off/i.test(`${row.payment || ""} ${row.status || ""}`);
   return `<div class="rowactions">${row.ap_posted && !row.direct_ap ? `<button class="rowbtn" type="button" data-ap-view="${esc(row.po_no)}" data-ap-invoice="${esc(row.invoice_no || "")}" data-ap-group="${esc(row.receipt_group_key || "")}">View</button>` : ""}${row.ap_posted ? "" : `<button class="rowbtn" type="button" data-ap-post="${esc(row.po_no)}" data-ap-invoice="${esc(row.invoice_no || "")}" data-ap-group="${esc(row.receipt_group_key || "")}">Post</button>`}${(row.direct_ap || needsResolve) && !row.landed_cost_ap ? `<button class="rowbtn" type="button" data-ap-resolve="${esc(row.po_no)}">${row.direct_ap ? "Review" : "Resolve"}</button>` : ""}${canReverse ? `<button class="rowbtn danger" type="button" data-ap-reverse-edit="${esc(row.po_no)}" data-ap-invoice="${esc(row.invoice_no || "")}" data-ap-group="${esc(row.receipt_group_key || "")}">Reverse to Edit</button>` : ""}${canPay ? `<button class="rowbtn" type="button" data-ap-check="${esc(row.po_no)}" data-ap-invoice="${esc(row.invoice_no || "")}" data-ap-group="${esc(row.receipt_group_key || "")}">Check</button>` : ""}${row.ap_posted && Number(row.balance || 0) > 0.005 && !/paid|written off/i.test(`${row.payment || ""} ${row.status || ""}`) ? `<button class="rowbtn danger" type="button" data-ap-writeoff="${esc(row.po_no)}">Write off</button>` : ""}<button class="rowbtn" type="button" data-accounting-entries data-entry-invoice="${esc(row.invoice_no || "")}" data-entry-source="${esc(row.po_no || "")}">Accounting Entries</button></div>`;
 }
@@ -8880,6 +8888,7 @@ async function openBalancedJournalModal(data = null, editGroup = null, prefillGr
       ${productInput("Bank reference", "bank_reference", formGroup?.bank_reference || "")}
       ${productSelect("Customer", "customer", (productMeta.accountingCustomers || []).map((row) => row.name).filter(Boolean), formGroup?.customer || "")}
       ${productSelect("Vendor", "vendor", (productMeta.accountingVendors || []).map((row) => row.name).filter(Boolean), formGroup?.vendor || "")}
+      <div class="field wide"><small>A net debit to Accounts Payable records an unapplied credit for the selected vendor. It reduces the vendor balance without paying or clearing an invoice.</small></div>
       <div class="field"><label>Work Order #</label><input class="suggest-input" data-suggest-source="work_orders" data-product-field="work_order_no" value="${esc(formGroup?.work_order_no || "")}" placeholder="Type WO #, asset, customer, or status" autocomplete="off" inputmode="search"><small>Results appear in separate columns after you start typing.</small></div>
       <div class="field"><label>Jobsite</label><input class="suggest-input" data-suggest-source="locations" data-product-field="jobsite" value="${esc(formGroup?.jobsite || "")}" placeholder="Type jobsite, project, or equipment location" autocomplete="off" inputmode="search"><div class="actions table-actions"><button class="rowbtn" type="button" id="createJournalJobsiteBtn">+ Create new jobsite</button></div><small>Results appear in separate columns after you start typing. New jobsites are added to the shared location list.</small></div>
       <div class="field"><label>Equipment</label><input class="suggest-input" data-suggest-source="equipment" data-equipment-source="master" data-product-field="equipment" value="${esc(formGroup?.equipment || "")}" placeholder="Type asset #, equipment, plate, serial, VIN, type, or location" autocomplete="off" inputmode="search"><small>Results appear in separate columns after you start typing.</small></div>
@@ -9134,7 +9143,7 @@ async function saveBalancedJournalModal(coa = [], { keepOpen = false, editGroup 
   const selectedCustomer = (productMeta.accountingCustomers || []).find((row) => String(row.name || "").trim().toLowerCase() === String(header.customer || "").trim().toLowerCase());
   if (apLines.length && !selectedVendor) return alert("Select a vendor from Vendor Master when using Accounts Payable.");
   if (arLines.length && !selectedCustomer) return alert("Select a customer from Customer Master when using Accounts Receivable.");
-  if (apLines.length && apCredit <= 0) return alert("A manual Accounts Payable journal must create a positive payable credit. Use Check Run, Write Off, or a reversal to reduce an existing payable.");
+  if (apLines.length && Math.abs(apCredit) < 0.005) return alert("Accounts Payable lines must have a nonzero net amount. A net debit creates an unapplied vendor credit.");
   if (arLines.length && arDebit <= 0) return alert("A manual Accounts Receivable journal must create a positive receivable debit. Use Receive Payment, Write Off, or a reversal to reduce an existing receivable.");
   if (autoReverse && (apLines.length || arLines.length)) return alert("Use accrual GL accounts for a dated reversal. Accounts Payable and Accounts Receivable require their subledger reversal workflow.");
   try { if (autoReverse) validateAccrualReversalDate(header.posting_date, header.reversal_date); } catch (error) { return alert(error.message); }
@@ -11006,7 +11015,7 @@ function checkRunEligiblePayables(data) {
     const vendorInvoiceKey = `${normalizeCheckRunDocumentKey(row.vendor)}|${invoiceKey}`;
     const alreadyAssigned = (poKey && assigned.poNumbers.has(poKey))
       || (invoiceKey && assigned.vendorInvoices.has(vendorInvoiceKey));
-    return row.ap_posted && /matched/i.test(row.match || "") && /ready/i.test(row.payment || "") && !/paid/i.test(row.payment || row.status || "") && !alreadyAssigned;
+    return Number(row.balance || 0) > 0.005 && row.ap_posted && /matched/i.test(row.match || "") && /ready/i.test(row.payment || "") && !/paid/i.test(row.payment || row.status || "") && !alreadyAssigned;
   }).map((row) => {
     const po = (data.pos || []).find((item) => item.po_no === row.po_no || item.po_no === row.reference);
     const support = poSupportDetails(data, po, row);
