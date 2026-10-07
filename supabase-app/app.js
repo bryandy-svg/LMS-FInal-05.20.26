@@ -13342,6 +13342,7 @@ async function renderProductsView() {
       landed_unit_cost: landedUnitCost,
       unit_cost: inventoryUnitCost,
       cost_split_known: receipt.base_unit_cost != null || receipt.landed_cost_amount != null,
+      vendor_invoice_no: receipt.vendor_invoice_no || '',
       base_total: qty * baseUnitCost,
       landed_total: qty * landedUnitCost,
       total: qty * inventoryUnitCost,
@@ -13729,7 +13730,7 @@ function productCellHtml(p, key) {
     const value = productPricingCost(p, key);
     if (value == null) return '<span title="No receipt with a reliable cost breakdown is available">Not available</span>';
     const latest = p._cost_history[0];
-    const detail = `Latest receipt: ${latest.reference || ''} ${formatDisplayDate(latest.date)}. ${key === 'purchase_unit_cost' ? 'Purchase cost excluding landed charges.' : 'Purchase cost including landed charges.'}`;
+    const detail = `Latest receipt: ${latest.reference || ''} ${formatDisplayDate(latest.date)}. ${latest.vendor_invoice_no ? 'Supplier invoice: ' + latest.vendor_invoice_no + '.' : 'Receipt cost; supplier invoice not yet recorded.'} ${key === 'purchase_unit_cost' ? 'Supplier unit cost excluding freight, duty and other landed charges.' : 'Supplier unit cost plus allocated freight, duty and other landed charges.'}`;
     return `<button class="linkbtn" type="button" data-product-cost-history="${esc(p.sku)}" title="${esc(detail)}">${money(value)}</button>`;
   }
   if (key === "photo") return p.photo_url ? `<button class="thumb-btn" type="button" data-product-photo="${esc(p.photo_url)}" data-product-photo-title="${esc(p.sku || p.name || "Product photo")}"><img class="thumb" src="${esc(p.photo_url)}" alt="Photo"></button>` : `<span class="badge">No photo</span>`;
