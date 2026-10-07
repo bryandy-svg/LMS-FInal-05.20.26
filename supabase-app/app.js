@@ -24140,8 +24140,10 @@ async function saveWorkOrderPartEdits(wo) {
       job.record.component_ids=selected;
     }
   }
-  const partsPostingDate = await workOrderPartsPostingDate(wo);
-  if (!partsPostingDate) throw new Error('Parts posting cancelled.');
+  // Only newly accepted quantities create stock movements and ledger entries.
+  // Ordinary edits must not validate or reuse a historical posting date.
+  const partsPostingDate = acceptanceJobs.length ? await workOrderPartsPostingDate(wo) : null;
+  if (acceptanceJobs.length && !partsPostingDate) throw new Error('Parts posting cancelled.');
   if(acceptanceJobs.length)await ensureWorkOrderAccountingAccounts(Boolean(wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)));
   const {data:savedRows,error:saveError}=await supabase.rpc('save_work_order_parts_atomic',{
     p_wo_id:wo.id,p_rows:upserts,p_expected:wo._parts || [],p_posting_date:partsPostingDate,p_actor:acceptedBy
