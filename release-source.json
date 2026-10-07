@@ -123,6 +123,7 @@
     "tests/regression/work-order-parts-posting-date.cjs": "d56c47050e6b3f4a8bf59101d77a288cfa897f52e731c7028fc593c8f3d8afde",
     "tests/regression/work-order-po-price.cjs": "b744ac925dd73f805aee2f5ce5c01e02bc7bdf2cebbcddad9c39f4d593c79391",
     "tests/source.cjs": "331338e45c8665895912b584ce1f661a74904d2fc8e70f0c10981ba317042319",
+    "tests/trucking-final-material-rollback.sql": "be59dff323462100c12026249ebdf6021805956e1cafbd4df228daef8d5b6b22",
     "vercel.json": "72155b4ecc890cfc6e4af0098ab0ac4a22805e138e0f8a831db4ec69b8ac9628"
   }
 }
