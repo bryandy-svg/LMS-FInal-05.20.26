@@ -16349,6 +16349,7 @@ function planWorkOrderPoReservations(po, lines, parts, workOrders) {
       && Number(part.accepted_qty || 0) <= 0 && !/accepted|issued|complete|released|void|cancel/i.test(part.status || '')) {
       rows.push({id:part.id, wo_id:part.wo_id, product_id:part.product_id, sku:part.sku, product_name:part.product_name,
         qty_needed:part.qty_needed, accepted_qty:part.accepted_qty || 0, unit_cost:part.unit_cost,
+        issue:part.issue || `PO ${po.po_no}`, availability:'Cancelled — PO line removed',
         status:'Cancelled', notes:[part.notes, 'PO line removed; reservation retained for history.'].filter(Boolean).join('\n')});
     }
   }
