@@ -1,6 +1,6 @@
 {
   "files": {
-    "api/create-user.js": "95b64f7602761da14bb26c645f0a33a0a1d14a0c9b3f7934bcaae6d3f26cd972",
+    "api/create-user.js": "b4bf30e8d778af1bd4360ba86fc7b713621df82410eb1a445aac6ac65a869e98",
     "api/share-document.js": "3de2f140862a9e49645a9f7efa9ad84260474d42c77cde6e49ac09bbf28b198d",
     "package.json": "8998595478b3fc67eb2182c5ed6a69e668367d1992bfa36c8d914aaddaa943a2",
     "scripts/build-vercel.cjs": "83505257b87116162e4cde3b953d154a79da5ac0cc236f2eea46cb28ee4c605e",
@@ -40,7 +40,7 @@
     "supabase-app/LMS_Product_Qty_Cost_Update_Template.xlsx": "d99b90f8cfa870cac2ff4bcd15720ca0bb0853874b30098135869a63fbc43699",
     "supabase-app/LMS_Trial_Balance_Upload_Template.xlsx": "9dac40d9eaf8b02b9356ee27448e8de7b82f4a9d22c0983b076acc218d8774f4",
     "supabase-app/LMS_Vendor_Master_Template.xlsx": "440bfe1a35f5f8ef5fe2219798ede54b62a880109cc8bbf7c4b5976371a0d3c0",
-    "supabase-app/app.js": "95c968f6dd5456863e24bd67aed7c3b76c4fb14d61eb0ddec765b7ebdcb8d129",
+    "supabase-app/app.js": "af5798662626887dc02487f73895c3c5575ecc244829dff530a247bf3b5e859c",
     "supabase-app/assets/lms-imports-logo.jpg": "cc27a3e25d20ebe228aa0a514500eb028ee4809243d53238019259d258e64ca9",
     "supabase-app/assets/lms-ticket-header.png": "17631ef69d5e34bbf6d1bd8d0809f02314c1f6c2114ce9184e370ca8ae59b928",
     "supabase-app/download.html": "8a2b84b0d8920dbd1a7ddec3e664348846928f7bda041240599a6cf1237b3e3e",
@@ -54,7 +54,7 @@
     "supabase-app/tutorials/system-quick-overview.html": "951d14aeb86ceb71939667cf24ea761be47cdbb778502ed60e72dc31133b777e",
     "supabase-app/vendor/html2pdf.bundle.min.js": "603aa7917180619f9ea2c5fc555169dd9e59f9461d3e67e1142f274cf02b30be",
     "supabase-app/vendor/pdf-lib.min.js": "0f9a5cad07941f0826586c94e089d89b918c46e5c17cf2d5a3c6f666e3bc694f",
-    "tests/regression-suite.json": "18ca853a563a3826a2dd7cd511401dd41d64e9eef03ccba21d21115839423540",
+    "tests/regression-suite.json": "82c645d1830ba5a7dd00fd90d5b25a76dbb0ede42bbd7c0e3ca8b2649eb1dd3d",
     "tests/regression/accounting-initial-load.cjs": "e73771d2093785b3a9217c274a96ba8ab37161b5a47d434221aa9bb6af75d139",
     "tests/regression/action-feedback.cjs": "1144e8d57f4462ab7c66609a01ce0bc04ed3719c32343b73e2c927c902f2c5c6",
     "tests/regression/action-menu-bounds.cjs": "17faa9af71a4d64abd62fb5c865d4729da33887486d5553b145976f773478803",
@@ -63,6 +63,7 @@
     "tests/regression/all-pdf.cjs": "7728ab8dcd1005840dc08aab197d2a4ce4924b7e471c828a34848f16b313289f",
     "tests/regression/ap-posted-refresh.cjs": "eefd0719f971d76d74e13c6b8906bb3aaff934ad16e4171291060c816c00a814",
     "tests/regression/ap-status.cjs": "ce21e0f92b38bbe63fe98ba486c9d72b9f2aed0c8526a3de082ea8b1e59ea2f7",
+    "tests/regression/api-session-refresh.cjs": "0244542d83aa398c216123e0c93dd13dda1cf3a2a502c50ec253a8f62fe79f4c",
     "tests/regression/ar-guard.cjs": "4f2a954d12bbfd33571bc0cdd776bef69f804565770eef8e13f4464254ca4a20",
     "tests/regression/atomic-inventory.cjs": "6b1fee743b3015fc371332dcb135f059995ea50fcdc0b6468df97b3c7c29698f",
     "tests/regression/auto-wo-receipt.cjs": "3f4e95038a2b77ce4a99af58e3a3189cb23a24edb56f6c8fa4fc70849e6b1993",

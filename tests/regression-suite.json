@@ -64,5 +64,6 @@
   "work-order-parts-posting-date",
   "product-pricing-costs",
   "work-order-nonposting-save",
-  "save-feedback-recovery"
+  "save-feedback-recovery",
+  "api-session-refresh"
 ]
