@@ -32240,7 +32240,11 @@ function truckingDebrisSuggestOptions(input) {
 function truckingTicketMaterialFields(row = {}) {
   const parsed = truckingQuantity(row.cy_ton);
   const legacyQuantity = String(row.cy_ton || "").trim().match(/^(\d+(?:\.\d+)?|\.\d+)/)?.[1] || "";
-  return `<label class="field">Type of Debris (required)<input class="suggest-input" data-suggest-source="trucking_debris" name="debris_type" value="${esc(row.debris_type || "")}" placeholder="Search debris or enter material type" autocomplete="off" required></label>
+  const current = String(row.debris_type || '').trim();
+  const types = [...new Set((productMeta.truckingRates || []).filter(rate => !/inactive/i.test(rate.status || '') && String(rate.category || '').trim().toLowerCase() === 'tipping fee').map(rate => String(rate.service || '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  const selected = types.find(type => type.toLowerCase() === current.toLowerCase()) || current;
+  const legacyOption = current && !types.includes(selected) ? `<option value="${esc(current)}" selected>${esc(current)} (existing ticket value)</option>` : '';
+  return `<label class="field">Type of Debris (required)<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small></label>
     <label class="field">Quantity<input type="number" min="0.01" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
     <label class="field">Quantity Unit<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
     <input type="hidden" name="cy_ton" value="${esc(row.cy_ton || "")}">`;
@@ -33914,6 +33918,7 @@ async function openAssignedDriverTask(ticketNo) {
 }
 
 function assignedDriverOperationalUpdate() {
+  syncTruckingTicketQuantity(modalBody);
   const value = (name) => modalBody.querySelector(`[name="${name}"]`)?.value ?? "";
   const numeric = (name) => value(name) === "" ? null : Number(value(name));
   return {
