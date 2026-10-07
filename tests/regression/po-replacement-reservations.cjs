@@ -1,0 +1,18 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {functions}=require('../source.cjs');let n=0;
+const c=vm.createContext({crypto:{randomUUID:()=>`new-${++n}`},purchaseOrderLineDestinationQty:(_,l)=>l.destination_qty,canReceiveIntoWorkOrder:w=>w?.status==='Open'});
+vm.runInContext(functions(['planWorkOrderPoReservations','workOrderPartOriginPo']),c);
+const wo={id:'wo',wo_no:'W100108',status:'Open'},po={po_no:'PO-7136'};
+const old={id:'old',wo_id:'wo',sku:'OLD',product_name:'Old part',product_id:'old-product',qty_needed:1,accepted_qty:0,unit_cost:2,status:'Shortage',availability:'Out of stock',issue:'Original issue',notes:'Reserved from PO PO-7136 for W100108'};
+const lines=[{sku:'NEW',product_name:'Replacement',product_id:'new-product',wo_no:wo.wo_no,destination_qty:2,unit_cost:4.9}];
+let rows=c.planWorkOrderPoReservations(po,lines,[old],[wo]);
+assert.equal(rows.length,2);assert.equal(rows.find(r=>r.id==='old').status,'Cancelled');
+assert.equal(rows.find(r=>r.id==='old').issue,'Original issue');
+assert.equal(rows.find(r=>r.sku==='NEW').qty_needed,2);
+for(const r of rows)assert.ok(r.availability,'Every mixed upsert row must supply NOT NULL availability');
+let again=c.planWorkOrderPoReservations(po,lines,rows,[wo]);assert.equal(again.length,1);assert.equal(again[0].id,rows[0].id,'Retry reuses reservation');
+let protectedPart={...old,accepted_qty:1,status:'Accepted'};
+assert.ok(!c.planWorkOrderPoReservations(po,lines,[protectedPart],[wo]).some(r=>r.id==='old'),'Issued history remains unchanged');
+const qty=c.planWorkOrderPoReservations(po,[{...lines[0],destination_qty:3}],rows,[wo]);assert.equal(qty[0].qty_needed,3);
+const removed=c.planWorkOrderPoReservations(po,[],rows,[wo]);assert.equal(removed.length,1);assert.equal(removed[0].status,'Cancelled');assert.ok(removed[0].availability);
+console.log('PASS: replacement, complete upsert fields, repeat save, quantity change, removal, and accepted-history protection.');

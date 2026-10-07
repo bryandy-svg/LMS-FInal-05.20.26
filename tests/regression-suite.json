@@ -66,5 +66,6 @@
   "work-order-nonposting-save",
   "save-feedback-recovery",
   "api-session-refresh",
-  "manual-ap-vendor-credit"
+  "manual-ap-vendor-credit",
+  "po-replacement-reservations"
 ]
