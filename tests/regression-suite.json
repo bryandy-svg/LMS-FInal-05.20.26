@@ -60,5 +60,6 @@
   "startup-order",
   "compact-workspace-state",
   "action-menu-bounds",
-  "work-order-lookup"
+  "work-order-lookup",
+  "work-order-parts-posting-date"
 ]
