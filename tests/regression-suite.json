@@ -62,5 +62,6 @@
   "action-menu-bounds",
   "work-order-lookup",
   "work-order-parts-posting-date",
-  "product-pricing-costs"
+  "product-pricing-costs",
+  "work-order-nonposting-save"
 ]
