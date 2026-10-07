@@ -68,7 +68,11 @@ for (const [unit, quantity, serviceAmount, tippingCharge] of [['CY', 12, 144, 18
 set({ service: 'Roll Off Bin', debris_type: 'Green Waste', cy_ton: '10 CY', worked_hours: '2' });
 assert.equal(context.manualFinalTicketCalculation().total, 345);
 const html = context.truckingTicketMaterialFields({ cy_ton: '4.5 Ton', debris_type: 'Green Waste' });
-assert.match(html, /data-suggest-source="trucking_debris"/);
+assert.match(html, /<select name="debris_type" required>/);
+assert.match(html, /value="Green Waste" selected/);
+assert.equal((html.match(/value="Green Waste"/g)||[]).length,1,'Unit-specific rates must not duplicate debris choices');
+assert.match(context.truckingTicketMaterialFields({debris_type:'Legacy material'}),/Legacy material \(existing ticket value\)/);
+assert.doesNotMatch(context.truckingTicketMaterialFields({}),/existing ticket value/);
 assert.match(html, /value="Ton" selected/);
 assert.match(html, /value="4.5"/);
 assert.match(html, /name="debris_type"[^>]*required/);
