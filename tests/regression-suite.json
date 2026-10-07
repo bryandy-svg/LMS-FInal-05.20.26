@@ -61,5 +61,6 @@
   "compact-workspace-state",
   "action-menu-bounds",
   "work-order-lookup",
-  "work-order-parts-posting-date"
+  "work-order-parts-posting-date",
+  "product-pricing-costs"
 ]
