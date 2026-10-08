@@ -29079,6 +29079,7 @@ function openInAppDocumentWindow(title = "Document Preview") {
     root.querySelector(".in-app-document-loading")?.remove();
     const printButton = root.querySelector("[data-document-preview-print]");
     if (printButton) printButton.disabled = false;
+    frame.contentWindow.printSavedInvoice = () => root.querySelector('[data-document-preview-print]').click();
     const saveButton = root.querySelector('[data-document-preview-save]');
     saveButton.hidden = !frame.contentDocument?.querySelector('[data-signature-table="invoices"]');
     saveButton.onclick = async () => {
@@ -29460,7 +29461,13 @@ function signatureScriptHtml() {
       keyValue: root.dataset.signatureKeyValue,
       values: collectSignatureValues(),
     });
-    alert(result && result.message ? result.message : (result && result.ok ? "Signature saved." : "Could not save signature."));
+    if (result?.ok && root.dataset.signatureTable === "invoices") {
+      // Use the preview's print handler, or native print in a popped-out document.
+      if (typeof window.printSavedInvoice === "function") window.printSavedInvoice();
+      else window["print"]();
+    } else {
+      alert(result && result.message ? result.message : (result && result.ok ? "Signature saved." : "Could not save signature."));
+    }
     if (result && result.ok && closeAfter) window.close();
   };
   window.saveDocumentSignatures = saveSignatures;
