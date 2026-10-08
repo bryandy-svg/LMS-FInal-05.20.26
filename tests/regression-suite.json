@@ -70,5 +70,6 @@
   "po-replacement-reservations",
   "guam-business-dates",
   "check-run-vendor-credits",
-  "invoice-signature-save"
+  "invoice-signature-save",
+  "invoice-save-print"
 ]
