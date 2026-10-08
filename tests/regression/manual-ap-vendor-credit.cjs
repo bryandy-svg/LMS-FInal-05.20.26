@@ -30,8 +30,8 @@ vm.runInContext(functions(['saveBalancedJournalModal','subledgerAccountMatches',
   const credit=c.accountsPayableRows(data)[0];
   assert.equal(credit.balance,-100);assert.equal(credit.status,'Unapplied Vendor Credit');assert.equal(credit.paid,false);
   assert.equal(c.accountsPayableRowsForTab([credit],'posted').length,1);
-  assert.equal(c.accountsPayableRowsForTab([credit],'forcheck').length,0);
-  assert.equal(c.checkRunEligiblePayables(data).length,0);
+  assert.equal(c.accountsPayableRowsForTab([credit],'forcheck').length,1);
+  assert.equal(c.checkRunEligiblePayables(data).length,1);
   assert.doesNotMatch(c.apRowActions(credit),/data-ap-check=|data-ap-writeoff=/);
   const payable={...saved[0],reference:'JE-BILL',invoice_no:'JE-BILL',debit:0,credit:500};
   const gl=[...saved,payable];

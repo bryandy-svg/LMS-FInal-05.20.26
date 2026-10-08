@@ -15,7 +15,7 @@ const ctx=vm.createContext({Date,Number,console,CSS:{escape:x=>x},$:element,toda
  isFhbCheckingAccount:()=>true,sequentialCheckNo:()=>'',checkRunNotesPayload:()=>'',summarizeCheckSupport:()=>({}),
  incrementSequence:async()=>{},closeModal:()=>{},renderCheckRunView:async()=>{},checkRunOptionalDisplay:x=>x||'',
 });
-for(const name of ['productInput','validateCheckRunDates','postCheckRunLedger','openCheckRunModal','openEditCheckRunModal','saveCheckRunModal','groupPayablesByVendor','checkRunHistoryTable']) {
+for(const name of ['validateCheckRunNetAmount','productInput','validateCheckRunDates','postCheckRunLedger','openCheckRunModal','openEditCheckRunModal','saveCheckRunModal','groupPayablesByVendor','checkRunHistoryTable']) {
  const start=source.search(new RegExp('^(?:async )?function '+name+'\\(','m'));assert.ok(start>=0,name);
  let end=start;while((end=source.indexOf('\n}',end+1))>=0){try{new vm.Script(source.slice(start,end+2)).runInContext(ctx);break}catch(e){if(!(e instanceof SyntaxError))throw e}}
 }

@@ -7438,7 +7438,6 @@ function accountsPayableRows(data) {
   }).filter(Boolean);
   return [...poRows.filter((row) => !row.manual_journal_ap), ...directRows]
     .map((row) => {
-      if (row.unapplied_vendor_credit) return { ...row, paid: false };
       const paidRun = checkRunPaymentForApRow(row, data.checkRuns || []);
       if (!paidRun) return { ...row, paid: /paid/i.test(`${row.payment || ""} ${row.status || ""}`) };
       return { ...row, balance: 0, paid: true, payment: paidRun.label, payment_reference: paidRun.reference, payment_check_run: paidRun.run.check_run_no || paidRun.run.reference || "" };
@@ -7451,7 +7450,7 @@ function accountsPayableRowsForTab(rows, tab = "forcheck") {
   if (tab === "paid") return rows.filter((row) => row.paid);
   if (tab === "posted") return rows.filter((row) => row.ap_posted && !row.paid && !/paid|written off/i.test(`${row.payment || ""} ${row.status || ""}`));
   if (tab === "review") return rows.filter((row) => !row.ap_posted || /mismatch|pending|awaiting/i.test(`${row.match || ""} ${row.status || ""}`));
-  return rows.filter((row) => row.ap_posted && !row.paid && /matched/i.test(row.match || "") && /ready/i.test(row.payment || "") && !/paid/i.test(`${row.payment || ""} ${row.status || ""}`));
+  return rows.filter((row) => row.ap_posted && !row.paid && /matched/i.test(row.match || "") && (/ready/i.test(row.payment || "") || row.unapplied_vendor_credit) && !/paid/i.test(`${row.payment || ""} ${row.status || ""}`));
 }
 
 function checkRunPaymentForApRow(row, runs = []) {
@@ -11022,11 +11021,11 @@ function checkRunEligiblePayables(data) {
     const vendorInvoiceKey = `${normalizeCheckRunDocumentKey(row.vendor)}|${invoiceKey}`;
     const alreadyAssigned = (poKey && assigned.poNumbers.has(poKey))
       || (invoiceKey && assigned.vendorInvoices.has(vendorInvoiceKey));
-    return Number(row.balance || 0) > 0.005 && row.ap_posted && /matched/i.test(row.match || "") && /ready/i.test(row.payment || "") && !/paid/i.test(row.payment || row.status || "") && !alreadyAssigned;
+    return Math.abs(Number(row.balance || 0)) > 0.005 && row.ap_posted && !row.paid && /matched/i.test(row.match || "") && (/ready/i.test(row.payment || "") || row.unapplied_vendor_credit) && !/paid/i.test(row.payment || row.status || "") && !alreadyAssigned;
   }).map((row) => {
     const po = (data.pos || []).find((item) => item.po_no === row.po_no || item.po_no === row.reference);
     const support = poSupportDetails(data, po, row);
-    return { ...row, ...support, amount: Number(row.invoice_amount || row.received || row.po_total || 0), source: "Purchase Order" };
+    return { ...row, ...support, amount: Number(row.balance || 0), source: row.unapplied_vendor_credit ? "Vendor Credit" : "Purchase Order" };
   });
 }
 
@@ -11202,6 +11201,7 @@ async function saveAdditionalCheckRunPayables(data, run, payables) {
   const unique = [...new Map(merged.map((row) => [`${row.po_no || row.reference}|${row.invoice_no || ""}`, row])).values()];
   const support = summarizeCheckSupport(unique);
   const amount = unique.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  try { validateCheckRunNetAmount(amount, current.vendor); } catch (error) { return alert(error.message); }
   const patch = { reference: uniqueTextList(unique.map((row) => row.po_no || row.reference)).join(", "), invoice_no: uniqueTextList(unique.map((row) => row.invoice_no)).join(", "), amount, wo_no: support.wo_no, po_no: support.po_no, jobsite: support.jobsite, equipment: support.equipment, parts_description: support.parts_description, notes: checkRunNotesPayload(detail.userNotes, unique) };
   const { error: updateError } = await supabase.from("check_runs").update(patch).eq("check_run_no", current.check_run_no);
   if (updateError) return alert(updateError.message);
@@ -11275,7 +11275,7 @@ async function openCheckRunModal(data, vendorFilter = "") {
       <div class="field wide"><label>Payables to include</label>${checkRunPayablesTable(payables)}</div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes"></textarea></div>
     </div>
-    <p class="notice">${vendorFilter ? `Filtered to ${esc(vendorFilter)}. ` : ""}Saving assembles the check run only. The Accounts Payable and payment-account entry is created once, when the check is printed.</p>`;
+    <p class="notice">${vendorFilter ? `Filtered to ${esc(vendorFilter)}. ` : ""}Vendor credits appear as negative amounts and reduce that vendor's check. The net amount must be positive. Saving assembles the check run only. The Accounts Payable and payment-account entry is created once, when the check is printed.</p>`;
   $("modalSave").onclick = () => saveCheckRunModal(data, payables);
   $("modal").style.display = "flex";
   bindCheckRunPayableSelectAll($("modal"));
@@ -11319,6 +11319,7 @@ async function saveCheckRunModal(data, payables) {
   } catch (error) { return alert(error.message); }
   try {
     const groups = groupPayablesByVendor(selected);
+    for (const group of groups) validateCheckRunNetAmount(group.amount, group.vendor);
     if (usesPrintedCheck) {
       const startingCheckNo = Number(String(record.check_no || "").trim());
       if (!Number.isSafeInteger(startingCheckNo) || startingCheckNo < 1) {
@@ -11545,11 +11546,17 @@ function validateCheckRunDates(run) {
   return postingDate;
 }
 
+function validateCheckRunNetAmount(amount, vendor = "Vendor") {
+  if (!Number.isFinite(Number(amount)) || Number(amount) < 0.005) {
+    throw new Error(vendor + ': select invoices exceeding the selected credits. The net check amount must be greater than zero. Unused credits remain available.');
+  }
+}
+
 async function postCheckRunLedger(run) {
   await loadAccountingCloseDate();
   const postingDate = validateCheckRunDates(run);
   const amount = Number(run.amount || 0);
-  if (!amount) return;
+  validateCheckRunNetAmount(amount, run.vendor);
   const bankReference = run.check_run_no || run.reference;
   const bankPayload = {
     tx_date: run.payment_date,
