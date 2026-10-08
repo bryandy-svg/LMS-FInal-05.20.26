@@ -17820,7 +17820,22 @@ function printPurchaseOrder(poNo, { returnHtml = false, targetWindow = null, pur
   win.document.close();
 }
 
+async function saveInvoiceSignatureDetails(request) {
+  if (request?.keyField !== 'invoice_no' || !request.keyValue) return {ok:false,message:'Invoice number is required.'};
+  const allowed = ['signature_data_url','signature_printed_name','signature_signed_date','internal_signature_data_url','internal_signature_name','internal_signature_remarks'];
+  const values = Object.fromEntries(Object.entries(request.values || {}).filter(([key,value]) => allowed.includes(key) && typeof value === 'string'));
+  if (!Object.keys(values).length) return {ok:false,message:'No signature details to save.'};
+  try {
+    const {data,error} = await supabase.from('invoices').update(values).eq('invoice_no',request.keyValue).select('id,invoice_no');
+    if (error) throw error;
+    if (data?.length !== 1) throw new Error('Invoice was not updated. Check your access and reopen the invoice.');
+    currentRows = currentRows.map(row => row.invoice_no === request.keyValue ? {...row,...values} : row);
+    return {ok:true,message:'Invoice signatures and printed details saved.'};
+  } catch (error) { return {ok:false,message:error.message || 'Invoice signature save failed.'}; }
+}
+
 window.savePdfSignatures = async function savePdfSignatures(request) {
+  if (request?.table === "invoices") return saveInvoiceSignatureDetails(request);
   const table = request?.table;
   const keyField = request?.keyField;
   const keyValue = request?.keyValue;
@@ -27353,6 +27368,7 @@ async function printCustomerInvoice(invoiceNo, { returnHtml = false, targetWindo
   if (inv._salesOrder) invoiceMeta.push(["Jobsite", sourceSalesOrder.jobsite_location || ""], ["Requested By", sourceSalesOrder.requested_by || ""]);
   if (inv._workOrder) invoiceMeta.push(["Asset #", inv._workOrder.asset_tag || ""], ["Equipment", workOrderAsset.name || ""], ["Serial #", workOrderAsset.serial || ""], ["Plate #", workOrderAsset.plate || ""]);
   const html = printableDocumentHtml({
+    invoiceSignatureRecord: inv,
     title: "Customer Invoice",
     number: inv.invoice_no,
     date: inv.invoice_date,
@@ -27516,6 +27532,7 @@ async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = nu
   }
   const isInvoice = Boolean(invoice);
   const html = printableDocumentHtml({
+    invoiceSignatureRecord: invoice,
     title: isInvoice ? "Customer Invoice" : isFinalWorkOrder ? "Work Order" : "Pro Forma Invoice",
     number: invoice?.invoice_no || wo.wo_no,
     date: isInvoice ? invoice.invoice_date : wo.wo_date,
@@ -29001,7 +29018,7 @@ function focusInAppDocumentPreview(preview) {
 function openInAppDocumentWindow(title = "Document Preview") {
   const root = document.createElement("div");
   root.className = "in-app-document-preview";
-  root.innerHTML = `<div class="in-app-document-shell"><div class="in-app-document-head"><div><strong data-document-preview-title>${esc(title || "Document Preview")}</strong><span>Drag within this screen, or use Pop out to move the report to another monitor.</span></div><div class="actions"><button type="button" data-document-preview-maximize>Maximize</button><button type="button" data-document-preview-popout>Pop out</button><button type="button" class="primary" data-document-preview-print disabled>Print / Save PDF</button><button type="button" data-document-preview-close>Close</button></div></div><div class="in-app-document-loading">Preparing document preview…</div><iframe class="in-app-document-frame" title="${esc(title || "Document Preview")}"></iframe></div>`;
+  root.innerHTML = `<div class="in-app-document-shell"><div class="in-app-document-head"><div><strong data-document-preview-title>${esc(title || "Document Preview")}</strong><span>Drag within this screen, or use Pop out to move the report to another monitor.</span></div><div class="actions"><button type="button" data-document-preview-maximize>Maximize</button><button type="button" data-document-preview-popout>Pop out</button><button type="button" data-document-preview-save hidden>Save and Update Invoice</button><button type="button" class="primary" data-document-preview-print disabled>Print / Save PDF</button><button type="button" data-document-preview-close>Close</button></div></div><div class="in-app-document-loading">Preparing document preview…</div><iframe class="in-app-document-frame" title="${esc(title || "Document Preview")}"></iframe></div>`;
   document.body.appendChild(root);
   const frame = root.querySelector("iframe");
   const shell = root.querySelector(".in-app-document-shell");
@@ -29062,6 +29079,14 @@ function openInAppDocumentWindow(title = "Document Preview") {
     root.querySelector(".in-app-document-loading")?.remove();
     const printButton = root.querySelector("[data-document-preview-print]");
     if (printButton) printButton.disabled = false;
+    const saveButton = root.querySelector('[data-document-preview-save]');
+    saveButton.hidden = !frame.contentDocument?.querySelector('[data-signature-table="invoices"]');
+    saveButton.onclick = async () => {
+      saveButton.disabled = true;
+      saveButton.textContent = 'Saving…';
+      try { await frame.contentWindow.saveDocumentSignatures(false); }
+      finally { saveButton.disabled = false; saveButton.textContent = 'Save and Update Invoice'; }
+    };
   });
   root.querySelector("[data-document-preview-maximize]").onclick = (event) => {
     const shell = root.querySelector(".in-app-document-shell");
@@ -29159,7 +29184,15 @@ queueMicrotask(() => {
   observer.observe(document.body, { childList: true, subtree: true });
 });
 
-function printableDocumentHtml({ title, number, date, partyLabel, partyName, partyAddress = "", meta = [], heads = [], lines = [], total = 0, totalLabel = "Total", notes = "", notesLabel = "Notes", extraHtml = "", signatureDataUrl = "", compactHeader = false, salesLayout = false, stampText = "", showSignatures = true, documentClass = "", numericStart = null }) {
+function printableDocumentHtml({ invoiceSignatureRecord = null, title, number, date, partyLabel, partyName, partyAddress = "", meta = [], heads = [], lines = [], total = 0, totalLabel = "Total", notes = "", notesLabel = "Notes", extraHtml = "", signatureDataUrl = "", compactHeader = false, salesLayout = false, stampText = "", showSignatures = true, documentClass = "", numericStart = null }) {
+  const invoiceSignatures = invoiceSignatureRecord ? {
+    customerNameField: 'signature_printed_name', customerDateField: 'signature_signed_date',
+    internalNameField: 'internal_signature_name', internalRemarksField: 'internal_signature_remarks',
+    customerName: invoiceSignatureRecord.signature_printed_name || '', customerDate: invoiceSignatureRecord.signature_signed_date || '',
+    internalSignature: invoiceSignatureRecord.internal_signature_data_url || '',
+    internalName: invoiceSignatureRecord.internal_signature_name || '', internalRemarks: invoiceSignatureRecord.internal_signature_remarks || '',
+  } : {};
+  const invoiceSignatureAttributes = invoiceSignatureRecord ? ` data-signature-table="invoices" data-signature-key-field="invoice_no" data-signature-key-value="${esc(invoiceSignatureRecord.invoice_no)}"` : '';
   const documentMetaValue = (label, value) => /date/i.test(String(label || "")) ? formatDisplayDate(value) : value;
   const logoUrl = new URL("assets/lms-imports-logo.jpg", window.location.href).href;
   const numericColumnStart = Number.isInteger(numericStart) ? numericStart : heads.length === 6 || heads.length === 8 ? 3 : 2;
@@ -29243,7 +29276,7 @@ function printableDocumentHtml({ title, number, date, partyLabel, partyName, par
     .sig-input{width:100%;border:0;border-bottom:1px solid #cfd6df;padding:6px 0;margin:2px 0 5px;font-size:12px}
     .work-photo-gallery{margin-top:22px;padding-top:12px;border-top:2px solid #d8dee8}.work-photo-gallery>h2{margin:0 0 12px;color:#075f6d}.work-photo-date{break-inside:avoid;margin:0 0 16px}.work-photo-date h3{margin:0 0 7px;font-size:13px}.work-photo-grid{display:grid;grid-template-columns:repeat(3,2.25in);gap:12px;align-items:start}.work-photo-grid figure{width:2.25in;margin:0;break-inside:avoid}.work-photo-grid img{display:block;width:2.25in;height:1.6in;object-fit:contain;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px}.work-photo-grid figcaption{margin-top:4px;font-size:8px;line-height:1.25;color:#475569;overflow-wrap:anywhere}
     @media print{.print-btn,.sig-actions{display:none}.sheet{max-width:none}.sheet.parts-invoice-sheet{min-height:10.1in}.document-lines,.document-lines tbody{page-break-inside:auto;break-inside:auto}.sig-pad,.saved-signature{border:0;border-bottom:1px solid #0f172a;border-radius:0}}
-  </style></head><body><button class="print-btn" onclick="window.print()">Print / Save PDF</button><main class="sheet${compactHeader ? " compact-header" : ""}${salesLayout ? " parts-invoice-sheet" : ""}${documentClass === "statement-document" ? " statement-sheet" : ""}"><div class="top"><div><img class="logo-img" src="${esc(logoUrl)}" alt="LMS Imports"${documentClass === "statement-document" ? ' width="110" height="54" style="display:block;width:110px;height:54px;object-fit:contain;object-position:left center"' : ""}><h1>${esc(title)}</h1></div><div class="doc-meta"><strong>${esc(number || "")}</strong><br>Date ${esc(formatDisplayDate(date))}${stampText ? `<br><div class="document-stamp">${esc(stampText)}</div>` : ""}</div></div><div class="boxes"><div class="box"><strong>${esc(partyLabel || "Customer")}</strong><br>${esc(partyName || "")}${partyAddress ? `<br>${esc(partyAddress)}` : ""}</div><div class="box meta-box">${meta.map(([label, value]) => `<div class="meta-entry"><strong>${esc(label)}</strong> ${esc(documentMetaValue(label, value) || "")}</div>`).join("")}</div></div><table class="document-lines ${esc(documentClass)} ${salesLayout ? "sales-document" : ""} ${heads.length === 5 ? "five-columns" : heads.length === 6 ? "six-columns" : heads.length === 7 ? "seven-columns" : heads.length === 8 ? "eight-columns" : ""}"${documentClass === "statement-document" ? ' style="width:100%;max-width:100%;table-layout:fixed;border-collapse:collapse"' : ""}><thead><tr>${heads.map((h, i) => `<th class="${i >= numericColumnStart ? "num" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${lineRows}<tr class="total-row"><td colspan="${Math.max(1, heads.length - 1)}" class="num total">${esc(totalLabel)}</td><td class="num total">${money(total)}</td></tr></tbody></table>${extraHtml || ""}${notes ? `<div class="notes"><strong>${esc(notesLabel)}</strong>\n${esc(notes)}</div>` : ""}${showSignatures ? signatureBlockHtml(`${partyLabel || "Customer"} acceptance`, signatureDataUrl) : ""}</main>${showSignatures ? signatureScriptHtml() : ""}</body></html>`;
+  </style></head><body><button class="print-btn" onclick="window.print()">Print / Save PDF</button><main${invoiceSignatureAttributes} class="sheet${compactHeader ? " compact-header" : ""}${salesLayout ? " parts-invoice-sheet" : ""}${documentClass === "statement-document" ? " statement-sheet" : ""}"><div class="top"><div><img class="logo-img" src="${esc(logoUrl)}" alt="LMS Imports"${documentClass === "statement-document" ? ' width="110" height="54" style="display:block;width:110px;height:54px;object-fit:contain;object-position:left center"' : ""}><h1>${esc(title)}</h1></div><div class="doc-meta"><strong>${esc(number || "")}</strong><br>Date ${esc(formatDisplayDate(date))}${stampText ? `<br><div class="document-stamp">${esc(stampText)}</div>` : ""}</div></div><div class="boxes"><div class="box"><strong>${esc(partyLabel || "Customer")}</strong><br>${esc(partyName || "")}${partyAddress ? `<br>${esc(partyAddress)}` : ""}</div><div class="box meta-box">${meta.map(([label, value]) => `<div class="meta-entry"><strong>${esc(label)}</strong> ${esc(documentMetaValue(label, value) || "")}</div>`).join("")}</div></div><table class="document-lines ${esc(documentClass)} ${salesLayout ? "sales-document" : ""} ${heads.length === 5 ? "five-columns" : heads.length === 6 ? "six-columns" : heads.length === 7 ? "seven-columns" : heads.length === 8 ? "eight-columns" : ""}"${documentClass === "statement-document" ? ' style="width:100%;max-width:100%;table-layout:fixed;border-collapse:collapse"' : ""}><thead><tr>${heads.map((h, i) => `<th class="${i >= numericColumnStart ? "num" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${lineRows}<tr class="total-row"><td colspan="${Math.max(1, heads.length - 1)}" class="num total">${esc(totalLabel)}</td><td class="num total">${money(total)}</td></tr></tbody></table>${extraHtml || ""}${notes ? `<div class="notes"><strong>${esc(notesLabel)}</strong>\n${esc(notes)}</div>` : ""}${showSignatures ? signatureBlockHtml(`${partyLabel || "Customer"} acceptance`, invoiceSignatureRecord?.signature_data_url || signatureDataUrl, invoiceSignatures) : ""}</main>${invoiceSignatureRecord ? '<div class="sig-actions"><button type="button" data-save-signatures>Save and Update Invoice</button></div>' : ""}${showSignatures ? signatureScriptHtml() : ""}</body></html>`;
 }
 
 function signatureBlockHtml(title = "Customer acceptance", savedSignature = "", options = {}) {
@@ -29416,11 +29449,12 @@ function signatureScriptHtml() {
   };
   const saveSignatures = async (closeAfter) => {
     const root = document.querySelector("[data-signature-table]");
-    if (!root || !window.opener || !window.opener.savePdfSignatures) {
+    const host = window.opener || (window.parent !== window ? window.parent : null);
+    if (!root || !host?.savePdfSignatures) {
       alert("Could not connect this PDF window to the main system. Please keep the main LMS Imports window open and try again.");
       return;
     }
-    const result = await window.opener.savePdfSignatures({
+    const result = await host.savePdfSignatures({
       table: root.dataset.signatureTable,
       keyField: root.dataset.signatureKeyField,
       keyValue: root.dataset.signatureKeyValue,
@@ -29429,6 +29463,7 @@ function signatureScriptHtml() {
     alert(result && result.message ? result.message : (result && result.ok ? "Signature saved." : "Could not save signature."));
     if (result && result.ok && closeAfter) window.close();
   };
+  window.saveDocumentSignatures = saveSignatures;
   document.querySelectorAll("[data-save-signatures]").forEach((button) => {
     button.addEventListener("click", () => saveSignatures(false));
   });
