@@ -68,5 +68,6 @@
   "api-session-refresh",
   "manual-ap-vendor-credit",
   "po-replacement-reservations",
-  "guam-business-dates"
+  "guam-business-dates",
+  "check-run-vendor-credits"
 ]
