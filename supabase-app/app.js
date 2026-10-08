@@ -9323,10 +9323,20 @@ async function reversePurchaseOrderApToEdit(data, apRow, receiptGroupKey = "") {
 async function workOrderPartsPostingDate(wo) {
   try {
     await loadAccountingCloseDate(true);
-    const date = $("workOrderPostingDateInput")?.value || wo.posting_date || today();
+    let date = $("workOrderPostingDateInput")?.value || wo.posting_date || today();
     const parsed = new Date(date + 'T00:00:00Z');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0,10) !== date) throw new Error('Check the work-order posting date in its posting controls.');
-    if (isLockedAccountingDate(date)) throw new Error('The work-order posting date is in a closed accounting period. Choose an open date in its posting controls.');
+    if (isLockedAccountingDate(date)) {
+      date = today();
+      if (isLockedAccountingDate(date)) {
+        const next = new Date(getAccountingCloseDate() + 'T00:00:00Z');
+        next.setUTCDate(next.getUTCDate() + 1);
+        date = next.toISOString().slice(0, 10);
+      }
+      if (isLockedAccountingDate(date)) throw new Error('Could not determine an open work-order posting date.');
+      const control = $("workOrderPostingDateInput");
+      if (control) control.value = date;
+    }
     return date;
   } catch (error) { alert(error.message); return null; }
 }
