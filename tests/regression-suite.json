@@ -72,5 +72,6 @@
   "check-run-vendor-credits",
   "invoice-signature-save",
   "invoice-save-print",
-  "inventory-count-popout"
+  "inventory-count-popout",
+  "quotation-freight"
 ]

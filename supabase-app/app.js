@@ -18374,7 +18374,7 @@ function quotationRowHtml(quote) {
 }
 
 function quotationTotal(quote) {
-  return (quote._lines || []).reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.price || 0), 0);
+  return (quote._lines || []).reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.price || 0), Number(quote.freight_amount || 0));
 }
 
 function bindQuotationRows() {
@@ -18394,7 +18394,6 @@ async function openQuotationModal(quote = null, options = {}) {
     return;
   }
   editing = quote;
-  productMeta.products = await getAll("products");
   if (!productMeta.customers?.length) productMeta.customers = (await getAll("customers")).map((c) => c.name).filter(Boolean).sort();
   const quoteNo = quote?.quote_no || await nextRefPreview("quote", "QT-", "quotations", "quote_no");
   const lines = quote?._lines?.length ? quote._lines : [{ sku: "", product_name: "", unit: "", qty: 1, price: 0 }];
@@ -18407,6 +18406,7 @@ async function openQuotationModal(quote = null, options = {}) {
       ${productInput("Valid until", "valid_until", quote?.valid_until || "", "date")}
       ${productInput("Customer PO #", "customer_po", quote?.customer_po || "")}
       ${productSelect("Status", "status", ["Draft", "Sent", "Accepted", "Converted", "Cancelled"], quote?.status || "Draft")}
+      ${productInput("Freight billed to customer", "freight_amount", quote?.freight_amount ?? 0, "number")}
       <div class="field wide"><label>Line items</label>${quotationLineRows(lines)}</div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes">${esc(quote?.notes || "")}</textarea></div>
     </div>
@@ -18419,6 +18419,8 @@ async function openQuotationModal(quote = null, options = {}) {
   const quickPartBtn = $("quickCreateQuotePartBtn");
   if (quickPartBtn) quickPartBtn.onclick = () => quickCreateQuotationPart();
   wireQuotationLinePricing();
+  document.querySelector('[data-product-field="freight_amount"]')?.addEventListener("input", refreshQuotationTotal);
+  refreshQuotationTotal();
   if (readOnly) {
     $("modalBody").querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = true; });
     $("modalSave").textContent = "Close";
@@ -18428,8 +18430,13 @@ async function openQuotationModal(quote = null, options = {}) {
   }
 }
 
+function refreshQuotationTotal() {
+  const total = Array.from(document.querySelectorAll("#quoteLineBody tr")).reduce((sum, row) => sum + Number(row.querySelector('[data-quote-line="qty"]')?.value || 0) * Number(row.querySelector('[data-quote-line="price"]')?.value || 0), Number(document.querySelector('[data-product-field="freight_amount"]')?.value || 0));
+  if ($("quotationGrandTotal")) $("quotationGrandTotal").textContent = money(total);
+}
+
 function quotationLineRows(lines) {
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Unit</th><th>Qty</th><th>Internal Unit Cost</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Unit</th><th>Qty</th><th>Internal Unit Cost</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><th colspan="6">Quote total including freight</th><th id="quotationGrandTotal"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function quotationLineRowHtml(line = {}, index = 0) {
@@ -18467,6 +18474,7 @@ function wireQuotationLinePricing() {
       const price = Number(priceInput?.value || 0);
       const amountCell = tr.querySelector("[data-quote-amount]");
       if (amountCell) amountCell.textContent = money(qty * price);
+      refreshQuotationTotal();
     };
     const applySelectedProduct = () => {
       if (!consumeExplicitProductSuggestion(skuInput)) return;
@@ -18740,6 +18748,8 @@ function openQuotationProfitReport() {
 async function saveQuotationModal() {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
+  record.freight_amount = Number(record.freight_amount || 0);
+  if (!Number.isFinite(record.freight_amount) || record.freight_amount < 0) return alert("Freight must be a valid amount of zero or more.");
   if (!record.customer) {
     alert("Customer is required for a quotation.");
     return;
@@ -18802,6 +18812,7 @@ async function acceptQuotation(quoteNo) {
     const order = await upsertOneWithOptionalColumns("sales_orders", {
       order_no: orderNo,
       customer: quote.customer,
+      freight_amount: Number(quote.freight_amount || 0),
       customer_po: quote.customer_po || null,
       payment_mode: "PO",
       manager_override: quote.customer_po ? false : true,
@@ -18846,7 +18857,7 @@ function printQuotation(quoteNo) {
     partyName: quote.customer,
     meta: [["Valid Until", quote.valid_until || ""], ["Status", quote.status || "Draft"], ["Customer PO #", quote.customer_po || ""], ["Sales Order", quote.sales_order_no || ""]],
     heads: ["SKU", "Item", "Unit", "Qty", "Sales Price", "Amount"],
-    lines: (quote._lines || []).map((line) => [line.sku, line.product_name || "", line.unit || "", line.qty, money(line.price), money(Number(line.qty || 0) * Number(line.price || 0))]),
+    lines: [...(quote._lines || []).map((line) => [line.sku, line.product_name || "", line.unit || "", line.qty, money(line.price), money(Number(line.qty || 0) * Number(line.price || 0))]), ...(Number(quote.freight_amount || 0) > 0 ? [["", "Freight", "", 1, money(quote.freight_amount), money(quote.freight_amount)]] : [])],
     total: quotationTotal(quote),
     notes: quote.notes || "",
   });
