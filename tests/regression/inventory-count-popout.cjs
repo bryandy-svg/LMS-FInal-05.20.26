@@ -1,0 +1,26 @@
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { functions, source } = require('../source.cjs');
+let stored, messages=[];
+const popup={closed:false,alert:m=>messages.push(m)};
+const state={items:{A:{counted_qty:'0',cost:'0.14'}},reason:'adjustments'};
+const context={modalPopoutWindow:popup,window:{alert:()=>{throw Error('Wrong window')}},localStorage:{setItem:(key,value)=>stored=JSON.parse(value)},INVENTORY_COUNT_DRAFT_KEY:'draft',inventoryCountFormState:()=>state};
+vm.createContext(context);
+vm.runInContext(functions(['inventoryCountDialogWindow','persistInventoryCountDraft','saveInventoryCountDraft']),context);
+context.saveInventoryCountDraft();
+assert.equal(stored.items.A.counted_qty,'0');
+assert.match(messages[0],/draft saved/);
+context.localStorage.setItem=()=>{throw Error('Storage full')};
+assert.equal(context.persistInventoryCountDraft(),false);
+assert.match(messages.at(-1),/Keep this sheet open/);
+assert.match(functions(['bindInventoryCountRows']),/persistInventoryCountDraft/);
+const sync=functions(['syncModalPopout']);
+assert(sync.indexOf('const windowScroll')<sync.indexOf('replaceChildren'));
+assert(sync.indexOf('scrollTo(...windowScroll)')>sync.indexOf('replaceChildren'));
+assert.match(sync,/focus\(\{ preventScroll: true \}\)/);
+const save=functions(['saveInventoryCountSheet']);
+assert.match(save,/if \(inventoryCountSaving\) return/);
+assert.match(save,/finally \{\s*inventoryCountSaving = false/);
+assert.match(save,/dialogWindow.confirm/);
+console.log('Inventory count draft and pop-out checks passed');
+
