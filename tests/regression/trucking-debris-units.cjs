@@ -94,3 +94,13 @@ assert.match(html, /name="debris_type"[^>]*required/);
   assert.match(alerts.pop(), /Type of Debris is required/);
   console.log('PASS: searchable debris; required debris for all services and four save paths; explicit positive CY/Ton; unit-matched active service/tipping rates; manual/upload totals; legacy unit rendering.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
+for (const service of ['Dump Truck | 16 CY', 'End Dump', 'End-Dump Trailer']) {
+  const fields = context.truckingTicketMaterialFields({service, debris_type:'Crushed coral', cy_ton:'16 CY'});
+  assert.match(fields, /<input name="debris_type"/);
+  assert.match(fields, /value="Crushed coral"/);
+  assert.doesNotMatch(fields, /<select name="debris_type"/);
+}
+assert.match(context.truckingTicketMaterialFields({service:'Roll Off Service', equipment_label:'Dump Truck'}), /<select name="debris_type"/);
+assert.equal(context.truckingTicketMaterialError({service:'Dump Truck',debris_type:'Crushed coral',cy_ton:'16 CY'}), '');
+assert.match(context.truckingTicketMaterialError({service:'End Dump',debris_type:'',cy_ton:'16 CY'}), /required/);

@@ -32346,10 +32346,28 @@ function truckingTicketMaterialFields(row = {}) {
   const types = [...new Set((productMeta.truckingRates || []).filter(rate => !/inactive/i.test(rate.status || '') && String(rate.category || '').trim().toLowerCase() === 'tipping fee').map(rate => String(rate.service || '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b));
   const selected = types.find(type => type.toLowerCase() === current.toLowerCase()) || current;
   const legacyOption = current && !types.includes(selected) ? `<option value="${esc(current)}" selected>${esc(current)} (existing ticket value)</option>` : '';
-  return `<label class="field">Type of Debris (required)<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small></label>
+  const service = String(row.service || row.requested_equipment_label || row.equipment_label || "");
+  const freeText = !/roll[\s-]*off/i.test(service) && /(?:dump[\s-]*truck|end[\s-]*dump)/i.test(service);
+  const debrisControl = freeText
+    ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" required><small>Enter the material carried by the dump truck or end dump.</small>`
+    : `<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small>`;
+  return `<label class="field" data-trucking-debris-field>Type of Debris (required)${debrisControl}</label>
     <label class="field">Quantity<input type="number" min="0.01" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
     <label class="field">Quantity Unit<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
     <input type="hidden" name="cy_ton" value="${esc(row.cy_ton || "")}">`;
+}
+
+function syncTruckingDebrisField(root = modalBody) {
+  const current = root.querySelector('[name="debris_type"]');
+  const container = root.querySelector('[data-trucking-debris-field]');
+  if (!current || !container) return;
+  const row = { service: root.querySelector('[name="service"]')?.value || "", equipment_label: root.querySelector('[name="equipment_label"]')?.value || "", debris_type: current.value };
+  const template = document.createElement("div");
+  template.innerHTML = truckingTicketMaterialFields(row);
+  const replacement = template.querySelector('[data-trucking-debris-field]');
+  if (replacement.querySelector('[name="debris_type"]').tagName === current.tagName) return;
+  container.replaceWith(replacement);
+  replacement.querySelector('[name="debris_type"]').addEventListener("input", () => manualFinalTicketCalculation(root));
 }
 
 function syncTruckingTicketQuantity(root = modalBody) {
@@ -36486,6 +36504,7 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
   </div><p class="notice" id="manualTicketCalculationNote">Select Service and enter Time In/Out to calculate the ticket.</p>
   <p class="notice">${isDraft ? "Type of Debris is required to save. Save Draft keeps other incomplete information editable, or choose Finalize Ticket when all required information is ready." : existingTicket ? "Saving updates this finalized ticket and keeps it finalized. All operational and monitoring fields above may be corrected." : "Type of Debris is required to save. Save Draft allows other information to remain incomplete; Save Final Ticket validates and finalizes it."} No accounting entry is created.</p>`;
   const recalculate = () => {
+    syncTruckingDebrisField(modalBody);
     updateManualRollOffFields(modalBody);
     manualFinalTicketCalculation(modalBody);
   };
