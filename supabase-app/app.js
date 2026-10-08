@@ -1254,6 +1254,11 @@ function syncModalPopout() {
   clone.querySelector("#modalPopout")?.remove();
   clone.querySelector("#modalMaximize")?.remove();
   const doc = modalPopoutWindow.document;
+  const active = doc.activeElement;
+  const focusedId = active?.dataset?.modalProxyId;
+  const selection = typeof active?.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
+  const windowScroll = [modalPopoutWindow.scrollX, modalPopoutWindow.scrollY];
+  const scrollPositions = Array.from(doc.querySelectorAll(".modalbox, #modalBody, .table-wrap")).map(element => [element.scrollLeft, element.scrollTop]);
   doc.body.replaceChildren(clone);
   doc.querySelectorAll("[data-modal-proxy-id]").forEach((element) => {
     const source = modalProxySource(element.dataset.modalProxyId);
@@ -1262,6 +1267,16 @@ function syncModalPopout() {
       if (element.type === "checkbox" || element.type === "radio") element.checked = source.checked;
     }
   });
+  doc.querySelectorAll(".modalbox, #modalBody, .table-wrap").forEach((element, index) => {
+    const position = scrollPositions[index];
+    if (position) { element.scrollLeft = position[0]; element.scrollTop = position[1]; }
+  });
+  const focused = focusedId && doc.querySelector('[data-modal-proxy-id="' + focusedId + '"]');
+  focused?.focus({ preventScroll: true });
+  if (selection && focused?.setSelectionRange) {
+    try { focused.setSelectionRange(...selection); } catch {}
+  }
+  modalPopoutWindow.scrollTo(...windowScroll);
   doc.body.oninput = (event) => {
     const control = event.target.closest("[data-modal-proxy-id]");
     const source = control && modalProxySource(control.dataset.modalProxyId);
@@ -14024,6 +14039,7 @@ function openInventoryCountSheet() {
   $("saveInventoryCountDraftBtn").onclick = saveInventoryCountDraft;
   $("implementInventoryCountBtn").onclick = saveInventoryCountSheet;
   $("inventoryCountSearch").oninput = filterInventoryCountRows;
+  document.querySelectorAll('[data-product-field="count_date"], [data-product-field="count_reason"]').forEach(input => input.oninput = persistInventoryCountDraft);
 }
 
 function inventoryCountSourceRows() {
@@ -14072,7 +14088,7 @@ function bindInventoryCountRows() {
   });
   document.querySelectorAll("[data-inventory-count], [data-inventory-count-cost], [data-count-bin]").forEach((input) => input.oninput = () => {
     refreshInventoryCountRow(input.closest("tr"));
-    captureInventoryCountVisibleRows();
+    persistInventoryCountDraft();
   });
   document.querySelectorAll("[data-inventory-count-row]").forEach(refreshInventoryCountRow);
 }
@@ -14113,6 +14129,7 @@ function downloadInventoryCountSheet(rows) {
 const INVENTORY_COUNT_DRAFT_KEY = "lms_inventory_count_draft_v1";
 let inventoryCountSessionRows = [];
 let inventoryCountSessionItems = {};
+let inventoryCountSaving = false;
 
 function loadInventoryCountDraft() {
   try { return JSON.parse(localStorage.getItem(INVENTORY_COUNT_DRAFT_KEY) || "null"); } catch { return null; }
@@ -14128,39 +14145,56 @@ function inventoryCountFormState() {
   };
 }
 
+function inventoryCountDialogWindow() {
+  return modalPopoutWindow && !modalPopoutWindow.closed ? modalPopoutWindow : window;
+}
+
+function persistInventoryCountDraft() {
+  try {
+    localStorage.setItem(INVENTORY_COUNT_DRAFT_KEY, JSON.stringify(inventoryCountFormState()));
+    return true;
+  } catch (error) {
+    inventoryCountDialogWindow().alert("Unable to save the draft on this device: " + (error.message || error) + ". Keep this sheet open.");
+    return false;
+  }
+}
+
 function saveInventoryCountDraft() {
-  localStorage.setItem(INVENTORY_COUNT_DRAFT_KEY, JSON.stringify(inventoryCountFormState()));
-  alert("Inventory count draft saved on this device. You can close the window and continue later.");
+  if (persistInventoryCountDraft()) inventoryCountDialogWindow().alert("Inventory count draft saved on this device. You can close the window and continue later.");
 }
 
 async function saveInventoryCountSheet() {
+  if (inventoryCountSaving) return;
+  if (!persistInventoryCountDraft()) return;
+  const dialogWindow = inventoryCountDialogWindow();
   const countDate = document.querySelector('[data-product-field="count_date"]')?.value || today();
   const reason = String(document.querySelector('[data-product-field="count_reason"]')?.value || "").trim();
-  if (!reason) return alert("Count reason / approval note is required.");
-  if (isLockedAccountingDate(countDate)) return alert("This count date is inside the closed accounting period.");
+  if (!reason) return dialogWindow.alert("Count reason / approval note is required.");
+  if (isLockedAccountingDate(countDate)) return dialogWindow.alert("This count date is inside the closed accounting period.");
   captureInventoryCountVisibleRows();
   const counted = Object.entries(inventoryCountSessionItems).filter(([, item]) => String(item?.counted_qty ?? "").trim() !== "" || String(item?.bin_shelf || "").trim() !== "").map(([sku, item]) => {
-    const product = (currentRows || []).find((row) => row.sku === sku);
+    const product = (inventoryCountSessionRows || []).find((row) => row.sku === sku);
     const binOnly = String(item.counted_qty ?? "").trim() === "";
     const countedQty = Number(binOnly ? product?.qty || 0 : item.counted_qty);
     const unitCost = Number(binOnly ? product?.cost || 0 : item.cost || product?.cost || 0);
     return { product, countedQty, unitCost, binOnly, variance: countedQty - Number(product?.qty || 0) };
   });
-  if (!counted.length) return alert("Enter a Counted Qty or a new Bin / Shelf.");
-  if (counted.some((row) => !row.product || !Number.isFinite(row.countedQty) || row.countedQty < 0)) return alert("Every counted quantity must be a valid number of zero or more.");
-  if (counted.some((row) => !Number.isFinite(row.unitCost) || row.unitCost < 0)) return alert("Every unit cost must be a valid number of zero or more.");
+  if (!counted.length) return dialogWindow.alert("Enter a Counted Qty or a new Bin / Shelf.");
+  if (counted.some((row) => !row.product || !Number.isFinite(row.countedQty) || row.countedQty < 0)) return dialogWindow.alert("Every counted quantity must be a valid number of zero or more.");
+  if (counted.some((row) => !Number.isFinite(row.unitCost) || row.unitCost < 0)) return dialogWindow.alert("Every unit cost must be a valid number of zero or more.");
   const missingCost = counted.find((row) => Math.abs(row.variance) > 0.000001 && Number(row.product.cost || 0) <= 0 && row.unitCost <= 0);
-  if (missingCost) return alert(`Enter the verified unit cost for ${missingCost.product.sku} before implementing its inventory variance.`);
+  if (missingCost) return dialogWindow.alert(`Enter the verified unit cost for ${missingCost.product.sku} before implementing its inventory variance.`);
   const corrections = counted.filter((row) => Math.abs(row.variance) > 0.000001);
   const costUpdates = counted.filter((row) => !row.binOnly && Number(row.product.cost || 0) <= 0 && row.unitCost > 0);
   const binMoves = counted.filter((row) => inventoryCountSessionItems[row.product.sku]?.bin_shelf && inventoryCountSessionItems[row.product.sku].bin_shelf !== String(row.product.bin_shelf || ""));
   const totalVariance = corrections.reduce((sum, row) => sum + row.variance, 0);
   const valueVariance = corrections.reduce((sum, row) => sum + row.variance * row.unitCost, 0);
   if (!corrections.length && !costUpdates.length && !binMoves.length) {
-    alert(`${counted.length} product${counted.length === 1 ? " was" : "s were"} counted with no variance. No correction was posted.`);
+    dialogWindow.alert(`${counted.length} product${counted.length === 1 ? " was" : "s were"} counted with no variance. No correction was posted.`);
     return;
   }
-  if (!confirm(`Implement this inventory count?\n\nQuantity corrections: ${corrections.length}\nBin transfers: ${binMoves.length}\nMissing costs to update: ${costUpdates.length}\nNet quantity variance: ${Number(totalVariance.toFixed(4))}\nNet value variance: ${money(valueVariance)}\n\nBin-only transfers preserve quantity and cost and create no accounting entries.`)) return;
+  if (!dialogWindow.confirm(`Implement this inventory count?\n\nQuantity corrections: ${corrections.length}\nBin transfers: ${binMoves.length}\nMissing costs to update: ${costUpdates.length}\nNet quantity variance: ${Number(totalVariance.toFixed(4))}\nNet value variance: ${money(valueVariance)}\n\nBin-only transfers preserve quantity and cost and create no accounting entries.`)) return;
+  inventoryCountSaving = true;
   const batch = Date.now().toString();
   try {
     for (let index = 0; index < corrections.length; index += 1) {
@@ -14210,11 +14244,13 @@ async function saveInventoryCountSheet() {
       await writeAuditLog({ tableName: "products", action: "Count sheet bin transfer", beforeData: { sku: product.sku, bin_shelf: product.bin_shelf }, afterData: { sku: product.sku, bin_shelf: destination, qty: countedQty } });
     }
     localStorage.removeItem(INVENTORY_COUNT_DRAFT_KEY);
+    dialogWindow.alert(`Inventory count implemented successfully: ${corrections.length} quantity correction${corrections.length === 1 ? "" : "s"} and ${costUpdates.length} missing-cost update${costUpdates.length === 1 ? "" : "s"}.`);
     closeModal();
     await renderProductsView();
-    alert(`Inventory count implemented successfully: ${corrections.length} quantity correction${corrections.length === 1 ? "" : "s"} and ${costUpdates.length} missing-cost update${costUpdates.length === 1 ? "" : "s"}.`);
   } catch (error) {
-    alert(error.message || error);
+    dialogWindow.alert(error.message || error);
+  } finally {
+    inventoryCountSaving = false;
   }
 }
 
