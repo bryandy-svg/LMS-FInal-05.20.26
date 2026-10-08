@@ -938,8 +938,15 @@ const money = (n) => {
   const accountingValue = Math.abs(value) <= 0.0050001 ? 0 : Math.round((value + Number.EPSILON) * 100) / 100;
   return currencyFormatter.format(accountingValue);
 };
-const today = () => new Date().toISOString().slice(0, 10);
-const localToday = () => dateTimeLocalValue(new Date().toISOString()).slice(0, 10);
+function guamBusinessDate(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Pacific/Guam', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(value);
+  const field = (name) => parts.find((part) => part.type === name).value;
+  return field('year') + '-' + field('month') + '-' + field('day');
+}
+const today = () => guamBusinessDate();
+const localToday = () => guamBusinessDate();
 
 // Start after all module-level state has initialized, including navigation state.
 Promise.resolve().then(boot).catch((error) => {
@@ -28728,7 +28735,7 @@ async function quickCreateCustomerInOpenModal() {
 const PROPERTY_MAINTENANCE_CATEGORIES = ["Repair", "Preventive Maintenance", "Inspection", "Cleaning", "Landscaping", "Electrical", "Plumbing", "HVAC", "Pest Control", "Safety", "Other"];
 
 function propertyMaintenanceNo(prefix) {
-  return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${String(Date.now()).slice(-5)}`;
+  return `${prefix}-${guamBusinessDate().replaceAll("-", "")}-${String(Date.now()).slice(-5)}`;
 }
 
 function propertyMaintenanceCost(row) {
@@ -29896,8 +29903,8 @@ function equipmentRepairQuoteEffectiveStatus(row) {
 }
 
 function dateAfterDays(dateValue = today(), days = 30) {
-  const date = new Date(`${dateValue}T12:00:00`);
-  date.setDate(date.getDate() + Number(days || 0));
+  const date = new Date(`${dateValue}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
   return date.toISOString().slice(0, 10);
 }
 
@@ -30734,7 +30741,7 @@ async function openFuelBeginningBalanceModal() {
   $("modalTitle").textContent = "Set fuel truck beginning balance";
   $("modalBody").innerHTML = `<div class="form-grid">
     <div class="field"><label>Fuel truck used</label><input class="suggest-input" id="fuelBalanceTank" data-suggest-source="equipment" data-equipment-source="fuel" value="${esc(fuelTankEquipmentValue(tank))}" placeholder="Search Asset Master" autocomplete="off"></div>
-    <div class="field"><label>Balance date</label><input id="fuelBalanceDate" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+    <div class="field"><label>Balance date</label><input id="fuelBalanceDate" type="date" value="${guamBusinessDate()}"></div>
     <div class="field"><label>Beginning gallons</label><input id="fuelBalanceGallons" type="number" min="0" step="0.01" value="${esc(tank?.current_balance ?? 0)}"></div>
     <div class="field wide"><label>Notes</label><textarea id="fuelBalanceNotes" placeholder="Beginning balance source or physical count"></textarea></div>
   </div><div class="hint">This is a monitoring balance only and creates no accounting entry.</div>`;
@@ -30760,7 +30767,7 @@ async function openFuelRefillModal(preferredTank = "") {
   <div class="fuel-entry-mode"><button type="button" id="fuelMovesModeBtn">Fuel moves</button><button type="button" class="primary" disabled>Refill</button></div>
   <div class="fuel-balance-strip" id="fuelRefillBeginningBalance"><span>Beginning balance</span><strong>0.00 gal</strong></div>
   <div class="form-grid">
-    <div class="field"><label>Date filled</label><input id="fuelRefillDate" type="date" value="${esc(refillDraft?.eventDate || new Date().toISOString().slice(0, 10))}"></div>
+    <div class="field"><label>Date filled</label><input id="fuelRefillDate" type="date" value="${esc(refillDraft?.eventDate || guamBusinessDate())}"></div>
     <div class="field"><label>Driver</label><input class="suggest-input" id="fuelRefillDriver" data-suggest-source="fuel_drivers" value="${esc(refillDraft?.driver || fuelActorName())}" placeholder="Search driver name or email" autocomplete="off" inputmode="search"></div>
     <div class="field"><label>Gallons filled</label><input id="fuelRefillGallons" type="number" min="0.01" step="0.01" value="${esc(refillDraft?.gallons || "")}"></div>
     <div class="field"><label>Receipt #</label><input id="fuelRefillReceipt" value="${esc(refillDraft?.receipt || "")}" placeholder="Required receipt reference"></div>
@@ -30921,7 +30928,7 @@ async function openFuelTankEmptyModal() {
   $("modalTitle").textContent = "Record an empty fuel tank";
   $("modalBody").innerHTML = `<div class="form-grid">
     <div class="field"><label>Fuel tank equipment</label><input class="suggest-input" id="fuelEmptyTank" data-suggest-source="equipment" data-equipment-source="fuel" value="${esc(fuelTankEquipmentValue(tank))}" placeholder="Choose from Equipment Master" autocomplete="off"></div>
-    <div class="field"><label>Date</label><input id="fuelEmptyDate" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+    <div class="field"><label>Date</label><input id="fuelEmptyDate" type="date" value="${guamBusinessDate()}"></div>
     <div class="field"><label>Driver</label><input id="fuelEmptyDriver" value="${esc(fuelActorName())}"></div>
     <div class="field wide"><label>Reason / notes</label><textarea id="fuelEmptyNotes" placeholder="Physical tank was empty"></textarea></div>
   </div><div class="hint">The remaining system gallons become a recorded variance. The tank is blocked from dispensing until a beginning balance or refill is entered.</div>`;
@@ -31555,7 +31562,7 @@ async function openFuelVarianceReportModal() {
   await Promise.all([loadFuelTankState(), loadFuelLookups()]);
   currentRows = await getPagedViewRows("fuel_logs");
   const fuelPricingRows = await getAll("fuel_pricing_periods").catch(() => []);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = guamBusinessDate();
   const defaultTank = (productMeta.fuelTanks || []).find((tank) => normalizeFuelTankAssetTag(tank.asset_tag).endsWith("FT08")) || (productMeta.fuelTanks || [])[0];
   const cycleStart = latestFuelCycleStart(defaultTank?.asset_tag || "", today) || `${today.slice(0, 7)}-01`;
   const optionTags = (values) => [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)).map((value) => `<option value="${esc(value)}">${esc(value)}</option>`).join("");
@@ -31887,10 +31894,10 @@ async function openFuelVarianceReportModal() {
       updateFuelRunSummary();
       return draw();
     }
-    const end = new Date(`${$("fuelVarianceTo").value || today}T00:00:00`);
+    const end = new Date(`${$("fuelVarianceTo").value || today}T00:00:00Z`);
     const start = new Date(end);
-    if (mode === "Daily") start.setDate(end.getDate());
-    if (mode === "Weekly") start.setDate(end.getDate() - 6);
+    if (mode === "Daily") start.setUTCDate(end.getUTCDate());
+    if (mode === "Weekly") start.setUTCDate(end.getUTCDate() - 6);
     if (mode !== "Custom") $("fuelVarianceFrom").value = start.toISOString().slice(0, 10);
     updateFuelRunSummary();
   };
@@ -32280,7 +32287,7 @@ function truckingTicketMaterialError(values) {
 }
 
 function truckingToday() {
-  return typeof localToday === "function" ? localToday() : new Date().toISOString().slice(0, 10);
+  return typeof localToday === "function" ? localToday() : guamBusinessDate();
 }
 
 function truckingBillableHours(startTime = "", endTime = "", minimumHours = 2) {
@@ -38536,7 +38543,7 @@ async function openFuelReportModal(reportNo = "", options = {}) {
   $("modal").dataset.fuelPeriodTo = options.periodTo || "";
   $("modalTitle").textContent = editing ? `Edit fuel report ${cleanReportNo}` : options.reconciliationCorrection ? "Add missing fuel run to closed period" : "New fuel report";
   document.querySelector(".modalbox")?.classList.add("wide-modal");
-  const today = new Date().toISOString().slice(0, 10);
+  const today = guamBusinessDate();
   const displayReportNo = editing ? cleanReportNo : await nextRefPreview("fuel", "FUEL-", "fuel_logs", "report_no");
   const defaultFuelTank = (productMeta.fuelTanks || []).find((tank) => options.fuelTruck && isSameFuelTankAsset(tank.asset_tag, options.fuelTruck)) || (productMeta.fuelTanks || []).find((tank) => tank.balance_status === "Active") || (productMeta.fuelTanks || [])[0];
   const selectedFuelSource = first.fuel_truck
