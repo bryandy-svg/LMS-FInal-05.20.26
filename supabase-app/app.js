@@ -32328,7 +32328,13 @@ function truckingRateForUnit(rows, unit) {
     || rows.find((row) => !truckingRateUnit(row.rate_type)) || null;
 }
 
-function truckingDebrisRates(debris) {
+function isDumpTruckingService(row = {}) {
+  const service = String(row.service || row.requested_equipment_label || row.equipment_label || "");
+  return !/roll[\s-]*off/i.test(service) && /(?:dump[\s-]*truck|end[\s-]*dump)/i.test(service);
+}
+
+function truckingDebrisRates(debris, ticket = {}) {
+  if (isDumpTruckingService(ticket)) return [];
   return (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "")
     && String(row.category || "").trim().toLowerCase() === "tipping fee"
     && String(row.service || "").trim().toLowerCase() === String(debris || "").trim().toLowerCase());
@@ -32346,8 +32352,7 @@ function truckingTicketMaterialFields(row = {}) {
   const types = [...new Set((productMeta.truckingRates || []).filter(rate => !/inactive/i.test(rate.status || '') && String(rate.category || '').trim().toLowerCase() === 'tipping fee').map(rate => String(rate.service || '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b));
   const selected = types.find(type => type.toLowerCase() === current.toLowerCase()) || current;
   const legacyOption = current && !types.includes(selected) ? `<option value="${esc(current)}" selected>${esc(current)} (existing ticket value)</option>` : '';
-  const service = String(row.service || row.requested_equipment_label || row.equipment_label || "");
-  const freeText = !/roll[\s-]*off/i.test(service) && /(?:dump[\s-]*truck|end[\s-]*dump)/i.test(service);
+  const freeText = isDumpTruckingService(row);
   const debrisControl = freeText
     ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" required><small>Enter the material carried by the dump truck or end dump.</small>`
     : `<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small>`;
@@ -32381,7 +32386,7 @@ function truckingTicketMaterialError(values) {
   if (!String(values.debris_type || "").trim()) return "Type of Debris is required for every ticket.";
   const { quantity, unit } = truckingQuantity(values.cy_ton);
   const rate = manualTruckingRate(values.service);
-  const debrisRates = truckingDebrisRates(values.debris_type);
+  const debrisRates = truckingDebrisRates(values.debris_type, values);
   const needsQuantity = requiresTruckingCyTon(values.service) || Boolean(truckingRateUnit(rate?.rate_type)) || debrisRates.some((row) => truckingRateUnit(row.rate_type));
   if ((values.cy_ton || needsQuantity) && (!(quantity > 0) || !unit)) return "Enter a positive quantity and select CY or Ton.";
   if (rate && !manualTruckingRate(values.service, unit)) return `No active service rate for ${unit || "the selected unit"}. Select the correct unit or update the rate sheet.`;
@@ -34150,7 +34155,7 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const isHourlyRate = /hour/i.test(String(row.rate_type || ""));
   const billedHours = isHourlyRate ? truckingBillableHours(startTime, endTime, 2) : null;
   const { quantity, unit } = truckingQuantity(operational.cy_ton);
-  const debrisRate = truckingRateForUnit(truckingDebrisRates(operational.debris_type), unit);
+  const debrisRate = truckingRateForUnit(truckingDebrisRates(operational.debris_type, row), unit);
   const tippingCharge = Number(debrisRate?.rate || 0) * (truckingRateUnit(debrisRate?.rate_type) ? quantity : 1);
   const tripMultiplier = row.trip_type === "Round Trip" ? 2 : 1;
   const quantityRate = truckingRateUnit(row.rate_type) ? manualTruckingRate(row.service, unit) : null;
@@ -36409,7 +36414,7 @@ function manualFinalTicketCalculation(root = modalBody) {
   else if (truckingRateUnit(rateType)) multiplier = quantity;
   const serviceAmount = Number((Number(rate?.rate || 0) * multiplier).toFixed(2));
   const debrisKey = String(field("debris_type")?.value || "").trim().toLowerCase();
-  const debrisRate = truckingRateForUnit(truckingDebrisRates(debrisKey), unit);
+  const debrisRate = truckingRateForUnit(truckingDebrisRates(debrisKey, { service }), unit);
   const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1)).toFixed(2)) : 0;
   const total = Number((serviceAmount + tippingCharge).toFixed(2));
   if (field("worked_hours")) {
@@ -36417,7 +36422,7 @@ function manualFinalTicketCalculation(root = modalBody) {
     if (hasCompleteTime) field("worked_hours").value = workedHours.toFixed(2);
   }
   if (field("rate_display")) field("rate_display").value = rate ? `${money(rate.rate)} ${rateType}` : "No matching rate";
-  if (field("tipping_display")) field("tipping_display").value = debrisRate ? `${money(debrisRate.rate)} ${debrisRate.rate_type} = ${money(tippingCharge)}` : truckingDebrisRates(debrisKey).length ? "No matching rate for selected unit" : tippingCharge.toFixed(2);
+  if (field("tipping_display")) field("tipping_display").value = debrisRate ? `${money(debrisRate.rate)} ${debrisRate.rate_type} = ${money(tippingCharge)}` : truckingDebrisRates(debrisKey, { service }).length ? "No matching rate for selected unit" : tippingCharge.toFixed(2);
   if (field("amount")) field("amount").value = total.toFixed(2);
   const note = root.querySelector("#manualTicketCalculationNote");
   if (note) note.textContent = rate
@@ -36602,7 +36607,7 @@ async function saveManualTruckingTicketDraft() {
     requested_by: values.requested_by || null, po_no: values.po_no || null, origin: values.origin || null, destination: values.destination || null,
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: nullableNumber(values.worked_hours), move_description: values.move_description || null, notes: values.move_description || null,
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
-    rate: Number(calculation.rate?.rate || 0), rate_type: calculation.rate?.rate_type || null, amount: Number(calculation.serviceAmount || 0), tipping_charge: Number(calculation.tippingCharge || 0), amount_to_bill: Number(calculation.total || 0),
+    rate: Number(calculation.rate?.rate || 0), rate_type: calculation.rate?.rate_type || null, amount: Number(calculation.serviceAmount || 0), tipping_fee: calculation.debrisRate?.service || null, tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: Number(calculation.tippingCharge || 0), amount_to_bill: Number(calculation.total || 0),
     status: "Draft", billing_status: "Non-billable", finalized_at: null, accepted_at: null, driver_signature: null, customer_signature: null, driver_signed_at: null, customer_signed_at: null,
     imported_final_ticket: false, import_batch: editingFinalTruckingTicket?.import_batch || `DRAFT-${Date.now()}`, import_source: "Manual Draft Ticket",
   };
@@ -36714,7 +36719,7 @@ function finalizedTruckingUploadRecord(row, batch, source) {
   const rateType = trainingEntry ? "Training / Non-billable" : String(rate?.rate_type || "");
   const multiplier = /hour/i.test(rateType) ? runHours : truckingRateUnit(rateType) ? quantity : 1;
   const serviceAmount = Number((Number(rate?.rate || 0) * multiplier).toFixed(2));
-  const debrisRate = truckingRateForUnit(truckingDebrisRates(record.debris_type), unit);
+  const debrisRate = truckingRateForUnit(truckingDebrisRates(record.debris_type, record), unit);
   const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1)).toFixed(2)) : 0;
   return { ...record, billing_status: trainingEntry ? "Non-billable" : record.billing_status, rate: trainingEntry ? 0 : Number(rate?.rate || 0), rate_type: rateType, amount: trainingEntry ? 0 : serviceAmount, tipping_fee: trainingEntry ? null : (debrisRate?.service || null), tipping_rate: trainingEntry ? 0 : Number(debrisRate?.rate || 0), tipping_rate_type: trainingEntry ? null : (debrisRate?.rate_type || null), tipping_charge: trainingEntry ? 0 : tippingCharge, amount_to_bill: trainingEntry ? 0 : Number((serviceAmount + tippingCharge).toFixed(2)), discount_amount: 0, discount_percent: 0 };
 }
