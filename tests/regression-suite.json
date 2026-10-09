@@ -75,5 +75,6 @@
   "inventory-count-popout",
   "quotation-freight",
   "manual-driver-save",
-  "driver-hours-calendar"
+  "driver-hours-calendar",
+  "asset-copy-number"
 ]
