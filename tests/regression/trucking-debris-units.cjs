@@ -115,3 +115,12 @@ for (const service of ['Flatrack/Chameleon', 'Water Service', 'Dump Truck', 'End
  assert.equal(context.truckingDebrisRates('Green Waste',{service}).length,0);
 }
 assert(context.truckingDebrisRates('Green Waste',{service:'Roll Off Bin'}).length>0);
+
+assert.equal(context.truckingTicketMaterialError({service:'Roll Off Bin',debris_type:'None'}),'');
+assert.equal(context.truckingTicketMaterialError({service:'Roll Off Bin',debris_type:' none ',cy_ton:'8 Ton'}),'');
+rates.push({service:'None',category:'Tipping Fee',rate_type:'/CY',rate:99});
+assert.equal(context.truckingDebrisRates('None',{service:'Roll Off Bin'}).length,0);
+set({service:'Roll Off Bin',debris_type:'None',debris_quantity:'8',debris_unit:'Ton',cy_ton:'8 Ton',worked_hours:'2'});
+context.syncTruckingTicketQuantity();assert.equal(fields.cy_ton.value,'');assert.equal(fields.debris_quantity.disabled,true);
+assert.equal(context.manualFinalTicketCalculation().tippingCharge,0);
+assert.equal(context.manualFinalTicketCalculation().total,195);

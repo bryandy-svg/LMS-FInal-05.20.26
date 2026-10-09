@@ -32355,7 +32355,7 @@ function isRollOffTruckingService(row = {}) {
 }
 
 function truckingDebrisRates(debris, ticket = {}) {
-  if (!isRollOffTruckingService(ticket)) return [];
+  if (/^none$/i.test(String(debris || "").trim()) || !isRollOffTruckingService(ticket)) return [];
   return (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "")
     && String(row.category || "").trim().toLowerCase() === "tipping fee"
     && String(row.service || "").trim().toLowerCase() === String(debris || "").trim().toLowerCase());
@@ -32370,7 +32370,7 @@ function truckingTicketMaterialFields(row = {}) {
   const parsed = truckingQuantity(row.cy_ton);
   const legacyQuantity = String(row.cy_ton || "").trim().match(/^(\d+(?:\.\d+)?|\.\d+)/)?.[1] || "";
   const current = String(row.debris_type || '').trim();
-  const types = [...new Set((productMeta.truckingRates || []).filter(rate => !/inactive/i.test(rate.status || '') && String(rate.category || '').trim().toLowerCase() === 'tipping fee').map(rate => String(rate.service || '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  const types = [...new Set(["None", ...(productMeta.truckingRates || []).filter(rate => !/inactive/i.test(rate.status || '') && String(rate.category || '').trim().toLowerCase() === 'tipping fee').map(rate => String(rate.service || '').trim()).filter(type => type && !/^none$/i.test(type))])].sort((a,b) => a.localeCompare(b));
   const selected = types.find(type => type.toLowerCase() === current.toLowerCase()) || current;
   const legacyOption = current && !types.includes(selected) ? `<option value="${esc(current)}" selected>${esc(current)} (existing ticket value)</option>` : '';
   const freeText = !isRollOffTruckingService(row);
@@ -32397,6 +32397,11 @@ function syncTruckingDebrisField(root = modalBody) {
 }
 
 function syncTruckingTicketQuantity(root = modalBody) {
+  const none = /^none$/i.test(String(root.querySelector('[name="debris_type"]')?.value || '').trim());
+  ['debris_quantity', 'debris_unit'].forEach(name => {
+    const input = root.querySelector('[name="' + name + '"]');
+    if (input) { input.disabled = none; if (none) input.value = ''; }
+  });
   const quantity = root.querySelector('[name="debris_quantity"]')?.value || "";
   const unit = root.querySelector('[name="debris_unit"]')?.value || "";
   const stored = root.querySelector('[name="cy_ton"]');
@@ -32405,6 +32410,7 @@ function syncTruckingTicketQuantity(root = modalBody) {
 
 function truckingTicketMaterialError(values) {
   if (!String(values.debris_type || "").trim()) return "Type of Debris is required for every ticket.";
+  if (/^none$/i.test(String(values.debris_type).trim())) return "";
   const { quantity, unit } = truckingQuantity(values.cy_ton);
   const rate = manualTruckingRate(values.service);
   const debrisRates = truckingDebrisRates(values.debris_type, values);
@@ -34024,7 +34030,7 @@ async function openAssignedDriverTask(ticketNo) {
     <label class="field">Completion notes<textarea name="notes">${esc(row.notes || "")}</textarea></label>
     <div class="actions"><button type="button" id="saveAssignedDriverDraft">Save</button><small>Save your progress without finalizing the ticket.</small></div>`;
   truckingEnhanceSuggestInputs(modalBody);
-  ["debris_quantity", "debris_unit"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", () => syncTruckingTicketQuantity(modalBody)));
+  ["debris_type", "debris_quantity", "debris_unit"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", () => syncTruckingTicketQuantity(modalBody)));
   const driverCanvas = $("truckDriverSignaturePad");
   const customerCanvas = $("truckCustomerSignaturePad");
   wireSignatureCanvas(driverCanvas);
@@ -34751,10 +34757,11 @@ function openManualTruckingPayrollHours() {
   }).join("") || `<tr><td colspan="10" class="empty">No saved daily driver-hour history was found.</td></tr>`;
   $("modalTitle").textContent = "Manual Daily Driver Hours";
   $("modalBody").innerHTML = `<p class="notice">Add any combination of dates and employees. Clock In, Clock Out, and Break Minutes automatically calculate paid hours. Overnight shifts are supported. If clock times are unavailable, Total Hours can still be entered manually. Regular time is limited to 8 hours per day and 40 hours per Monday–Sunday week; all excess hours are OT at 150%.</p>
-    <details class="driver-hours-calendar" open><summary>Calendar entry</summary><div class="toolbar"><label>Driver<select data-hours-calendar-driver><option value="">Select driver</option>${drivers.map(driver => `<option value="${esc(driver.name)}">${esc(driver.name)}</option>`).join("")}</select></label><label>Month<input type="month" data-hours-calendar-month value="${truckingToday().slice(0,7)}"></label></div><p>Saved hours appear automatically. Edits are kept in the entry table below until you click Save Daily Hours. Enter 0 for no hours; clearing a saved date does not delete its saved hours.</p><div data-hours-calendar-grid></div></details>
+    <div class="toolbar"><label>Entry view<select data-hours-entry-view><option value="calendar">Calendar</option><option value="table">Table</option></select></label></div>
+    <details class="driver-hours-calendar" open><summary>Calendar entry</summary><div class="toolbar"><label>Driver<select data-hours-calendar-driver><option value="">Select driver</option>${drivers.map(driver => `<option value="${esc(driver.name)}">${esc(driver.name)}</option>`).join("")}</select></label><label>Month<input type="month" data-hours-calendar-month value="${truckingToday().slice(0,7)}"></label></div><p>Saved hours appear automatically. Click Save Daily Hours to save the calendar. Use Table view for clock times. Enter 0 for no hours; clearing a saved date does not delete its saved hours.</p><div data-hours-calendar-grid></div></details>
     <datalist id="manualPayrollDriverOptions">${drivers.map((driver) => `<option value="${esc(driver.name)}"></option>`).join("")}</datalist>
-    <div class="table-wrap"><table><thead><tr><th>Payroll Date</th><th>Driver</th><th>Saved Rate</th><th>Clock In</th><th>Clock Out</th><th>Break (Min)</th><th>Total Hours</th><th>Automatic Split</th><th>Action</th></tr></thead><tbody data-manual-payroll-rows>${rowMarkup()}</tbody></table></div>
-    <div class="toolbar"><button type="button" data-manual-payroll-add>Add row</button></div>
+    <div data-hours-table-entry hidden><div class="table-wrap"><table><thead><tr><th>Payroll Date</th><th>Driver</th><th>Saved Rate</th><th>Clock In</th><th>Clock Out</th><th>Break (Min)</th><th>Total Hours</th><th>Automatic Split</th><th>Action</th></tr></thead><tbody data-manual-payroll-rows>${rowMarkup()}</tbody></table></div>
+    <div class="toolbar"><button type="button" data-manual-payroll-add>Add row</button></div></div>
     <section class="manual-payroll-history"><div class="panel-head"><div class="panel-title"><strong>Saved Driver Hours History</strong><span>Select Edit to load an existing driver/date into the entry table above.</span></div></div>
       <div class="toolbar"><label>Driver<select data-manual-payroll-history-driver><option value="">All drivers</option>${drivers.map((driver) => `<option value="${esc(String(driver.name || "").trim().toLowerCase())}">${esc(driver.name)}</option>`).join("")}</select></label><label>Payroll Date<input type="date" data-manual-payroll-history-date></label><button type="button" data-manual-payroll-history-clear>Clear history filters</button></div>
       <div class="table-wrap"><table><thead><tr><th>Payroll Date</th><th>Driver</th><th>Regular</th><th>Overtime</th><th>Total</th><th>Saved Rate</th><th>Estimated Labor</th><th>Source</th><th>Last Updated</th><th>Action</th></tr></thead><tbody data-manual-payroll-history>${historyRowsMarkup}</tbody></table></div>
@@ -34801,9 +34808,11 @@ function openManualTruckingPayrollHours() {
   const calendarMonth = $("modalBody").querySelector('[data-hours-calendar-month]');
   const calendarGrid = $("modalBody").querySelector('[data-hours-calendar-grid]');
   const calendarRow = (date, name) => [...$("modalBody").querySelectorAll('[data-manual-payroll-row]')].find(row => row.querySelector('[data-manual-payroll-row-date]')?.value === date && String(row.querySelector('[data-manual-payroll-row-driver]')?.value || '').trim().toLowerCase() === name.trim().toLowerCase());
+  let renderedCalendarDriver = "";
   const renderCalendar = () => {
     const driver = driverByEntry(calendarDriver.value);
     if (!driver || !/^\d{4}-\d{2}$/.test(calendarMonth.value)) { calendarGrid.textContent = 'Select a driver and month.'; return; }
+    renderedCalendarDriver = driver.name;
     const cells = driverHoursCalendarDates(calendarMonth.value);
     calendarGrid.innerHTML = '<div class="driver-hours-grid">' + ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => '<strong>'+day+'</strong>').join('') + cells.map(date => {
       if (!date) return '<div></div>';
@@ -34813,24 +34822,38 @@ function openManualTruckingPayrollHours() {
       return `<label class="driver-hours-day"><span>${Number(date.slice(-2))}</span><input type="number" min="0" max="24" step="0.01" data-hours-calendar-date="${date}" value="${esc(value)}" aria-label="Hours for ${date}"><small>${row ? 'In entry table' : saved ? 'Saved' : 'Hours'}</small></label>`;
     }).join('') + '</div>';
   };
-  calendarDriver.onchange = renderCalendar;
-  calendarMonth.onchange = renderCalendar;
-  calendarGrid.oninput = event => {
-    const date = event.target.dataset.hoursCalendarDate;
-    const driver = driverByEntry(calendarDriver.value);
-    if (!date || !driver) return;
-    const value = event.target.value;
-    let row = calendarRow(date, driver.name);
-    if (!row && value === '') return;
-    if (!row) {
-      const body = $("modalBody").querySelector('[data-manual-payroll-rows]');
-      body.insertAdjacentHTML('beforeend', rowMarkup({payroll_date:date,driver_name:driver.name,total_hours:value}));
-      row = body.lastElementChild;
-    }
-    row.querySelector('[data-manual-payroll-row-hours]').value = value;
-    row.querySelector('[data-manual-payroll-row-clock-in]').value = '';
-    row.querySelector('[data-manual-payroll-row-clock-out]').value = '';
-    updateRow(row, false);
+  const syncCalendarHours = () => {
+    const driver = driverByEntry(renderedCalendarDriver);
+    if (!driver) return;
+    $("modalBody").querySelectorAll('[data-hours-calendar-date]').forEach(input => {
+      if (input.value === '') return;
+      const date = input.dataset.hoursCalendarDate;
+      let row = calendarRow(date, driver.name);
+      // Calendar values are authoritative for this driver/date when saving.
+      if (!row) {
+        const body = $("modalBody").querySelector('[data-manual-payroll-rows]');
+        body.insertAdjacentHTML('beforeend', rowMarkup({payroll_date:date,driver_name:driver.name,total_hours:input.value}));
+        row = body.lastElementChild;
+      }
+      const hours = row.querySelector('[data-manual-payroll-row-hours]');
+      if (hours.value !== input.value) {
+        row.querySelector('[data-manual-payroll-row-clock-in]').value = '';
+        row.querySelector('[data-manual-payroll-row-clock-out]').value = '';
+      }
+      hours.value = input.value;
+      updateRow(row, false);
+    });
+  };
+  calendarDriver.onchange = () => { syncCalendarHours(); renderCalendar(); };
+  calendarMonth.onchange = () => { syncCalendarHours(); renderCalendar(); };
+  calendarGrid.onchange = syncCalendarHours;
+  const viewControl = $("modalBody").querySelector('[data-hours-entry-view]');
+  viewControl.onchange = () => {
+    const calendar = viewControl.value === 'calendar';
+    if (!calendar) syncCalendarHours();
+    else renderCalendar();
+    $("modalBody").querySelector('.driver-hours-calendar').hidden = !calendar;
+    $("modalBody").querySelector('[data-hours-table-entry]').hidden = calendar;
   };
   renderCalendar();
   const filterSavedHistory = () => {
@@ -34886,6 +34909,7 @@ function openManualTruckingPayrollHours() {
   $("modalCancel").textContent = "Cancel";
   $("modalSave").onclick = async () => {
     if ($("modalSave").disabled && !$("modalSave").classList.contains("modal-save-busy")) return;
+    if (viewControl.value === "calendar") syncCalendarHours();
     const entered = [...$("modalBody").querySelectorAll("[data-manual-payroll-row]")].filter((row) => String(row.querySelector("[data-manual-payroll-row-driver]")?.value || "").trim() || String(row.querySelector("[data-manual-payroll-row-hours]")?.value || "").trim());
     if (!entered.length) return alert("Add at least one driver/date entry.");
     const invalid = entered.find((row) => {

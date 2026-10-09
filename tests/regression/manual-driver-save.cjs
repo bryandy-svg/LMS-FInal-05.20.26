@@ -5,7 +5,7 @@ const start=source.indexOf('$("modalSave").onclick = async () => {',title);
 const end=source.indexOf('    const invalid = entered.find',start);
 let managed=true,alerts=[];
 const button={disabled:true,classList:{contains:()=>managed}};
-const context={$:id=>id==='modalSave'?button:{querySelectorAll:()=>[]},alert:m=>alerts.push(m)};
+const context={viewControl:{value:'calendar'},syncCalendarHours:()=>{},$:id=>id==='modalSave'?button:{querySelectorAll:()=>[]},alert:m=>alerts.push(m)};
 vm.createContext(context);
 vm.runInContext(source.slice(start,end)+'};',context);
 (async()=>{await button.onclick();assert.equal(alerts.length,1,'Managed disabled state must reach validation');alerts=[];managed=false;await button.onclick();assert.equal(alerts.length,0,'Other disabled state must still block');console.log('Manual hours save cooperates with the modal busy guard');})().catch(e=>{console.error(e);process.exitCode=1});
