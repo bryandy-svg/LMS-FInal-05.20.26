@@ -3605,3 +3605,5 @@ body.trucking-requestor-mode #fullTourBtn {
  .compact-module-workspace .module-workspace-tools button { min-height:40px; }
 }
 @media print { .compact-module-workspace .module-workspace-tools { display:none !important; } }
+
+.driver-hours-calendar{margin-bottom:16px;padding:12px;border:1px solid #ccd8e1;border-radius:8px}.driver-hours-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.driver-hours-day{display:flex;flex-direction:column;gap:5px;padding:8px;border:1px solid #ccd8e1;border-radius:6px}.driver-hours-day input{width:100%;min-width:0;box-sizing:border-box}.driver-hours-day small{font-size:11px}@media(max-width:600px){.driver-hours-day{padding:4px}.driver-hours-grid{gap:3px}}

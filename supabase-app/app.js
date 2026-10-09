@@ -34685,6 +34685,13 @@ async function uploadTruckingPayrollHours(file, input) {
   }
 }
 
+function driverHoursCalendarDates(month) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return [];
+  const first = new Date(month + '-01T00:00:00Z');
+  const count = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  return [...Array((first.getUTCDay() + 6) % 7).fill(''), ...Array.from({length:count}, (_,index) => month + '-' + String(index + 1).padStart(2,'0'))];
+}
+
 function openManualTruckingPayrollHours() {
   const drivers = productMeta.truckingPayrollPeople || productMeta.truckingDrivers || [];
   const savedHistory = [...(productMeta.truckingPayrollHours || [])].sort((a, b) => String(b.payroll_date || "").localeCompare(String(a.payroll_date || "")) || String(a.driver_name || "").localeCompare(String(b.driver_name || "")));
@@ -34744,6 +34751,7 @@ function openManualTruckingPayrollHours() {
   }).join("") || `<tr><td colspan="10" class="empty">No saved daily driver-hour history was found.</td></tr>`;
   $("modalTitle").textContent = "Manual Daily Driver Hours";
   $("modalBody").innerHTML = `<p class="notice">Add any combination of dates and employees. Clock In, Clock Out, and Break Minutes automatically calculate paid hours. Overnight shifts are supported. If clock times are unavailable, Total Hours can still be entered manually. Regular time is limited to 8 hours per day and 40 hours per Monday–Sunday week; all excess hours are OT at 150%.</p>
+    <details class="driver-hours-calendar" open><summary>Calendar entry</summary><div class="toolbar"><label>Driver<select data-hours-calendar-driver><option value="">Select driver</option>${drivers.map(driver => `<option value="${esc(driver.name)}">${esc(driver.name)}</option>`).join("")}</select></label><label>Month<input type="month" data-hours-calendar-month value="${truckingToday().slice(0,7)}"></label></div><p>Saved hours appear automatically. Edits are kept in the entry table below until you click Save Daily Hours. Enter 0 for no hours; clearing a saved date does not delete its saved hours.</p><div data-hours-calendar-grid></div></details>
     <datalist id="manualPayrollDriverOptions">${drivers.map((driver) => `<option value="${esc(driver.name)}"></option>`).join("")}</datalist>
     <div class="table-wrap"><table><thead><tr><th>Payroll Date</th><th>Driver</th><th>Saved Rate</th><th>Clock In</th><th>Clock Out</th><th>Break (Min)</th><th>Total Hours</th><th>Automatic Split</th><th>Action</th></tr></thead><tbody data-manual-payroll-rows>${rowMarkup()}</tbody></table></div>
     <div class="toolbar"><button type="button" data-manual-payroll-add>Add row</button></div>
@@ -34789,6 +34797,42 @@ function openManualTruckingPayrollHours() {
     if (nullableNumber(hoursInput.value) == null) row.querySelector("[data-manual-payroll-row-split]").textContent = "-";
     refreshManualPayrollSplits();
   };
+  const calendarDriver = $("modalBody").querySelector('[data-hours-calendar-driver]');
+  const calendarMonth = $("modalBody").querySelector('[data-hours-calendar-month]');
+  const calendarGrid = $("modalBody").querySelector('[data-hours-calendar-grid]');
+  const calendarRow = (date, name) => [...$("modalBody").querySelectorAll('[data-manual-payroll-row]')].find(row => row.querySelector('[data-manual-payroll-row-date]')?.value === date && String(row.querySelector('[data-manual-payroll-row-driver]')?.value || '').trim().toLowerCase() === name.trim().toLowerCase());
+  const renderCalendar = () => {
+    const driver = driverByEntry(calendarDriver.value);
+    if (!driver || !/^\d{4}-\d{2}$/.test(calendarMonth.value)) { calendarGrid.textContent = 'Select a driver and month.'; return; }
+    const cells = driverHoursCalendarDates(calendarMonth.value);
+    calendarGrid.innerHTML = '<div class="driver-hours-grid">' + ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => '<strong>'+day+'</strong>').join('') + cells.map(date => {
+      if (!date) return '<div></div>';
+      const row = calendarRow(date, driver.name);
+      const saved = savedHistory.find(item => String(item.payroll_date).slice(0,10) === date && String(item.driver_name || '').trim().toLowerCase() === driver.name.trim().toLowerCase());
+      const value = row ? row.querySelector('[data-manual-payroll-row-hours]').value : saved?.total_hours ?? '';
+      return `<label class="driver-hours-day"><span>${Number(date.slice(-2))}</span><input type="number" min="0" max="24" step="0.01" data-hours-calendar-date="${date}" value="${esc(value)}" aria-label="Hours for ${date}"><small>${row ? 'In entry table' : saved ? 'Saved' : 'Hours'}</small></label>`;
+    }).join('') + '</div>';
+  };
+  calendarDriver.onchange = renderCalendar;
+  calendarMonth.onchange = renderCalendar;
+  calendarGrid.oninput = event => {
+    const date = event.target.dataset.hoursCalendarDate;
+    const driver = driverByEntry(calendarDriver.value);
+    if (!date || !driver) return;
+    const value = event.target.value;
+    let row = calendarRow(date, driver.name);
+    if (!row && value === '') return;
+    if (!row) {
+      const body = $("modalBody").querySelector('[data-manual-payroll-rows]');
+      body.insertAdjacentHTML('beforeend', rowMarkup({payroll_date:date,driver_name:driver.name,total_hours:value}));
+      row = body.lastElementChild;
+    }
+    row.querySelector('[data-manual-payroll-row-hours]').value = value;
+    row.querySelector('[data-manual-payroll-row-clock-in]').value = '';
+    row.querySelector('[data-manual-payroll-row-clock-out]').value = '';
+    updateRow(row, false);
+  };
+  renderCalendar();
   const filterSavedHistory = () => {
     const driver = $("modalBody").querySelector("[data-manual-payroll-history-driver]")?.value || "";
     const date = $("modalBody").querySelector("[data-manual-payroll-history-date]")?.value || "";
