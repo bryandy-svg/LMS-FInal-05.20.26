@@ -35,7 +35,7 @@ const context = vm.createContext({
     querySelectorAll: () => Object.entries(fields).map(([name, field]) => ({ name, value: field.value })),
   },
 });
-for (const name of ['isDumpTruckingService', 'truckingQuantity', 'truckingRateUnit', 'truckingRateForUnit', 'truckingDebrisRates', 'rankedTruckingSuggestOptions', 'truckingDebrisSuggestOptions', 'truckingTicketMaterialFields', 'syncTruckingTicketQuantity', 'truckingTicketMaterialError', 'manualTruckingRate', 'isRollOffEquipment', 'requiresTruckingCyTon', 'isTruckingTrainingEntry', 'manualFinalTicketCalculation', 'normalizeHeaderKey', 'truckingImportedDate', 'truckingImportedTime', 'finalizedTruckingUploadRecord', 'truckingTimeOrderError', 'saveManualTruckingTicketDraft', 'saveManualFinalTruckingTicket', 'saveAssignedDriverTask', 'finalizeAssignedDriverTask']) vm.runInContext(extract(name), context);
+for (const name of ['isRollOffTruckingService', 'truckingQuantity', 'truckingRateUnit', 'truckingRateForUnit', 'truckingDebrisRates', 'rankedTruckingSuggestOptions', 'truckingDebrisSuggestOptions', 'truckingTicketMaterialFields', 'syncTruckingTicketQuantity', 'truckingTicketMaterialError', 'manualTruckingRate', 'isRollOffEquipment', 'requiresTruckingCyTon', 'isTruckingTrainingEntry', 'manualFinalTicketCalculation', 'normalizeHeaderKey', 'truckingImportedDate', 'truckingImportedTime', 'finalizedTruckingUploadRecord', 'truckingTimeOrderError', 'saveManualTruckingTicketDraft', 'saveManualFinalTruckingTicket', 'saveAssignedDriverTask', 'finalizeAssignedDriverTask']) vm.runInContext(extract(name), context);
 const error = context.truckingTicketMaterialError;
 for (const service of ['Roll Off Bin', 'Dump Truck', 'End Dump', 'Flat Rack', 'Water Service', 'Training']) {
   assert.match(error({ service, debris_type: ' ' }), /Type of Debris is required/);
@@ -67,11 +67,11 @@ for (const [unit, quantity, serviceAmount, tippingCharge] of [['CY', 12, 144, 0]
 }
 set({ service: 'Roll Off Bin', debris_type: 'Green Waste', cy_ton: '10 CY', worked_hours: '2' });
 assert.equal(context.manualFinalTicketCalculation().total, 345);
-const html = context.truckingTicketMaterialFields({ cy_ton: '4.5 Ton', debris_type: 'Green Waste' });
+const html = context.truckingTicketMaterialFields({ service:'Roll Off Bin', cy_ton: '4.5 Ton', debris_type: 'Green Waste' });
 assert.match(html, /<select name="debris_type" required>/);
 assert.match(html, /value="Green Waste" selected/);
 assert.equal((html.match(/value="Green Waste"/g)||[]).length,1,'Unit-specific rates must not duplicate debris choices');
-assert.match(context.truckingTicketMaterialFields({debris_type:'Legacy material'}),/Legacy material \(existing ticket value\)/);
+assert.match(context.truckingTicketMaterialFields({service:'Roll Off Bin',debris_type:'Legacy material'}),/Legacy material \(existing ticket value\)/);
 assert.doesNotMatch(context.truckingTicketMaterialFields({}),/existing ticket value/);
 assert.match(html, /value="Ton" selected/);
 assert.match(html, /value="4.5"/);
@@ -107,3 +107,11 @@ assert.match(context.truckingTicketMaterialError({service:'End Dump',debris_type
 
 assert.equal(context.truckingDebrisRates('Green Waste', {service:'Dump Truck'}).length, 0);
 assert.equal(context.truckingDebrisRates('Green Waste', {service:'End Dump'}).length, 0);
+
+for (const service of ['Flatrack/Chameleon', 'Water Service', 'Dump Truck', 'End Dump']) {
+ assert.match(context.truckingTicketMaterialFields({service}), /<input name="debris_type"/);
+ set({service,debris_type:'Green Waste',cy_ton:'16 CY',worked_hours:'2'});
+ assert.equal(context.manualFinalTicketCalculation().tippingCharge,0);
+ assert.equal(context.truckingDebrisRates('Green Waste',{service}).length,0);
+}
+assert(context.truckingDebrisRates('Green Waste',{service:'Roll Off Bin'}).length>0);
