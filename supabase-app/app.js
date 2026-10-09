@@ -32349,13 +32349,13 @@ function truckingRateForUnit(rows, unit) {
     || rows.find((row) => !truckingRateUnit(row.rate_type)) || null;
 }
 
-function isDumpTruckingService(row = {}) {
+function isRollOffTruckingService(row = {}) {
   const service = String(row.service || row.requested_equipment_label || row.equipment_label || "");
-  return !/roll[\s-]*off/i.test(service) && /(?:dump[\s-]*truck|end[\s-]*dump)/i.test(service);
+  return /roll[\s-]*off/i.test(service);
 }
 
 function truckingDebrisRates(debris, ticket = {}) {
-  if (isDumpTruckingService(ticket)) return [];
+  if (!isRollOffTruckingService(ticket)) return [];
   return (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "")
     && String(row.category || "").trim().toLowerCase() === "tipping fee"
     && String(row.service || "").trim().toLowerCase() === String(debris || "").trim().toLowerCase());
@@ -32373,9 +32373,9 @@ function truckingTicketMaterialFields(row = {}) {
   const types = [...new Set((productMeta.truckingRates || []).filter(rate => !/inactive/i.test(rate.status || '') && String(rate.category || '').trim().toLowerCase() === 'tipping fee').map(rate => String(rate.service || '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b));
   const selected = types.find(type => type.toLowerCase() === current.toLowerCase()) || current;
   const legacyOption = current && !types.includes(selected) ? `<option value="${esc(current)}" selected>${esc(current)} (existing ticket value)</option>` : '';
-  const freeText = isDumpTruckingService(row);
+  const freeText = !isRollOffTruckingService(row);
   const debrisControl = freeText
-    ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" required><small>Enter the material carried by the dump truck or end dump.</small>`
+    ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" required><small>Enter the debris or material carried. Tipping fees apply only to roll-off services.</small>`
     : `<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small>`;
   return `<label class="field" data-trucking-debris-field>Type of Debris (required)${debrisControl}</label>
     <label class="field">Quantity<input type="number" min="0.01" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
