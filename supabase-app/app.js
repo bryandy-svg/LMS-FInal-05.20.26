@@ -40493,7 +40493,8 @@ async function openAssetModal(asset = null, options = {}) {
 
 async function nextAssetTagForType(type) {
   const typeText = String(type || "").trim();
-  const assets = (productMeta.assets || currentRows || []).filter((row) => String(row.type || "").trim().toLowerCase() === typeText.toLowerCase());
+  const allAssets = await getAll("assets", { strict: true, columns: "id,asset_tag,type" });
+  const assets = allAssets.filter((row) => String(row.type || "").trim().toLowerCase() === typeText.toLowerCase());
   let best = null;
   assets.forEach((asset) => {
     const tag = String(asset.asset_tag || "").trim();
@@ -40502,7 +40503,14 @@ async function nextAssetTagForType(type) {
     const num = Number(match[2]);
     if (!best || num > best.num) best = { prefix: match[1], num, width: match[2].length };
   });
-  if (best) return `${best.prefix}${String(best.num + 1).padStart(best.width, "0")}`;
+  if (best) {
+    // Numbering prefixes are shared by multiple equipment types.
+    for (const asset of allAssets) {
+      const match = String(asset.asset_tag || "").trim().match(/^(.*?)(\d+)$/);
+      if (match && match[1].toLowerCase() === best.prefix.toLowerCase()) best.num = Math.max(best.num, Number(match[2]));
+    }
+    return `${best.prefix}${String(best.num + 1).padStart(best.width, "0")}`;
+  }
   const initials = typeText
     .split(/[^a-z0-9]+/i)
     .filter(Boolean)
@@ -40511,7 +40519,6 @@ async function nextAssetTagForType(type) {
     .toUpperCase()
     .slice(0, 4) || "AST";
   const prefix = `LMS-${initials}-`;
-  const allAssets = productMeta.assets || currentRows || [];
   const max = allAssets.reduce((highest, asset) => {
     const tag = String(asset.asset_tag || "");
     const match = tag.match(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d+)$`, "i"));
@@ -40601,7 +40608,10 @@ async function saveAssetModal() {
     if (file) record.photo_url = await uploadAssetPhoto(record.asset_tag, file);
     record.qr_update_url = editing?.qr_update_url || assetQrUrl(record, { regenerate: true });
     ["odometer", "engine_hours", "purchase_cost"].forEach((field) => record[field] = Number(record[field] || 0));
-    const saved = await upsertOneWithOptionalColumns("assets", record, "asset_tag", [
+    const saveAsset = wasNew
+      ? (row, columns, warning) => insertOneWithOptionalColumns("assets", row, columns, warning)
+      : (row, columns, warning) => upsertOneWithOptionalColumns("assets", row, "asset_tag", columns, warning);
+    const saved = await saveAsset(record, [
       "parent_asset_id",
       "parent_asset_tag",
       "relationship_type",
