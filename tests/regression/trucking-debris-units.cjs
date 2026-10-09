@@ -40,7 +40,7 @@ const error = context.truckingTicketMaterialError;
 for (const service of ['Roll Off Bin', 'Dump Truck', 'End Dump', 'Flat Rack', 'Water Service', 'Training']) {
   assert.match(error({ service, debris_type: ' ' }), /Type of Debris is required/);
 }
-for (const cy_ton of ['12', '12 CY Ton', '-2 CY', '0 Ton', 'abc', '1e3 CY']) assert.match(error({ service: 'Dump Truck', debris_type: 'Green Waste', cy_ton }), /positive quantity/);
+for (const cy_ton of ['12', '12 CY Ton', '-2 CY', '0 Ton', 'abc', '1e3 CY']) assert.match(error({ service: 'Roll Off Bin', debris_type: 'Green Waste', cy_ton }), /positive quantity/);
 assert.equal(error({ service: 'Flat Rack', debris_type: 'Equipment' }), '');
 assert.match(error({ service: 'Roll Off Bin', debris_type: 'Concrete', cy_ton: '5 CY' }), /No active tipping rate/);
 assert.equal(context.manualTruckingRate('Dump Truck', 'Ton').rate, 25);
@@ -124,3 +124,14 @@ set({service:'Roll Off Bin',debris_type:'None',debris_quantity:'8',debris_unit:'
 context.syncTruckingTicketQuantity();assert.equal(fields.cy_ton.value,'');assert.equal(fields.debris_quantity.disabled,true);
 assert.equal(context.manualFinalTicketCalculation().tippingCharge,0);
 assert.equal(context.manualFinalTicketCalculation().total,195);
+
+for (const service of ['Rolloff Flat Rack Service','Flat Rack','Flatrack/Chameleon','Dump Truck','End Dump']) {
+ const ticket={service,requested_equipment_label:'Flat Rack | N/a',debris_type:'Equipment',cy_ton:'0'};
+ assert.equal(context.isRollOffTruckingService(ticket),false);
+ assert.equal(context.truckingTicketMaterialError(ticket),'');
+ assert.equal(context.truckingTicketMaterialError({...ticket,cy_ton:''}),'');
+ assert.match(context.truckingTicketMaterialFields(ticket), /Quantity \(optional\)/);
+ assert.equal(context.truckingDebrisRates('Green Waste',ticket).length,0);
+}
+assert.equal(context.isRollOffTruckingService({service:'Roll Off Service',requested_equipment_label:'Roll Off Bin | 20 CY'}),true);
+assert.match(context.truckingTicketMaterialError({service:'Roll Off Service',debris_type:'Green Waste',cy_ton:''}),/positive quantity/);
