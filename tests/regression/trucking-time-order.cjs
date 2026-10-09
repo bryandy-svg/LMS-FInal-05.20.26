@@ -27,6 +27,7 @@ const savedTicket = { id: 1, ticket_no: 'LMS-00301', move_date: '2026-10-09', dr
 const conflict = context.truckingTimeOverlapConflict([savedTicket], { ...savedTicket, id: 2, start_time: '13:30', end_time: '14:30' });
 assert.equal(conflict, savedTicket);
 assert.match(context.truckingOverlapMessage(conflict), /LMS-00301 \(1:00 PM to 2:00 PM\) on 10\/09\/2026/);
+assert.match(context.truckingOverlapMessage(conflict), /You can clock in at 2:00 PM, after LMS-00301 ends/);
 assert.doesNotThrow(() => context.truckingOverlapMessage({}));
 assert.equal(context.truckingTimeOverlapConflict([savedTicket], { ...savedTicket, start_time: '14:00', end_time: '15:00' }), null);
 assert.equal(context.truckingTimeOverlapConflict([savedTicket], savedTicket, savedTicket), null);
