@@ -20,6 +20,16 @@ const context = vm.createContext({
   assignedDriverOperationalUpdate: () => ({ move_date: '2026-09-17', standby_hours: 0 }),
 });
 vm.runInContext(extract('truckingTimeOrderError'), context);
+for (const name of ['formatDisplayDate', 'truckingCalendarDate', 'truckingTimeMinutes', 'truckingClockLabel', 'truckingTimeOverlapConflict', 'truckingOverlapMessage']) {
+  vm.runInContext(extract(name), context);
+}
+const savedTicket = { id: 1, ticket_no: 'LMS-00301', move_date: '2026-10-09', driver_name: 'Driver', start_time: '13:00', end_time: '14:00' };
+const conflict = context.truckingTimeOverlapConflict([savedTicket], { ...savedTicket, id: 2, start_time: '13:30', end_time: '14:30' });
+assert.equal(conflict, savedTicket);
+assert.match(context.truckingOverlapMessage(conflict), /LMS-00301 \(1:00 PM to 2:00 PM\) on 10\/09\/2026/);
+assert.doesNotThrow(() => context.truckingOverlapMessage({}));
+assert.equal(context.truckingTimeOverlapConflict([savedTicket], { ...savedTicket, start_time: '14:00', end_time: '15:00' }), null);
+assert.equal(context.truckingTimeOverlapConflict([savedTicket], savedTicket, savedTicket), null);
 const check = context.truckingTimeOrderError;
 assert.match(check('19:00:00', '10:07:00'), /Time In cannot be later/);
 assert.ok(check('10:07:01', '10:07:00'));
