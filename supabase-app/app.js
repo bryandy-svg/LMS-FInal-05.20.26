@@ -34841,7 +34841,7 @@ function openManualTruckingPayrollHours() {
   $("modalSave").textContent = "Save Daily Hours";
   $("modalCancel").textContent = "Cancel";
   $("modalSave").onclick = async () => {
-    if ($("modalSave").disabled) return;
+    if ($("modalSave").disabled && !$("modalSave").classList.contains("modal-save-busy")) return;
     const entered = [...$("modalBody").querySelectorAll("[data-manual-payroll-row]")].filter((row) => String(row.querySelector("[data-manual-payroll-row-driver]")?.value || "").trim() || String(row.querySelector("[data-manual-payroll-row-hours]")?.value || "").trim());
     if (!entered.length) return alert("Add at least one driver/date entry.");
     const invalid = entered.find((row) => {
