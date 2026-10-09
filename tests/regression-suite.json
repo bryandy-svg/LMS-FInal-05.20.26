@@ -73,5 +73,6 @@
   "invoice-signature-save",
   "invoice-save-print",
   "inventory-count-popout",
-  "quotation-freight"
+  "quotation-freight",
+  "manual-driver-save"
 ]
