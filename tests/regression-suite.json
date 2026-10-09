@@ -74,5 +74,6 @@
   "invoice-save-print",
   "inventory-count-popout",
   "quotation-freight",
-  "manual-driver-save"
+  "manual-driver-save",
+  "driver-hours-calendar"
 ]
