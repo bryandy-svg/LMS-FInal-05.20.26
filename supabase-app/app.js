@@ -34343,6 +34343,8 @@ async function renderTruckingTicketsView() {
         ? ["Combine", "Ticket #", "Date", "Driver", "Service", "Customer", "Requested By", "PO #", "Origin", "Destination", "Time In", "Time Out", "Description", "Project", "Type of Debris", "CY/Ton", "Tipping Fee", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Billing Status", "External Billing Reference"]
       : ["Ticket #", "Date", "Driver", "Service", "Customer", "Requested By", "PO #", "Origin", "Destination", "Time In", "Time Out", "Description", "Project", "Type of Debris", "CY/Ton", "Tipping Fee", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Billing Status", "External Billing Reference"];
     $("truckingTicketHost").innerHTML = truckingSimpleTable(filtered, heads, {
+      excelFilters: true,
+      wrapClass: "trucking-ticket-multifilter",
       labels,
       format: {
         billing_select: (_value, row) => !["ready to bill", "billed"].includes(String(row.billing_status || "Unbilled").toLowerCase())
@@ -43058,6 +43060,10 @@ function applyColumnFilters(event) {
       return textMatch && valueMatch;
     }) ? "" : "none";
   });
+  if (table.closest(".trucking-ticket-multifilter")) {
+    tbody.querySelectorAll("tr").forEach(row => { row.hidden = row.style.display === "none"; });
+    syncTruckingTicketSelectAll(table.closest(".tablewrap"));
+  }
   const activeSort = [...table.querySelectorAll(".column-sort")].find((select) => select.value);
   if (!activeSort) {
     updateTableState(table.closest(".table-wrap"));

@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {source,functions}=require('../source.cjs');
+const rows=[['Mark','Roll Off'],['Jonathan','Roll Off'],['Edwin','Roll Off'],['Mark','Dump Truck']].map(values=>({children:values.map(textContent=>({textContent})),style:{},hidden:false}));
+const filters=[{dataset:{col:'0'},value:'',selected:['Mark','Jonathan']},{dataset:{col:'1'},value:'',selected:['Roll Off']}];
+const wrap={};let visible=0;
+const tbody={querySelectorAll:()=>rows};
+const table={querySelector:s=>s==='tbody'?tbody:null,querySelectorAll:s=>s==='.column-filter'?filters:[],closest:()=>wrap};
+const context=vm.createContext({document:{},selectedExcelFilterValues:i=>i.selected,excelFilterValue:v=>v,updateTableState:()=>{},updateExcelFilterButtonStates:()=>{},rememberTransientTableState:()=>{},syncTruckingTicketSelectAll:()=>{visible=rows.filter(r=>!r.hidden).length;}});
+vm.runInContext(functions(['applyColumnFilters']),context);
+const apply=()=>context.applyColumnFilters({target:{closest:()=>table}});
+apply();assert.deepEqual(rows.map(r=>r.hidden),[false,false,true,true]);assert.equal(visible,2);
+filters.forEach(f=>f.selected=[]);apply();assert.equal(visible,4);assert.ok(rows.every(r=>!r.hidden));
+filters[0].value='ed';apply();assert.equal(visible,1);assert.equal(rows[2].hidden,false);
+assert.match(source,/truckingSimpleTable\(filtered, heads, \{\s+excelFilters: true,\s+wrapClass: "trucking-ticket-multifilter"/);
+console.log('PASS multiple choices, cross-column intersection, clear filters, text search and visible selection state');
