@@ -32499,7 +32499,7 @@ function truckingOverlapMessage(conflict = {}) {
   const start = truckingClockLabel(truckingTimeMinutes(conflict.start_time)) || conflict.start_time || "unknown time";
   const end = truckingClockLabel(truckingTimeMinutes(conflict.end_time)) || conflict.end_time || "unknown time";
   const date = truckingCalendarDate(conflict.move_date);
-  return `The entered time overlaps ${ticket} (${start} to ${end})${date ? ` on ${formatDate(date)}` : ""} for this driver. Back-to-back tickets are allowed when the first Time Out exactly matches the next Time In.`;
+  return `The entered time overlaps ${ticket} (${start} to ${end})${date ? ` on ${formatDisplayDate(date)}` : ""} for this driver. You can clock in at ${end}, after ${ticket} ends, provided that time does not overlap another ticket. Back-to-back tickets are allowed when the first Time Out exactly matches the next Time In.`;
 }
 
 function truckingShiftHours(startMinutes, endMinutes) {
