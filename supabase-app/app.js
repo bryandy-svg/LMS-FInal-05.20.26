@@ -32351,6 +32351,8 @@ function truckingRateForUnit(rows, unit) {
 
 function isRollOffTruckingService(row = {}) {
   const service = String(row.service || row.requested_equipment_label || row.equipment_label || "");
+  const requested = String(row.requested_equipment_label || "");
+  if (/flat[\s-]*rack|chameleon/i.test(service + " " + requested)) return false;
   return /roll[\s-]*off/i.test(service);
 }
 
@@ -32378,8 +32380,8 @@ function truckingTicketMaterialFields(row = {}) {
     ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" required><small>Enter the debris or material carried. Tipping fees apply only to roll-off services.</small>`
     : `<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small>`;
   return `<label class="field" data-trucking-debris-field>Type of Debris (required)${debrisControl}</label>
-    <label class="field">Quantity<input type="number" min="0.01" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
-    <label class="field">Quantity Unit<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
+    <label class="field">${freeText ? "Quantity (optional)" : "Quantity"}<input type="number" min="0" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
+    <label class="field">${freeText ? "Quantity Unit (optional)" : "Quantity Unit"}<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
     <input type="hidden" name="cy_ton" value="${esc(row.cy_ton || "")}">`;
 }
 
@@ -32410,11 +32412,11 @@ function syncTruckingTicketQuantity(root = modalBody) {
 
 function truckingTicketMaterialError(values) {
   if (!String(values.debris_type || "").trim()) return "Type of Debris is required for every ticket.";
-  if (/^none$/i.test(String(values.debris_type).trim())) return "";
+  if (!isRollOffTruckingService(values) || /^none$/i.test(String(values.debris_type).trim())) return "";
   const { quantity, unit } = truckingQuantity(values.cy_ton);
   const rate = manualTruckingRate(values.service);
   const debrisRates = truckingDebrisRates(values.debris_type, values);
-  const needsQuantity = requiresTruckingCyTon(values.service) || Boolean(truckingRateUnit(rate?.rate_type)) || debrisRates.some((row) => truckingRateUnit(row.rate_type));
+  const needsQuantity = isRollOffTruckingService(values);
   if ((values.cy_ton || needsQuantity) && (!(quantity > 0) || !unit)) return "Enter a positive quantity and select CY or Ton.";
   if (rate && !manualTruckingRate(values.service, unit)) return `No active service rate for ${unit || "the selected unit"}. Select the correct unit or update the rate sheet.`;
   if (debrisRates.length && !truckingRateForUnit(debrisRates, unit)) return `No active tipping rate for ${values.debris_type} in ${unit || "the selected unit"}. Select the correct unit or update the rate sheet.`;
@@ -34185,8 +34187,8 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const debrisRate = truckingRateForUnit(truckingDebrisRates(operational.debris_type, row), unit);
   const tippingCharge = Number(debrisRate?.rate || 0) * (truckingRateUnit(debrisRate?.rate_type) ? quantity : 1);
   const tripMultiplier = row.trip_type === "Round Trip" ? 2 : 1;
-  const quantityRate = truckingRateUnit(row.rate_type) ? manualTruckingRate(row.service, unit) : null;
-  if (truckingRateUnit(row.rate_type) && !quantityRate) return alert(`No active service rate for ${unit}. Select the correct unit or update the rate sheet.`);
+  const quantityRate = truckingRateUnit(row.rate_type) && quantity > 0 && unit ? manualTruckingRate(row.service, unit) : null;
+  if (isRollOffTruckingService(row) && truckingRateUnit(row.rate_type) && !quantityRate) return alert(`No active service rate for ${unit}. Select the correct unit or update the rate sheet.`);
   const originalCharge = isHourlyRate
     ? Number(row.rate || 0) * billedHours
     : quantityRate ? Number(quantityRate.rate || 0) * quantity * tripMultiplier : Number(row.amount || 0);
