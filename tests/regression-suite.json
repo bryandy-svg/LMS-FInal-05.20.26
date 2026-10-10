@@ -77,5 +77,6 @@
   "manual-driver-save",
   "driver-hours-calendar",
   "asset-copy-number",
-  "ticket-multiselect"
+  "ticket-multiselect",
+  "work-order-text-report"
 ]
