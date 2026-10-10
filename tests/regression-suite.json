@@ -79,5 +79,6 @@
   "asset-copy-number",
   "ticket-multiselect",
   "work-order-text-report",
-  "product-history-tabs"
+  "product-history-tabs",
+  "cancelled-parts-history"
 ]

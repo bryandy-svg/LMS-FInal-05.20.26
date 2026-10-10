@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { source, functions } = require('../source.cjs');
+const context = { esc: String, badge: String };
+vm.createContext(context);
+vm.runInContext(functions(['isWorkOrderPartHistory', 'workOrderVoidedPartsTable']), context);
+const cancelled = { id:'cancelled', sku:'GAL1010', status:'Cancelled', accepted_qty:0 };
+assert.equal(context.isWorkOrderPartHistory(cancelled), true);
+assert.equal(context.isWorkOrderPartHistory({status:'Voided'}), true);
+for (const status of ['Reserved','Accepted','Partially Accepted','Requested','Released']) assert.equal(context.isWorkOrderPartHistory({status}), false);
+const html = context.workOrderVoidedPartsTable([cancelled]);
+assert.match(html, /GAL1010/);
+assert.match(html, />Cancelled</);
+assert.doesNotMatch(html, /<input|data-admin-part/);
+assert.match(source, /const activeParts = .*filter\(\(part\) => !isWorkOrderPartHistory\(part\)\)/);
+assert.match(source, /const voidedParts = .*filter\(isWorkOrderPartHistory\)/);
+console.log('Cancelled PO reservations appear only in read-only history.');

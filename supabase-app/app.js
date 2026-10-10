@@ -25024,8 +25024,8 @@ function workOrderPartOriginPo(part = {}) {
 }
 
 function workOrderPartsAdminEditTable(wo) {
-  const activeParts = (wo._parts || []).filter((part) => !/void/i.test(part.status || ""));
-  const voidedParts = (wo._parts || []).filter((part) => /void/i.test(part.status || ""));
+  const activeParts = (wo._parts || []).filter((part) => !isWorkOrderPartHistory(part));
+  const voidedParts = (wo._parts || []).filter(isWorkOrderPartHistory);
   const rows = [...activeParts, ...Array.from({ length: Math.max(3, 6 - activeParts.length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
   const heads = ["Issue PDF", "Part / SKU", "Description", "O.H. Qty", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
   const hidden = new Set(userColumnPreferences()["repairs|work-order-parts"] || []);
@@ -25280,8 +25280,12 @@ async function createInventoryReorderPurchaseOrders(overlay, vendorRows = [], wo
   }
 }
 
+function isWorkOrderPartHistory(part = {}) {
+  return /void|cancel/i.test(part.status || "");
+}
+
 function workOrderVoidedPartsTable(parts = []) {
-  return `<section class="subpanel voided-parts-section"><div class="panel-title"><strong>Voided Parts</strong><span>Voided lines remain here for audit history and cannot be edited.</span></div><div class="table-wrap"><table><thead><tr><th>SKU</th><th>Product</th><th>Qty Needed</th><th>Qty Previously Accepted</th><th>Status</th><th>Void Details</th></tr></thead><tbody>${parts.length ? parts.map((part) => `<tr><td>${esc(part.sku || "")}</td><td>${esc(part.product_name || "")}</td><td>${esc(part.qty_needed || 0)}</td><td>${esc(part.accepted_qty || 0)}</td><td>${badge("Voided")}</td><td class="preserve-lines">${esc(part.notes || "")}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">No voided parts.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="subpanel voided-parts-section"><div class="panel-title"><strong>Cancelled / Voided Parts</strong><span>These lines are no longer active. They remain here for audit history and cannot be edited.</span></div><div class="table-wrap"><table><thead><tr><th>SKU</th><th>Product</th><th>Qty Needed</th><th>Qty Previously Accepted</th><th>Status</th><th>History Details</th></tr></thead><tbody>${parts.length ? parts.map((part) => `<tr><td>${esc(part.sku || "")}</td><td>${esc(part.product_name || "")}</td><td>${esc(part.qty_needed || 0)}</td><td>${esc(part.accepted_qty || 0)}</td><td>${badge(part.status || "Voided")}</td><td class="preserve-lines">${esc(part.notes || "")}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">No cancelled or voided parts.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function workOrderAdminProductDatalist() {
