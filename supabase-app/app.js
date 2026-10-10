@@ -22006,7 +22006,7 @@ function repairRowHtml(wo, showPartsIssueAudit = false) {
   const workOrderRecordKey = String(wo.id || wo.wo_no || "");
   return `<tr>
     <td>${/closed|complete|invoiced/i.test(wo.status || "") && !voided ? `<input type="checkbox" data-repair-email-select="${esc(wo.wo_no)}" ${selectedRepairWorkOrders.has(String(wo.wo_no || "")) ? "checked" : ""} aria-label="Select ${esc(wo.wo_no)} for email">` : ""}</td>
-    <td><div class="rowactions"><button class="rowbtn" type="button" data-wo-pdf-draft="${esc(wo.wo_no)}">PDF Draft</button>${locked ? `<button class="rowbtn" type="button" data-wo-view-id="${esc(workOrderRecordKey)}">View</button>` : `<button class="rowbtn" type="button" data-wo-time-id="${esc(workOrderRecordKey)}">Time</button><button class="rowbtn" type="button" data-wo-edit-id="${esc(workOrderRecordKey)}">Edit</button>${canClose ? `<button class="rowbtn" type="button" data-wo-close="${esc(wo.wo_no)}">Close</button>` : ""}${canReopen ? `<button class="rowbtn" type="button" data-wo-reopen="${esc(wo.wo_no)}">Reopen Work Order</button>` : ""}${canVoid ? `<button class="rowbtn danger" type="button" data-wo-void="${esc(wo.wo_no)}">Void</button>` : ""}`}${canReturnIssuedParts ? `<button class="rowbtn" type="button" data-wo-return-parts="${esc(wo.wo_no)}">Return Parts</button>` : ""}${canInvoice ? `<button class="rowbtn" type="button" data-wo-invoice="${esc(wo.wo_no)}">Inv</button>` : ""}${invoiceActions}</div></td>
+    <td><div class="rowactions"><button class="rowbtn" type="button" data-wo-whatsapp="${esc(wo.wo_no)}">Copy WhatsApp Report</button><button class="rowbtn" type="button" data-wo-pdf-draft="${esc(wo.wo_no)}">PDF Draft</button>${locked ? `<button class="rowbtn" type="button" data-wo-view-id="${esc(workOrderRecordKey)}">View</button>` : `<button class="rowbtn" type="button" data-wo-time-id="${esc(workOrderRecordKey)}">Time</button><button class="rowbtn" type="button" data-wo-edit-id="${esc(workOrderRecordKey)}">Edit</button>${canClose ? `<button class="rowbtn" type="button" data-wo-close="${esc(wo.wo_no)}">Close</button>` : ""}${canReopen ? `<button class="rowbtn" type="button" data-wo-reopen="${esc(wo.wo_no)}">Reopen Work Order</button>` : ""}${canVoid ? `<button class="rowbtn danger" type="button" data-wo-void="${esc(wo.wo_no)}">Void</button>` : ""}`}${canReturnIssuedParts ? `<button class="rowbtn" type="button" data-wo-return-parts="${esc(wo.wo_no)}">Return Parts</button>` : ""}${canInvoice ? `<button class="rowbtn" type="button" data-wo-invoice="${esc(wo.wo_no)}">Inv</button>` : ""}${invoiceActions}</div></td>
     <td>${esc(wo.wo_no)}</td><td>${esc(formatDisplayDate(wo.wo_date))}</td><td>${esc(wo.created_by || "")}</td><td>${esc(formatDisplayDate(workOrderClosingDate(wo)))}</td><td>${esc(formatDisplayDate(wo.void_date))}</td><td>${esc(wo.asset_tag || "")}</td><td>${esc(assetDetails.serial)}</td><td>${esc(assetDetails.plate)}</td><td>${esc(assetDetails.name)}</td><td>${esc(wo.operator || assetDetails.operator)}</td><td>${esc(wo.requested_by || "")}</td><td>${esc(wo.bill_to_customer || "")}</td><td>${esc(wo.jobsite_location || "")}</td><td>${esc(actualLocationForWorkOrder(wo))}</td><td>${badge(wo.priority || "Medium")}</td>
     <td>${esc((wo._issues || []).map((i) => i.issue).filter(Boolean).join("; ") || wo.description || "")}</td>
     <td>${wo.customer_po ? badge(wo.customer_po) : wo.manager_override ? badge(`Override: ${wo.override_by || "Manager"}`) : ""}</td>
@@ -22076,6 +22076,7 @@ function bindRepairRows() {
     else selectedRepairWorkOrders.delete(input.dataset.repairEmailSelect);
     updateSelectAllState();
   });
+  document.querySelectorAll("[data-wo-whatsapp]").forEach(b => b.onclick = () => openWorkOrderTextReport(b.dataset.woWhatsapp));
   document.querySelectorAll("[data-wo-pdf-draft]").forEach((b) => b.onclick = () => printWorkOrderDraft(b.dataset.woPdfDraft));
   document.querySelectorAll("[data-wo-time-id]").forEach((b) => b.onclick = () => openMechanicTimeModal(workOrderFromRecordKey(currentRows, b.dataset.woTimeId)));
   document.querySelectorAll("[data-wo-edit-id]").forEach((b) => b.onclick = () => openWorkOrderEditModal(workOrderFromRecordKey(currentRows, b.dataset.woEditId)));
@@ -27498,7 +27499,47 @@ async function loadWorkOrderDraftDocument(woNo) {
   ]);
   wo._issues = issues; wo._parts = parts; wo._labor = labor;
   wo._draftAsset = workOrderAssetDetailsFromLists(wo, assets, outsideFleet);
+  wo._reportEquipment = assets[0] || outsideFleet[0] || {};
   return wo;
+}
+
+function workOrderWhatsAppText(wo = {}) {
+  const text = value => String(value || "").trim();
+  const labor = (wo._labor || []).filter(row => !isReversedLabor(row));
+  const techs = [...new Set(labor.map(row => text(row.mechanic)).filter(Boolean))];
+  if (!techs.length && wo.opening_mechanic) techs.push(text(wo.opening_mechanic));
+  const issues = [...new Set((wo._issues || []).map(row => text(row.issue)).filter(Boolean))];
+  const lines = [text(wo.wo_no), "PO # " + (text(wo.customer_po) || "—"), "Requested by: " + (text(wo.requested_by) || "—"), "Jobsite: " + (text(wo.jobsite_location) || "—"), "Actual Location of equipment: " + (text(wo.actual_location) || "—"), "Tech: " + (techs.join(", ") || "—"), "Issue: " + (issues.join("; ") || text(wo.description) || "—"), "", "Work Done"];
+  const asset = wo._draftAsset || {};
+  const equipment = wo._reportEquipment || {};
+  lines.splice(1, 0, "Asset #: " + (text(wo.asset_tag) || "—"), "Equipment: " + (text(asset.name) || "—"), "Make / Model: " + ([equipment.make, equipment.model].map(text).filter(Boolean).join(" / ") || "—"), "Serial / VIN: " + (text(asset.serial) || "—"), "Plate #: " + (text(asset.plate) || "—"), "");
+  const groups = new Map();
+  [...labor].sort((a,b) => String(a.clock_in || "").localeCompare(String(b.clock_in || ""))).forEach(row => {
+    if (isHelperLabor(row) || !text(row.work_done)) return;
+    const date = guamDateKey(row.clock_in, wo.wo_date) || "Date not recorded";
+    if (!groups.has(date)) groups.set(date, []);
+    groups.get(date).push((text(row.mechanic) ? text(row.mechanic) + ": " : "") + text(row.work_done));
+  });
+  if (!groups.size) lines.push("No work done recorded yet.");
+  [...groups].sort(([a],[b])=>a.localeCompare(b)).forEach(([date,notes]) => lines.push("", formatDisplayDate(date), ...notes));
+  return lines.join("\n");
+}
+
+async function openWorkOrderTextReport(woNo) {
+  try {
+    const wo = await loadWorkOrderDraftDocument(woNo);
+    if (!wo) throw new Error("Work order not found.");
+    $("modalTitle").textContent = "WhatsApp Report — " + woNo;
+    modalBody.innerHTML = '<p>Copy this saved work-order report and paste it into WhatsApp.</p><textarea id="workOrderTextReport" readonly style="width:100%;min-height:380px"></textarea><p id="workOrderTextCopyStatus" role="status"></p>';
+    $("workOrderTextReport").value = workOrderWhatsAppText(wo);
+    $("modalSave").textContent = "Copy Text";
+    $("modalSave").onclick = async () => {
+      const field = $("workOrderTextReport");
+      try { await navigator.clipboard.writeText(field.value); $("workOrderTextCopyStatus").textContent = "Copied — paste into WhatsApp."; }
+      catch { field.focus(); field.select(); $("workOrderTextCopyStatus").textContent = "Select Copy from your device menu, then paste into WhatsApp."; }
+    };
+    $("modal").style.display = "flex";
+  } catch(error) { alert(error.message || error); }
 }
 
 async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = null, invoice = null, customer = null } = {}) {

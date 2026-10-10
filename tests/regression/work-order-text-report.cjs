@@ -1,0 +1,6 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+const c=vm.createContext({isReversedLabor:r=>r.status==='Reversed',isHelperLabor:r=>r.helper,formatDisplayDate:s=>s});vm.runInContext(functions(['guamDateKey','workOrderWhatsAppText']),c);
+const report=c.workOrderWhatsAppText({wo_no:'W100024',customer_po:'PO12',requested_by:'Edwin',jobsite_location:'Site',actual_location:'Shop',asset_tag:'TR1',_draftAsset:{name:'Truck',serial:'VIN1',plate:'123'},_reportEquipment:{make:'Kenworth',model:'T800'},_issues:[{issue:'No Start'}],_labor:[{mechanic:'Joe',clock_in:'2026-10-08T15:00:00Z',work_done:'Fixed starter\nTested'},{mechanic:'Joe',clock_in:'2026-10-07T15:00:00Z',work_done:'Diagnosed'},{mechanic:'Joe',status:'Reversed',work_done:'Ignore'}]});
+for(const value of ['W100024','PO12','Edwin','No Start','Truck','VIN1','Kenworth / T800','2026-10-09','Fixed starter\nTested'])assert.ok(report.includes(value),value);
+assert.ok(report.indexOf('Diagnosed')<report.indexOf('Fixed starter'));assert.ok(!report.includes('Ignore'));assert.match(c.workOrderWhatsAppText({}),/No work done recorded yet/);
+console.log('PASS report fields, equipment, Guam dates, date ordering, multiline notes and reversed-entry exclusion');
