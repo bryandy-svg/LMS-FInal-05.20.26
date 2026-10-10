@@ -13932,72 +13932,74 @@ function openProductReservationHistory(sku) {
   $("productReservationExcelBtn").onclick = () => downloadCsv([["Date", "Sales Order", "PO Reference", "Customer", "Status", "ORD", "ISS", "SHP", "Invoiced", "Reserved", "Acquisition Cost", "Sales Price"], ...history.map((row) => [row.order_date, row.order_no, row.po_reference, row.customer, row.status, row.ordered_qty, row.issued_qty, row.shipped_qty, row.invoiced_qty, row.reserved_qty, row.acquisition_cost, row.sales_price])], `inventory-reservations-${product.sku}.csv`);
 }
 
-async function openProductCombinedHistory(sku) {
-  const product = [...(currentRows || []), ...(productMeta.products || [])].find((row) => String(row.sku || "").trim().toLowerCase() === String(sku || "").trim().toLowerCase());
-  if (!product) return alert("Product history could not be found.");
-  const issuance = product._customer_issue_history || [];
-  const reservations = product._reservation_history || [];
-  const [purchaseOrders, purchaseLines, goodsReceipts] = await Promise.all([
-    getAll("purchase_orders").catch(() => []),
-    getAll("purchase_order_lines").catch(() => []),
-    getAll("goods_receipts").catch(() => []),
-  ]);
-  const skuKey = String(product.sku || "").trim().toLowerCase();
-  const poById = new Map(purchaseOrders.map((po) => [String(po.id || ""), po]));
-  const poByNo = new Map(purchaseOrders.map((po) => [String(po.po_no || ""), po]));
-  const matchingReceipts = goodsReceipts.filter((row) => String(row.sku || "").trim().toLowerCase() === skuKey);
-  const receiptKey = (row) => `${String(row.po_id || "")}::${String(row.po_no || "")}`;
-  const receiptsByPo = new Map();
-  matchingReceipts.forEach((row) => {
-    const key = receiptKey(row);
-    if (!receiptsByPo.has(key)) receiptsByPo.set(key, []);
-    receiptsByPo.get(key).push(row);
+function productHistoryTabsData(product, data) {
+  const key = value => String(value || '').trim().toLowerCase();
+  const matches = row => (product.id && String(row.product_id || '') === String(product.id)) || key(row.sku) === key(product.sku);
+  const inactive = row => /void|cancel|revers/i.test(row.status || '');
+  const receipts = data.goods_receipts.filter(matches);
+  const validReceipts = receipts.filter(row => !inactive(row));
+  const acquisition = receipts.map(row => {
+    const qty = Number(row.received_qty || 0);
+    const landed = Number(row.landed_unit_cost ?? row.unit_cost ?? 0);
+    const known = row.base_unit_cost != null || row.landed_cost_amount != null;
+    const base = known ? Number(row.base_unit_cost ?? (landed - (qty ? Number(row.landed_cost_amount || 0) / qty : 0))) : null;
+    return {date:row.gr_date,document:row.gr_no,po:row.po_no,vendor:row.vendor,invoice:row.vendor_invoice_no,qty,base,extra:base == null ? null : landed-base,landed,total:qty*landed,status:row.status};
   });
-  const purchaseHistory = purchaseLines
-    .filter((line) => String(line.sku || "").trim().toLowerCase() === skuKey || (product.id && String(line.product_id || "") === String(product.id)))
-    .map((line) => {
-      const po = poById.get(String(line.po_id || "")) || poByNo.get(String(line.po_no || "")) || {};
-      const receipts = matchingReceipts.filter((row) => (line.po_id && String(row.po_id || "") === String(line.po_id)) || (po.po_no && String(row.po_no || "") === String(po.po_no)));
-      return {
-        po_no: po.po_no || line.po_no || "",
-        po_date: po.po_date || "",
-        vendor: po.vendor || "",
-        invoice_no: po.vendor_invoice_no || receipts.find((row) => row.vendor_invoice_no)?.vendor_invoice_no || "",
-        ordered_qty: Number(line.qty || 0),
-        received_qty: receipts.reduce((sum, row) => sum + Number(row.received_qty || 0), 0),
-        unit_cost: Number(line.landed_unit_cost || line.unit_cost || 0),
-        status: po.status || "",
-        receipts,
-      };
-    });
-  const representedReceiptKeys = new Set(purchaseHistory.flatMap((row) => row.receipts.map((receipt) => String(receipt.id || receipt.gr_no || ""))));
-  matchingReceipts.filter((row) => !representedReceiptKeys.has(String(row.id || row.gr_no || ""))).forEach((receipt) => {
-    const po = poById.get(String(receipt.po_id || "")) || poByNo.get(String(receipt.po_no || "")) || {};
-    purchaseHistory.push({ po_no: receipt.po_no || po.po_no || "", po_date: po.po_date || receipt.gr_date || "", vendor: receipt.vendor || po.vendor || "", invoice_no: receipt.vendor_invoice_no || po.vendor_invoice_no || "", ordered_qty: Number(receipt.ordered_qty || 0), received_qty: Number(receipt.received_qty || 0), unit_cost: Number(receipt.unit_cost || 0), status: po.status || receipt.status || "", receipts: [receipt] });
+  const purchases = new Map();
+  data.purchase_order_lines.filter(matches).forEach(line => {
+    const po = data.purchase_orders.find(po => (line.po_id && String(po.id) === String(line.po_id)) || (line.po_no && po.po_no === line.po_no));
+    if (!po || inactive(po) || /closed|complete|paid/i.test(po.status || '')) return;
+    const id = String(po.id || po.po_no);
+    if (!purchases.has(id)) purchases.set(id,{date:po.po_date,document:po.po_no,vendor:po.vendor,status:po.status,ordered:0,received:validReceipts.filter(r => (r.po_id && String(r.po_id) === String(po.id)) || (r.po_no && r.po_no === po.po_no)).reduce((sum,r)=>sum+Number(r.received_qty||0),0)});
+    purchases.get(id).ordered += Number(line.qty || 0);
   });
-  purchaseHistory.sort((a, b) => String(b.po_date || "").localeCompare(String(a.po_date || "")) || String(b.po_no || "").localeCompare(String(a.po_no || "")));
-  $("modalTitle").textContent = `Inventory history - ${product.sku}`;
-  $("modalBody").innerHTML = `
-    <div class="summary-strip"><strong>${esc(product.name || product.sku)}</strong><span>${esc(Number(product.customer_issued_qty || 0))} total issued · ${esc(Number(product.reserved_qty || 0))} currently reserved · ${esc(Number(product.available_qty || 0))} available</span></div>
-    <section class="panel"><div class="panel-head"><div class="panel-title"><strong>Issuance History</strong><span>All posted customer, work-order, mechanic, and supply issues.</span></div></div>
-      <div class="table-wrap"><table class="line-table"><thead><tr><th>Date</th><th>Source</th><th>Document</th><th>PO Reference</th><th>Issued To</th><th>Qty</th><th>Acquisition Cost</th><th>Sales Price</th><th>Issued By</th><th>Reason</th><th>Reference</th></tr></thead><tbody>
-        ${issuance.length ? issuance.map((row) => `<tr><td>${esc(formatDisplayDate(row.date))}</td><td>${row.document_no ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.document_no)}" title="Open ${esc(row.document_no)}">${esc(row.type || "Inventory Issue")}</button>` : esc(row.type || "Inventory Issue")}</td><td>${row.document_no ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.document_no)}" title="Open ${esc(row.document_no)}">${esc(row.document_no)}</button>` : ""}</td><td>${row.po_reference ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.po_reference)}" data-document-view="purchasing" title="Open ${esc(row.po_reference)}">${esc(row.po_reference)}</button>` : ""}</td><td>${esc(row.issued_to || "")}</td><td><strong>${esc(row.qty)}</strong></td><td>${money(row.acquisition_cost)}</td><td>${money(row.sales_price)}</td><td>${esc(row.issued_by || "")}</td><td>${esc(row.reason || "")}</td><td>${esc(row.reference_no || "")}</td></tr>`).join("") : `<tr><td colspan="11" class="empty">No inventory issuance history for this product.</td></tr>`}
-      </tbody></table></div></section>
-    <section class="panel"><div class="panel-head"><div class="panel-title"><strong>Reservation History</strong><span>Sales-order quantities issued, shipped, invoiced, and still reserved.</span></div></div>
-      <div class="table-wrap"><table class="line-table"><thead><tr><th>Date</th><th>Sales Order</th><th>PO Reference</th><th>Customer</th><th>Status</th><th>ORD</th><th>ISS</th><th>SHP</th><th>Invoiced</th><th>Reserved</th><th>Acquisition Cost</th><th>Sales Price</th></tr></thead><tbody>
-        ${reservations.length ? reservations.map((row) => `<tr><td>${esc(formatDisplayDate(row.order_date))}</td><td>${row.order_no ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.order_no)}" data-document-view="orders" title="Open ${esc(row.order_no)}">${esc(row.order_no)}</button>` : ""}</td><td>${row.po_reference ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.po_reference)}" data-document-view="purchasing" title="Open ${esc(row.po_reference)}">${esc(row.po_reference)}</button>` : ""}</td><td>${esc(row.customer || "")}</td><td>${badge(row.status || "Open")}</td><td>${esc(row.ordered_qty)}</td><td>${esc(row.issued_qty)}</td><td>${esc(row.shipped_qty)}</td><td>${esc(row.invoiced_qty)}</td><td><strong>${esc(row.reserved_qty)}</strong></td><td>${money(row.acquisition_cost)}</td><td>${money(row.sales_price)}</td></tr>`).join("") : `<tr><td colspan="12" class="empty">No reservation history for this product.</td></tr>`}
-      </tbody></table></div></section>
-    <section class="panel"><div class="panel-head"><div class="panel-title"><strong>Purchase History</strong><span>All purchase orders and goods receipts recorded for this part.</span></div></div>
-      <div class="table-wrap"><table class="line-table"><thead><tr><th>PO Date</th><th>PO #</th><th>Vendor</th><th>Invoice #</th><th>Ordered</th><th>Received</th><th>Unit Cost</th><th>Received Amount</th><th>Receipt # / Date</th><th>Status</th></tr></thead><tbody>
-        ${purchaseHistory.length ? purchaseHistory.map((row) => `<tr><td>${esc(formatDisplayDate(row.po_date))}</td><td>${row.po_no ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.po_no)}" data-document-view="purchasing" title="Open ${esc(row.po_no)}"><strong>${esc(row.po_no)}</strong></button>` : ""}</td><td>${esc(row.vendor)}</td><td>${row.invoice_no ? `<button type="button" class="document-reference-link" data-document-reference="${esc(row.invoice_no)}" data-document-view="vendor-invoice" data-document-po="${esc(row.po_no)}" title="Open vendor invoice ${esc(row.invoice_no)}">${esc(row.invoice_no)}</button>` : ""}</td><td>${esc(row.ordered_qty)}</td><td><strong>${esc(row.received_qty)}</strong></td><td>${money(row.unit_cost)}</td><td>${money(row.receipts.reduce((sum, receipt) => sum + Number(receipt.received_amount || (Number(receipt.received_qty || 0) * Number(receipt.unit_cost || row.unit_cost || 0))), 0))}</td><td>${row.receipts.length ? row.receipts.map((receipt) => `<button type="button" class="document-reference-link" data-document-reference="${esc(receipt.gr_no || "")}" data-document-view="receipts" title="Open ${esc(receipt.gr_no || "Goods Receipt")}">${esc(receipt.gr_no || "GR")}</button> · ${esc(formatDisplayDate(receipt.gr_date))}`).join("<br>") : "Not received"}</td><td>${badge(row.status || "Open")}</td></tr>`).join("") : `<tr><td colspan="10" class="empty">No purchase history for this product.</td></tr>`}
-      </tbody></table></div></section>`;
-  $("modalSave").style.display = "none";
-  $("modalCancel").textContent = "Back to product";
-  $("modalCancel").onclick = () => openProductModal(product);
-  document.getElementById("productHistoryModalBtn")?.remove();
-  document.querySelector(".modalbox")?.classList.add("wide-modal");
-  $("modal").style.display = "flex";
+  const openPo = [...purchases.values()].map(row=>({...row,remaining:Math.max(0,row.ordered-row.received)})).filter(row=>row.remaining>0);
+  const openSo = data.sales_order_lines.filter(matches).flatMap(line => {
+    const so = data.sales_orders.find(so => (line.order_id && String(so.id)===String(line.order_id)) || (line.order_no && so.order_no===line.order_no));
+    if(!so || inactive(so) || /closed|complete/i.test(so.status||'')) return [];
+    const ordered=Number(line.qty||0),shipped=Number(line.shipped_qty||0),issued=Number(line.issued_qty||0);
+    const remaining=Math.max(0,ordered-shipped);
+    return remaining>0?[{date:so.order_date,document:so.order_no,customer:so.customer,status:so.status,ordered,shipped,reserved:Math.max(0,issued-shipped),remaining}]:[];
+  });
+  const activity = data.stock_movements.filter(matches).map(row=>({date:row.movement_date,source:row.type,document:row.document_no,party:row.sold_to,qty:Number(row.qty||0),cost:row.unit_fifo_cost,by:row.entered_by,reason:row.reason,reference:row.reference_no}));
+  const issuance=activity.filter(row=>row.qty<0 && /sale issue|invoice issue|repair|work order|suppl/i.test(row.source||'')).map(row=>({...row,qty:Math.abs(row.qty)}));
+  const newest = rows => rows.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  return {acquisition:newest(acquisition),issuance:newest(issuance),po:newest(openPo),so:newest(openSo),all:newest(activity)};
 }
+
+async function openProductCombinedHistory(sku) {
+  const product = [...(currentRows || []), ...(productMeta.products || [])].find(row => String(row.sku||'').trim().toLowerCase()===String(sku||'').trim().toLowerCase());
+  if(!product) return alert('Product history could not be found.');
+  try {
+    const tables=['purchase_orders','purchase_order_lines','goods_receipts','sales_orders','sales_order_lines','stock_movements'];
+    const values=await Promise.all(tables.map(table=>getAll(table,{strict:true})));
+    const tabs=productHistoryTabsData(product,Object.fromEntries(tables.map((table,i)=>[table,values[i]])));
+    const config={
+      acquisition:{title:'Acquisition Cost',columns:['date','document','po','vendor','invoice','qty','base','extra','landed','total','status'],labels:['GR Date','GR #','PO #','Vendor','Invoice #','Received Qty','Invoice Unit Cost','Landed Additions / Unit','Landed Unit Cost','Landed Total','Status'],view:'receipts'},
+      issuance:{title:'Parts Issuance',columns:['date','source','document','party','qty','cost','by','reason','reference'],labels:['Date','Source','Document','Issued To','Qty Issued','Landed Unit Cost','Issued By','Reason','Reference']},
+      po:{title:'Open POs',columns:['date','document','vendor','status','ordered','received','remaining'],labels:['Date','PO #','Vendor','Status','Ordered','Received','Still to Receive'],view:'purchasing'},
+      so:{title:'Open Sales Orders',columns:['date','document','customer','status','ordered','shipped','reserved','remaining'],labels:['Date','Sales Order','Customer','Status','Ordered','Shipped','Reserved','Still to Ship'],view:'orders'},
+      all:{title:'All Activity',columns:['date','source','document','party','qty','cost','by','reason','reference'],labels:['Date','Source','Document','Customer / Recipient','Qty Change','Landed Unit Cost','Entered By','Reason','Reference']}
+    };
+    $('modalTitle').textContent='Product history — '+product.sku;
+    modalBody.innerHTML='<div class="summary-strip"><strong>'+esc(product.name||product.sku)+'</strong></div><div class="actions" role="tablist" aria-label="Product history">'+Object.entries(config).map(([id,c])=>'<button type="button" role="tab" data-product-history-tab="'+id+'">'+c.title+' ('+tabs[id].length+')</button>').join('')+'</div><div id="productHistoryTabPanel" role="tabpanel"></div>';
+    const render=id=>{
+      const c=config[id],rows=tabs[id];
+      modalBody.querySelectorAll('[data-product-history-tab]').forEach(b=>{b.classList.toggle('primary',b.dataset.productHistoryTab===id);b.setAttribute('aria-selected',String(b.dataset.productHistoryTab===id));});
+      const link=(value,view)=>value?'<button type="button" class="document-reference-link" data-document-reference="'+esc(value)+'"'+(view?' data-document-view="'+view+'"':'')+'>'+esc(value)+'</button>':'';
+      const monetary=value=>value==null?'Not recorded':money(value);
+      $('productHistoryTabPanel').innerHTML=(id==='acquisition'?'<p class="notice">Costs come from Goods Receipts. Older receipts without a recorded cost split show “Not recorded”. Cost of sales continues to use landed cost.</p>':'')+truckingSimpleTable(rows,c.columns,{filters:false,labels:c.labels,tableTitle:c.title,format:{date:v=>esc(formatDisplayDate(v)),document:v=>link(v,c.view),po:v=>link(v,'purchasing'),base:monetary,extra:monetary,landed:monetary,total:monetary,cost:monetary},empty:'No records in '+c.title+'.'});
+    };
+    modalBody.querySelectorAll('[data-product-history-tab]').forEach(b=>b.onclick=()=>render(b.dataset.productHistoryTab));
+    render('acquisition');
+    $('modalSave').style.display='none';
+    $('modalCancel').textContent='Close';
+    $('modalCancel').onclick=closeModal;
+    document.querySelector('.modalbox')?.classList.add('wide-modal');
+    $('modal').style.display='flex';
+  } catch(error) {alert('Could not load product history: '+(error.message||error));}
+}
+
 
 function openProductIssuanceHistory(sku) {
   const product = (currentRows || []).find((row) => String(row.sku || "") === String(sku || ""));
