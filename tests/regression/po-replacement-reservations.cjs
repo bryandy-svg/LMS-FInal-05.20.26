@@ -16,3 +16,16 @@ assert.ok(!c.planWorkOrderPoReservations(po,lines,[protectedPart],[wo]).some(r=>
 const qty=c.planWorkOrderPoReservations(po,[{...lines[0],destination_qty:3}],rows,[wo]);assert.equal(qty[0].qty_needed,3);
 const removed=c.planWorkOrderPoReservations(po,[],rows,[wo]);assert.equal(removed.length,1);assert.equal(removed[0].status,'Cancelled');assert.ok(removed[0].availability);
 console.log('PASS: replacement, complete upsert fields, repeat save, quantity change, removal, and accepted-history protection.');
+// A work-order PO may retain some reservations while sending other lines to stock.
+const stockLine={...lines[0],sku:'OLD',destination_qty:0,qty:1};
+const mixed=c.planWorkOrderPoReservations(po,[stockLine,...lines],[old],[wo]);
+assert.equal(mixed.find(r=>r.id==='old').status,'Cancelled');
+assert.equal(mixed.find(r=>r.sku==='NEW').qty_needed,2);
+assert.ok(!c.planWorkOrderPoReservations(po,[stockLine],[protectedPart],[wo]).some(r=>r.id==='old'));
+const source=require('../source.cjs').source;
+assert.match(source,/record.purchase_purpose !== "Inventory Stock" && record.purchase_purpose !== "Work Order"/);
+const routing=vm.createContext({isWorkOrderPurchaseOrder:()=>true,purchaseOrderLineDestinationQty:(_,l)=>l.destination_qty});
+vm.runInContext(functions(['purchaseOrderLineForReceipt','routePurchaseReceiptDestinationQuantities']),routing);
+const routed=routing.routePurchaseReceiptDestinationQuantities({_lines:[{sku:'GAL1010',product_id:'a',destination_qty:0},{sku:'84115',product_id:'b',destination_qty:3}]},[{sku:'GAL1010',product_id:'a',received_qty:1},{sku:'84115',product_id:'b',received_qty:5}],[]);
+assert.equal(routed[0].destination_received_qty,0);assert.equal(routed[0].stock_received_qty,1);
+assert.equal(routed[1].destination_received_qty,3);assert.equal(routed[1].stock_received_qty,2);
