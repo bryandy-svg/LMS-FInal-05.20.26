@@ -16184,7 +16184,7 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
       record.jobsite_project = "General";
     }
     let lineRows = allocatePurchaseLandedCost(parsePurchaseLineRows(), record);
-    if (record.purchase_purpose !== "Inventory Stock") {
+    if (record.purchase_purpose !== "Inventory Stock" && record.purchase_purpose !== "Work Order") {
       const missingDestinationQty = lineRows.find((line) => !(Number(line.destination_qty || 0) > 0));
       if (missingDestinationQty) {
         alert(`Enter the required ${purchaseOrderDestinationQuantityLabel(record)} quantity for ${missingDestinationQty.sku || missingDestinationQty.product_name}.`);
