@@ -34361,7 +34361,7 @@ async function renderTruckingTicketsView() {
       },
       actions: (row) => {
         const isRowUnbilled = !["ready to bill", "billed"].includes(String(row.billing_status || "Unbilled").toLowerCase());
-        return `<button type="button" class="primary" data-trucking-ticket-action="pdf" data-ticket-no="${esc(row.ticket_no)}">View Ticket / PDF</button><button type="button" data-trucking-ticket-action="edit" data-ticket-no="${esc(row.ticket_no)}">Edit</button>${showUnbilledControls && isRowUnbilled ? `<button type="button" data-trucking-ticket-action="email" data-ticket-no="${esc(row.ticket_no)}">Email Ticket</button>${row.imported_final_ticket ? "" : `<button type="button" class="danger" data-trucking-ticket-action="reverse" data-ticket-no="${esc(row.ticket_no)}">Reverse</button>`}` : ""}`;
+        return `<details class="row-action-menu"><summary>Actions</summary><div class="row-action-menu-panel"><button type="button" class="primary" data-trucking-ticket-action="pdf" data-ticket-no="${esc(row.ticket_no)}">View Ticket / PDF</button><button type="button" data-trucking-ticket-action="edit" data-ticket-no="${esc(row.ticket_no)}">Edit</button>${showUnbilledControls && isRowUnbilled ? `<button type="button" data-trucking-ticket-action="email" data-ticket-no="${esc(row.ticket_no)}">Email Ticket</button>${row.imported_final_ticket ? "" : `<button type="button" class="danger" data-trucking-ticket-action="reverse" data-ticket-no="${esc(row.ticket_no)}">Reverse</button>`}` : ""}</div></details>`;
       },
     });
     bindTruckingTicketActions($("truckingTicketHost"));
