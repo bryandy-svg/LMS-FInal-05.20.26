@@ -1,3 +1,4 @@
+import { mountInsights } from "./module-insights.mjs";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./supabase-config.js";
 
@@ -5251,9 +5252,50 @@ async function loadView(view, listOptions = {}) {
       if(retainedScroll && currentView===view)window.scrollTo(retainedScroll.x,retainedScroll.y);
       if (listOptions.focusSearch && currentView === view) $("content").querySelector("input.searchbox")?.focus();
     } else if (moduleListScope === pageScope) moduleListScope = null;
+    if (!pageFailed && currentView === view) attachModuleInsights(view);
     foregroundViewLoads = Math.max(0, foregroundViewLoads - 1);
     scheduleSessionWarmup();
   }
+}
+
+let moduleInsightsObserver;
+function attachModuleInsights(view) {
+  if (!moduleInsightsObserver && $('content')) {
+    moduleInsightsObserver = new MutationObserver(records => {
+      if (foregroundViewLoads || $('moduleInsights')) return;
+      if (records.some(record => [...record.removedNodes].some(node => node.id === 'moduleInsights'))) attachModuleInsights(currentView);
+    });
+    moduleInsightsObserver.observe($('content'), { childList: true });
+  }
+  if (!canAccess(view) || isMechanicUser() || isTruckingDriverUser() || isFuelUser() || /requestportal|settings/.test(view)) return;
+  const financial = ['dashboard','accounting','coa','bank','aging','checkrun'].includes(view) && (isAdminUser() || canAccess('accounting'));
+  const sources = {
+    dashboard:['products','inventory'], products:['products','inventory'], inventory:['products','inventory'], partsreport:['products','inventory'],
+    movements:['stock_movements','movements'], partsissuance:['stock_movements','movements'], supplies:['stock_movements','supplies'],
+    purchasing:['purchase_orders','purchasing'], receipts:['goods_receipts','receipts'],
+    quotes:['quotations','quotes'], orders:['sales_orders','orders'], invoices:['invoices','invoices'], payments:['customer_payments','payments'],
+    repairs:['work_orders','repairs'], partsissues:['work_orders','repairs'], repairreport:['work_orders','repairs'], partsrequests:['work_order_parts','parts'],
+    assets:['assets','fleet'], fleetreport:['assets','fleet'], equipmenthistory:['assets','fleet'],
+    propertyreport:['property_maintenance_work_orders','repairs'], equipmentrepairqueue:['equipment_requests','requests'], truckinglabor:['trucking_payroll_hours','labor'], fuel:['fuel_logs','fuel'],
+    rentals:['rentals','rentals'], truckingtickets:['trucking_moves','tickets'],
+    trucking:['trucking_moves','requests'], truckingticketentry:['trucking_moves','tickets'], truckingassigned:['trucking_moves','requests'], truckingreport:['trucking_moves','tickets'],
+  };
+  const [table,kind] = sources[view] || [tableMap[view]?.table,view];
+  if (!financial && !table) return;
+  let cached;
+  mountInsights({host:$('content'),view,title:financial?'Company-wide accounting':tableMap[view]?.title || $('viewTitle').textContent,financial,today:today(),isCurrent:()=>currentView===view,
+    load:async(refresh)=>{
+      if(cached&&!refresh)return cached;
+      if(financial){const [gl,coa]=await Promise.all([getAll('general_ledger',{strict:true}),getAll('chart_of_accounts',{strict:true})]);return cached={gl,coa};}
+      let rows=await getAll(table,{strict:true});
+      if(view==='truckingtickets')rows=rows.filter(r=>r.status==='Finalized' && r.driver_signature && r.customer_signature);
+      if(kind==='inventory'){const movements=(await getAll('stock_movements',{strict:true})).filter(r=>r.movement_date);return cached={rows:movements,kind:'inventoryhistory',dateField:'movement_date',inventoryAt:cutoff=>({qty:stockMovementLedgerQty(movements,cutoff),value:stockMovementLedgerValue(movements,cutoff)})};}
+      if(kind==='supplies')rows=rows.filter(r=>/supplies issue/i.test(r.type||'') && Number(r.qty)<0);
+      const lineConfig={quotes:['quotation_lines','quote_id',quotationTotal],orders:['sales_order_lines','order_id',salesOrderTotal],invoices:['invoice_lines','invoice_id',invoiceTotal],purchasing:['purchase_order_lines','po_id',poTotal]}[kind];
+      if(lineConfig){const [lineTable,key,total]=lineConfig;const lines=await getAll(lineTable,{strict:true});const byId=new Map();for(const line of lines){if(!byId.has(line[key]))byId.set(line[key],[]);byId.get(line[key]).push(line);}rows=rows.map(row=>({...row,_insightAmount:total({...row,_lines:byId.get(row.id)||[]})}));}
+      return cached={rows,kind,dateField:({propertyreport:'opened_date',equipmentrepairqueue:'request_date'})[view] || moduleDateFields[view] || ({movements:'movement_date',supplies:'movement_date',receipts:'gr_date',repairs:'wo_date',quotes:'quote_date',orders:'order_date',invoices:'invoice_date',purchasing:'po_date',tickets:'move_date',payments:'payment_date',labor:'payroll_date',fuel:'fuel_date'})[kind] || null};
+    }
+  });
 }
 
 async function renderDashboard() {
@@ -5285,14 +5327,14 @@ async function renderDashboard() {
   const credit = gl.reduce((s, r) => s + Number(r.credit || 0), 0);
 
   $("content").innerHTML = `
-    <div class="stats fleet-stats">
+    <details class="module-insights"><summary><strong>Operational overview</strong><span>Stock, sales, repairs and rentals</span></summary><div class="stats fleet-stats">
       ${stat("Inventory Value", money(inventoryValue), `${inventoryQty} units on hand, ${low} low stock`)}
       ${stat("Open Sales / AR", openSales, `${invoices.filter((i) => i.status !== "Paid").length} open invoices`)}
       ${stat("AP To Control", apControl, "POs and payable exposure")}
       ${stat("Fleet & Repairs", assets.length, `${fleetRepair} open repair jobs`)}
       ${stat("Rentals Out", rentalsOut, `${rentals.length} rental records`)}
-      ${stat("Net Position", money(debit - credit), "GL debit minus credit check")}
-    </div>
+      ${stat("Ledger balance check", money(debit - credit), "Debits minus credits; not net worth")}
+    </div></details>
     <section class="panel accounting-panel">
       <div class="panel-head"><div class="panel-title"><strong>Action Needed</strong><span>Operational exceptions from across the system</span></div></div>
       <div class="table-wrap"><table><tbody>
@@ -5319,17 +5361,8 @@ async function renderDashboard() {
   document.querySelectorAll("[data-jump],[data-quick]").forEach((b) => b.onclick = () => loadView(b.dataset.jump || b.dataset.quick));
 }
 
-async function getDashboardRows(table, columns = "*", limit = 1000) {
-  try {
-    return await getViewData(`dashboard:${table}:${columns}:${limit}`, async signal => {
-      const { data, error } = await supabase.from(table).select(columns).limit(limit).abortSignal(signal);
-      if (error) throw error;
-      return data || [];
-    });
-  } catch (error) {
-    console.warn(`Dashboard skipped ${table}`, error);
-    return [];
-  }
+async function getDashboardRows(table, columns = "*") {
+  return getAll(table, { strict: true, columns });
 }
 
 function stat(label, value, note) {
