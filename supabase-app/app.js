@@ -14774,14 +14774,58 @@ function purchaseOrderVisibleNotes(notes = "") {
   return String(notes || "").replace(/\n?SHOP_ISSUANCE_DETAIL:\{[^\n]*\}/g, "").trim();
 }
 
+function issuanceRecipientOptions(names = [], selected = "") {
+  const unique = new Map();
+  for (const value of [...names, selected]) {
+    const name = String(value || "").trim();
+    if (name && !unique.has(name.toLowerCase())) unique.set(name.toLowerCase(), name);
+  }
+  return [...unique.values()].sort((a, b) => a.localeCompare(b)).map((name) => `<option value="${esc(name)}" ${name.toLowerCase() === String(selected).toLowerCase() ? "selected" : ""}>${esc(name)}</option>`).join("");
+}
+
+async function loadPurchaseIssuanceRecipients() {
+  const [mechanics, employees] = await Promise.all([
+    getAll("mechanics", { strict: true, columns: "name,status" }),
+    getAll("issuance_employees", { strict: true, columns: "name" }),
+  ]);
+  productMeta.mechanics = mechanics.filter((row) => !/inactive|disabled|terminated/i.test(row.status || "")).map((row) => row.name).filter(Boolean);
+  productMeta.issuanceEmployees = employees.map((row) => row.name).filter(Boolean);
+}
+
+async function quickCreateIssuanceEmployee() {
+  const proposed = prompt("New employee name");
+  if (proposed === null) return;
+  const name = proposed.trim().replace(/\s+/g, " ");
+  if (!name || name.length > 120) return alert("Enter an employee name between 1 and 120 characters.");
+  const select = $("purchaseShopEmployee");
+  try {
+    let savedName = (productMeta.issuanceEmployees || []).find((value) => value.toLowerCase() === name.toLowerCase());
+    if (!savedName) {
+      const { error } = await supabase.from("issuance_employees").insert({ name });
+      if (error && error.code !== "23505") throw error;
+      const rows = await getAll("issuance_employees", { strict: true, columns: "name" });
+      productMeta.issuanceEmployees = rows.map((row) => row.name);
+      savedName = productMeta.issuanceEmployees.find((value) => value.toLowerCase() === name.toLowerCase());
+      if (!savedName) throw new Error("Could not confirm the saved employee. Try again.");
+    }
+    if (select?.isConnected) {
+      select.innerHTML = '<option value="">Select employee</option>' + issuanceRecipientOptions(productMeta.issuanceEmployees, savedName);
+      select.value = savedName;
+    }
+  } catch (error) { alert("Could not save employee: " + (error.message || error)); }
+}
+
 function shopIssuancePoFields(detail = {}) {
   const mechanic = detail.charge_mode === "mechanic";
+  const employee = detail.charge_mode === "employee";
   const wo = detail.wo_no ? workOrderOptionLabel((productMeta.workOrders || []).find((row) => row.wo_no === detail.wo_no) || { wo_no: detail.wo_no }) : "";
   return `<div class="field wide" id="purchaseShopIssuanceFields"><label>Shop issuance destination</label><div class="supply-mode-picker">
-    <label><input type="radio" name="poShopChargeMode" value="general_shop" ${mechanic ? "" : "checked"}><span><b>General Shop</b><small>Shared shop supplies and consumables</small></span></label>
+    <label><input type="radio" name="poShopChargeMode" value="general_shop" ${mechanic || employee ? "" : "checked"}><span><b>General Shop</b><small>Shared shop supplies and consumables</small></span></label>
     <label><input type="radio" name="poShopChargeMode" value="mechanic" ${mechanic ? "checked" : ""}><span><b>Mechanic Issuance</b><small>Assign received supplies directly to a mechanic</small></span></label>
+    <label><input type="radio" name="poShopChargeMode" value="employee" ${employee ? "checked" : ""}><span><b>Employee Issuance</b><small>Assign received supplies directly to an employee</small></span></label>
   </div><div class="form-grid">
-    <div class="field" id="purchaseShopMechanicField"><label>Mechanic</label><select id="purchaseShopMechanic"><option value="">Select mechanic</option>${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}" ${name === detail.issued_to ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></div>
+    <div class="field" id="purchaseShopMechanicField"><label>Mechanic</label><select id="purchaseShopMechanic"><option value="">Select mechanic</option>${issuanceRecipientOptions(productMeta.mechanics, mechanic ? detail.issued_to : "")}</select></div>
+    <div class="field" id="purchaseShopEmployeeField"><label>Employee</label><select id="purchaseShopEmployee"><option value="">Select employee</option>${issuanceRecipientOptions(productMeta.issuanceEmployees, employee ? detail.issued_to : "")}</select><button type="button" class="rowbtn" id="createIssuanceEmployeeBtn">New employee</button></div>
     <div class="field"><label>Work order (optional)</label><input class="suggest-input" data-suggest-source="work_orders" id="purchaseShopWorkOrder" value="${esc(wo)}" placeholder="Type WO, asset, customer, or status" autocomplete="off"><small>Results appear after typing.</small></div>
     <div class="field"><label>Issue / use</label><input id="purchaseShopIssue" value="${esc(detail.issue || "Shop supplies issuance")}"></div>
   </div><small>Each Goods Receipt issues only the line's Reserved for Shop Issuance quantity. Any balance remains in stock.</small></div>`;
@@ -15363,7 +15407,7 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
   await hydrateLineProducts(po?._lines || []);
   let purchaseWorkOrders, poNo;
   try {
-    purchaseWorkOrders = await getPagedViewRows("work_orders");
+    [purchaseWorkOrders] = await Promise.all([getPagedViewRows("work_orders"), loadPurchaseIssuanceRecipients()]);
     poNo = po?.po_no || "";
   } catch (error) {
     alert(`Could not open the purchase order. ${error.message || error}\n\nRefresh and try again. If your session expired, sign out and sign in again.`);
@@ -15535,7 +15579,10 @@ async function openPurchaseOrderModal(po = null, forceReadOnly = false) {
     const mechanic = document.querySelector('input[name="poShopChargeMode"]:checked')?.value === "mechanic";
     const field = $("purchaseShopMechanicField");
     if (field) field.style.display = mechanic ? "" : "none";
+    const employeeField = $("purchaseShopEmployeeField");
+    if (employeeField) employeeField.style.display = document.querySelector('input[name="poShopChargeMode"]:checked')?.value === "employee" ? "" : "none";
   });
+  $("createIssuanceEmployeeBtn").onclick = quickCreateIssuanceEmployee;
   document.querySelector('input[name="poShopChargeMode"]:checked')?.dispatchEvent(new Event("change"));
   purposeField?.dispatchEvent(new Event("change"));
   if (readOnly) {
@@ -16113,9 +16160,9 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
     record.linked_customer = null;
   } else if (record.purchase_purpose === "Shop Issuance") {
     const chargeMode = document.querySelector('input[name="poShopChargeMode"]:checked')?.value || "general_shop";
-    const issuedTo = chargeMode === "mechanic" ? String($("purchaseShopMechanic")?.value || "").trim() : "General Shop";
-    if (chargeMode === "mechanic" && !issuedTo) {
-      alert("Choose the mechanic who will receive the Shop Issuance.");
+    const issuedTo = chargeMode === "mechanic" ? String($("purchaseShopMechanic")?.value || "").trim() : chargeMode === "employee" ? String($("purchaseShopEmployee")?.value || "").trim() : "General Shop";
+    if (["mechanic", "employee"].includes(chargeMode) && !issuedTo) {
+      alert(`Choose the ${chargeMode} who will receive the Shop Issuance.`);
       return;
     }
     const shopWoText = String($("purchaseShopWorkOrder")?.value || "").trim();
@@ -17528,7 +17575,7 @@ async function postAutomaticPurchaseShopIssuance(po, receiptRows = [], grNo = ""
         from_warehouse: receipt.receipt_warehouse || product.warehouse || "", from_bin_shelf: receipt.receipt_bin_shelf || product.bin_shelf || "",
         unit_fifo_cost: unitCost, total_fifo_cost: qty * unitCost, document_no: workOrder?.wo_no || po.po_no,
         entered_by: profile?.full_name || profile?.username || "Owner",
-        reason: `Supply issue ${referenceNo} | PO ${po.po_no} | ${detail.charge_mode === "mechanic" ? `Mechanic: ${detail.issued_to}` : "General Shop"}`,
+        reason: `Supply issue ${referenceNo} | PO ${po.po_no} | ${detail.charge_mode === "mechanic" ? `Mechanic: ${detail.issued_to}` : detail.charge_mode === "employee" ? `Employee: ${detail.issued_to}` : "General Shop"}`,
       }, ["from_bin_shelf"], "Shop Issuance saved. Run the multi-location SQL update so bin/shelf details can be stored.");
     } catch (error) {
       await supabase.from("products").update({ qty: Number(product.qty || 0) }).eq("id", product.id);
@@ -28294,7 +28341,7 @@ function buildSupplyIssuanceReport(rows = []) {
   let returnedValue = 0;
   (rows || []).forEach((row) => {
     const recipient = String(row.issued_to || "General Shop").trim() || "General Shop";
-    const type = /^general shop$/i.test(recipient) ? "General Shop" : "Mechanic Issuance";
+    const type = /^general shop$/i.test(recipient) ? "General Shop" : /\| Employee:/i.test(row.notes || "") ? "Employee Issuance" : "Mechanic Issuance";
     const sku = String(row.sku || "").trim();
     const product = String(row.product_name || "").trim();
     const qty = Math.abs(Number(row.qty || 0));
