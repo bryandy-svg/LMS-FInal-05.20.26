@@ -80,5 +80,6 @@
   "ticket-multiselect",
   "work-order-text-report",
   "product-history-tabs",
-  "cancelled-parts-history"
+  "cancelled-parts-history",
+  "po-issuance-recipients"
 ]
