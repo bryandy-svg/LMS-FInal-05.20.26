@@ -23872,6 +23872,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
       ${productInput("Next due odometer", "next_due_odometer", wo.next_due_odometer || 0, "number")}
       ${productInput("Next due hours", "next_due_hours", wo.next_due_hours || 0, "number")}
       <div class="field wide"><label>Description</label><textarea data-product-field="description">${esc(wo.description || "")}</textarea></div>
+      <div class="field wide"><label>Issues</label><small>Add each problem here. Saved issues are included in Copy for WhatsApp.</small>${auditReadOnly ? repairIssueMiniTable(wo) : workOrderIssueAdminEditTable(wo)}</div>
       <div class="field wide"><label>Work performed summary</label><textarea readonly>${esc(workOrderSummaryText(wo))}</textarea><small>Auto-summary from issues, parts, and mechanic time.</small></div>
       <div class="field wide"><label>Override reason</label><textarea data-product-field="override_reason">${esc(wo.override_reason || "")}</textarea></div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes">${esc(wo.notes || "")}</textarea></div>
@@ -23922,6 +23923,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
     $("modalSave").before(finalizeButton);
     finalizeButton.onclick = () => runExclusiveModalSave(finalizeButton, () => closeAndFinalizeFromEdit(wo));
   }
+  if ($("addAdminIssueRowBtn")) $("addAdminIssueRowBtn").onclick = addAdminIssueEditRow;
   $("addAdminPartRowBtn").onclick = addAdminPartEditRow;
   if ($("applyWorkOrderPartsRateBtn")) $("applyWorkOrderPartsRateBtn").onclick = applySelectedWorkOrderPartsRate;
   if ($("createWorkOrderReorderPoBtn")) $("createWorkOrderReorderPoBtn").onclick = () => openInventoryReorderPoOverlay(workOrderReorderContext(wo));
@@ -24202,6 +24204,7 @@ async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance =
         await syncOutsideCustomerFleetLocation(record.asset_tag, record.actual_location);
       }
     }
+    await saveWorkOrderIssueEdits(editing);
     await saveWorkOrderPartEdits(editing);
     await saveWorkOrderLaborEdits(editing);
     await refreshWorkOrderWaitingPartsStatus({ ...editing, status: record.status });
@@ -24248,7 +24251,7 @@ async function syncOutsideCustomerFleetLocation(reference, location) {
 
 async function saveWorkOrderIssueEdits(wo) {
   const rows = [...document.querySelectorAll("#adminIssueBody tr")];
-  const upserts = [];
+
   for (const tr of rows) {
     const id = tr.dataset.issueId || "";
     const get = (field) => tr.querySelector(`[data-admin-issue="${field}"]`)?.value || "";
@@ -24262,7 +24265,7 @@ async function saveWorkOrderIssueEdits(wo) {
       continue;
     }
     if (!hasContent) continue;
-    upserts.push({
+    const saved = await upsertOne("work_order_issues", {
       ...(id ? { id } : {}),
       wo_id: wo.id,
       issue_date: get("issue_date") || today(),
@@ -24270,9 +24273,10 @@ async function saveWorkOrderIssueEdits(wo) {
       status: get("status") || "Open",
       assigned_mechanic: get("assigned_mechanic") === "Unassigned" ? null : get("assigned_mechanic") || null,
       work_notes: get("work_notes") || null,
-    });
+    }, "id");
+    if (saved?.id) tr.dataset.issueId = saved.id;
   }
-  await upsertMany("work_order_issues", upserts, "id");
+
 }
 
 async function saveWorkOrderPartEdits(wo) {
@@ -24967,8 +24971,8 @@ function repairIssueMiniTable(wo) {
 }
 
 function workOrderIssueAdminEditTable(wo) {
-  const rows = [...(wo._issues || []), ...Array.from({ length: Math.max(3, 6 - (wo._issues || []).length) }, () => ({ issue_date: today(), issue: "", status: "Open", assigned_mechanic: "", work_notes: "" }))];
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Date</th><th>Issue</th><th>Status</th><th>Assigned Mechanic</th><th>Notes / Work Detail</th><th>Remove</th></tr></thead><tbody id="adminIssueBody">${rows.map((row, index) => workOrderIssueAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminIssueRowBtn">Add issue row</button></div>`;
+  const rows = [...(wo._issues || []), ...Array.from({ length: 1 }, () => ({ issue_date: today(), issue: "", status: "Open", assigned_mechanic: "", work_notes: "" }))];
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Date</th><th>Issue</th><th>Status</th><th>Assigned Mechanic</th><th>Notes / Work Detail</th><th>Remove</th></tr></thead><tbody id="adminIssueBody">${rows.map((row, index) => workOrderIssueAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminIssueRowBtn">Add Issue</button></div>`;
 }
 
 function workOrderIssueAdminEditRow(row = {}, index = 0) {
@@ -27653,7 +27657,7 @@ function workOrderWhatsAppText(wo = {}) {
   const labor = (wo._labor || []).filter(row => !isReversedLabor(row));
   const techs = [...new Set(labor.map(row => text(row.mechanic)).filter(Boolean))];
   if (!techs.length && wo.opening_mechanic) techs.push(text(wo.opening_mechanic));
-  const issues = [...new Set((wo._issues || []).map(row => text(row.issue)).filter(Boolean))];
+  const issues = [...new Set([...(wo._issues || []).map(row => text(row.issue)), text(wo.description)].filter(Boolean))];
   const lines = [text(wo.wo_no), "PO # " + (text(wo.customer_po) || "—"), "Requested by: " + (text(wo.requested_by) || "—"), "Jobsite: " + (text(wo.jobsite_location) || "—"), "Actual Location of equipment: " + (text(wo.actual_location) || "—"), "Tech: " + (techs.join(", ") || "—"), "Issue: " + (issues.join("; ") || text(wo.description) || "—"), "", "Work Done"];
   const asset = wo._draftAsset || {};
   const equipment = wo._reportEquipment || {};
