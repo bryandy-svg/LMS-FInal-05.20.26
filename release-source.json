@@ -140,7 +140,7 @@
     "tests/regression/work-order-nonposting-save.cjs": "69209b415c795b95392f7bf07e9549414744ed22babb61a7e2381449cbd4b749",
     "tests/regression/work-order-parts-posting-date.cjs": "963b2b1b58ae3adae07ef27dbc1538268c51b652046bcb285b0494f8582b4f51",
     "tests/regression/work-order-po-price.cjs": "b744ac925dd73f805aee2f5ce5c01e02bc7bdf2cebbcddad9c39f4d593c79391",
-    "tests/regression/work-order-text-report.cjs": "e4a76dd95c9b6997affa2d27bbb736fb69114ac2c5d566e3a65bed372fa07159",
+    "tests/regression/work-order-text-report.cjs": "8e629fcd6cef25071466e6a6b9ab4359780649203e6e63b5c8edd118eea758d5",
     "tests/source.cjs": "331338e45c8665895912b584ce1f661a74904d2fc8e70f0c10981ba317042319",
     "tests/trucking-final-material-rollback.sql": "be59dff323462100c12026249ebdf6021805956e1cafbd4df228daef8d5b6b22",
     "vercel.json": "72155b4ecc890cfc6e4af0098ab0ac4a22805e138e0f8a831db4ec69b8ac9628"
