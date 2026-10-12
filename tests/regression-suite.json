@@ -83,5 +83,6 @@
   "cancelled-parts-history",
   "po-issuance-recipients",
   "module-insights",
-  "bulk-work-order-invoices"
+  "bulk-work-order-invoices",
+  "work-order-open-period"
 ]

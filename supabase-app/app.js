@@ -13008,6 +13008,16 @@ async function setAccountingCloseDate(value, onProgress = () => {}) {
   } finally { clearTimeout(timer); }
 }
 
+function nextOpenWorkOrderPostingDate(value) {
+  const date = dateTextToIso(value);
+  if (!date) throw new Error('A valid work-order posting date is required.');
+  if (!isLockedAccountingDate(date)) return date;
+  const next = new Date(getAccountingCloseDate() + 'T00:00:00Z');
+  next.setUTCDate(next.getUTCDate() + 1);
+  if (Number.isNaN(next.getTime())) throw new Error('Could not determine the next open accounting period.');
+  return next.toISOString().slice(0, 10);
+}
+
 function isLockedAccountingDate(value) {
   const closeDate = getAccountingCloseDate();
   const date = String(value || "").slice(0, 10);
@@ -24454,7 +24464,7 @@ async function closeWorkOrder(woNo) {
       <label>Work order date<input type="date" value="${esc(dateTextToIso(wo.wo_date))}" disabled></label>
       <label>Ready to Close date<input type="date" value="${esc(workOrderReadyDate(wo))}" disabled><small>Captured when the mechanic selected Ready to Close.</small></label>
       <label>Closing date<input type="date" id="workOrderClosingDateInput" value="${esc(defaultCloseDate)}" ${lastLaborDate ? "readonly" : ""} required><small>${lastLaborDate ? "Automatically set to the last completed labor date." : "No completed labor was found, so confirm the actual completion date."}</small></label>
-      <label>Posting date<input type="date" id="workOrderPostingDateInput" value="${esc(wo.posting_date || defaultCloseDate)}" required><small>Used for the accounting entry created from this finalized work order.</small></label>
+      <label>Posting date<input type="date" id="workOrderPostingDateInput" value="${esc(nextOpenWorkOrderPostingDate(wo.posting_date || defaultCloseDate))}" required><small>Closed-period dates automatically post on the first open date. The actual closing date stays unchanged.</small></label>
       <label>Closed by<input id="workOrderClosedByInput" value="${esc(profile?.full_name || profile?.username || session?.user?.email || "Admin")}" required></label>
     </div>
     <div class="notice">${lastLaborDate ? `Closing Date is locked to the latest completed labor entry: <strong>${esc(formatDisplayDate(lastLaborDate))}</strong>.` : "Closing Date is used for the mechanic average-closing-days report. Confirm it against the completed work records."}</div>`;
@@ -24466,14 +24476,16 @@ async function closeWorkOrder(woNo) {
 async function finalizeWorkOrderClose(wo, openIssueCount = 0) {
   const requiredLaborCloseDate = workOrderLastLaborDate(wo);
   const closeDate = requiredLaborCloseDate || $("workOrderClosingDateInput")?.value || "";
-  const postingDate = $("workOrderPostingDateInput")?.value || "";
+  await loadAccountingCloseDate(true);
+  const postingDate = nextOpenWorkOrderPostingDate($("workOrderPostingDateInput")?.value || closeDate);
+  if ($("workOrderPostingDateInput")) $("workOrderPostingDateInput").value = postingDate;
   const closedBy = $("workOrderClosedByInput")?.value?.trim() || "";
   if (!closeDate) return alert("Closing date is required.");
   if (requiredLaborCloseDate && $("workOrderClosingDateInput")?.value !== requiredLaborCloseDate) {
     $("workOrderClosingDateInput").value = requiredLaborCloseDate;
   }
   if (!postingDate) return alert("Posting date is required to finalize the work order.");
-  if (isLockedAccountingDate(postingDate)) return alert(`Posting date ${formatDisplayDate(postingDate)} is in a closed accounting period. Choose a date after ${formatDisplayDate(getAccountingCloseDate())}.`);
+
   if (closeDate < dateTextToIso(wo.wo_date)) return alert("Closing date cannot be earlier than the work order date.");
   if (closeDate > localToday()) return alert("Closing date cannot be in the future.");
   if (!closedBy) return alert("Closed by is required.");
@@ -26531,16 +26543,13 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
     notify("Close or complete the work order before invoicing.");
     return;
   }
-  const postingDate = workOrderClosingDate(wo);
-  if (!postingDate) {
+  const closingDate = workOrderClosingDate(wo);
+  if (!closingDate) {
     notify(`Work order ${wo.wo_no} does not have a Closing Date.\n\nOpen Edit or Close Work Order, enter the actual Closing Date, save it, and then create the invoice.`);
     return;
   }
-  await loadAccountingCloseDate();
-  if (isLockedAccountingDate(postingDate)) {
-    notify(`Work order ${wo.wo_no} cannot be invoiced using ${postingDate}.\n\nThat Closing Date is inside a closed accounting period. Reopen the period with proper authorization or correct the Closing Date before invoicing.`);
-    return;
-  }
+  await loadAccountingCloseDate(true);
+  const postingDate = nextOpenWorkOrderPostingDate(wo.posting_date || closingDate);
   const products = productMeta.products?.length ? productMeta.products : await getAll("products");
   const lines = [
     ...(wo._parts || []).filter(isBillableWorkOrderPart).map((p) => {
@@ -26591,7 +26600,7 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
       source_ref: wo.wo_no,
       status: "Open",
       created_by: incompleteInvoice?.created_by || profile?.full_name || profile?.username || profile?.email || session?.user?.email || "User",
-      notes: `Work order invoice ${wo.wo_no}`,
+      notes: `Work order invoice ${wo.wo_no}. Actual closing date: ${closingDate}. Accounting posting date: ${postingDate}.`,
     };
     let invoice;
     if (incompleteInvoice?.id) {
