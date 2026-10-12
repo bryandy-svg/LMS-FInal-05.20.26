@@ -82,5 +82,6 @@
   "product-history-tabs",
   "cancelled-parts-history",
   "po-issuance-recipients",
-  "module-insights"
+  "module-insights",
+  "bulk-work-order-invoices"
 ]
