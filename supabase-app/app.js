@@ -21978,7 +21978,7 @@ async function renderRepairsView(refreshWo = null) {
     </div>
     <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search WO, equipment, serial, plate, customer, jobsite, mechanic, parts or issue"></div>
     <section class="panel">
-      <div class="panel-head"><div class="panel-title"><strong>Repair & Service History</strong><span>Work orders with mechanic time, inventory parts, labor, and next service</span></div><div class="actions"><button id="repairEmailSelectedBtn">Email Selected PDFs</button><button id="mechanicClosingReportBtn">Mechanic Closing Report</button><button id="repairCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newWoBtn">New work order</button></div></div>
+      <div class="panel-head"><div class="panel-title"><strong>Repair & Service History</strong><span>Work orders with mechanic time, inventory parts, labor, and next service</span></div><div class="actions"><button class="primary" id="repairInvoiceSelectedBtn">Invoice Selected</button><button id="repairEmailSelectedBtn">Email Selected PDFs</button><button id="mechanicClosingReportBtn">Mechanic Closing Report</button><button id="repairCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newWoBtn">New work order</button></div></div>
       <div class="tabbar"><button class="tabbtn active" data-repair-tab="open">Open WO ${openRows.length}</button><button class="tabbtn" data-repair-tab="partsissues">Parts Issues ${repairRowsByTab("partsissues").length}</button><button class="tabbtn" data-repair-tab="ready">Ready to Close ${repairRowsByTab("ready").length}</button><button class="tabbtn" data-repair-tab="closed">Closed Not Invoiced ${repairRowsByTab("closed").length}</button><button class="tabbtn" data-repair-tab="invoiced">Invoiced WO ${repairRowsByTab("invoiced").length}</button><button class="tabbtn" data-repair-tab="void">Voided WO ${repairRowsByTab("void").length}</button><button class="tabbtn" data-repair-tab="all">All Work Orders ${repairRowsByTab("all").length}</button></div>
       <div id="repairTableHost">${repairTableHtml(openRows, "open")}</div>
     </section>`;
@@ -21986,6 +21986,7 @@ async function renderRepairsView(refreshWo = null) {
   $("repairCsvBtn").onclick = exportCurrentCsv;
   $("mechanicClosingReportBtn").onclick = openMechanicClosingReport;
   $("repairEmailSelectedBtn").onclick = emailSelectedRepairPdfs;
+  $("repairInvoiceSelectedBtn").onclick = invoiceSelectedWorkOrders;
   $("newWoBtn").onclick = () => openNewWorkOrderModal();
   document.querySelectorAll("[data-repair-tab]").forEach((b) => b.onclick = () => {
     document.querySelectorAll("[data-repair-tab]").forEach((x) => x.classList.toggle("active", x === b));
@@ -22184,6 +22185,53 @@ function bindRepairRows() {
     updateSelectAllState();
   });
   updateSelectAllState();
+}
+
+let invoicingSelectedWorkOrders = false;
+
+async function invoiceSelectedWorkOrders() {
+  if (invoicingSelectedWorkOrders) return;
+  const selected = [...new Set([...document.querySelectorAll('[data-repair-email-select]:checked')]
+    .filter(input => input.offsetParent !== null && !input.closest('tr')?.hidden)
+    .map(input => input.dataset.repairEmailSelect))];
+  if (!selected.length) return alert('Select the closed work orders to invoice. Use Select All to include every visible row.');
+  if (!confirm('Create one invoice for each of ' + selected.length + ' selected work orders?\n\nExisting invoiced work orders will be skipped. Work orders that fail validation will remain for review.')) return;
+  invoicingSelectedWorkOrders = true;
+  const button = $('repairInvoiceSelectedBtn');
+  if (button) button.disabled = true;
+  const results = [];
+  try {
+    for (const [index, woNo] of selected.entries()) {
+      if (button) button.textContent = 'Invoicing ' + (index + 1) + ' of ' + selected.length + '…';
+      try {
+        const wo = await loadWorkOrderDraftDocument(woNo);
+        if (!wo) throw new Error('Work order not found.');
+        if (wo.invoice_no || /invoiced/i.test(wo.status || '')) {
+          results.push({ woNo, status: 'Skipped', detail: 'Already invoiced: ' + (wo.invoice_no || wo.wo_no) });
+          selectedRepairWorkOrders.delete(woNo);
+          continue;
+        }
+        const result = await invoiceWorkOrder(woNo, { batch: true, workOrder: wo });
+        if (!result?.invoiceNo) throw new Error('Invoice was not completed.');
+        results.push({ woNo, status: 'Created', detail: result.invoiceNo });
+        selectedRepairWorkOrders.delete(woNo);
+      } catch (error) {
+        results.push({ woNo, status: 'Failed', detail: error.message || String(error) });
+      }
+    }
+    try {
+      await renderRepairsView();
+      document.querySelector('[data-repair-tab="closed"]')?.click();
+    } catch (error) { results.push({ woNo: '', status: 'Refresh failed', detail: error.message || String(error) }); }
+    modalTitle.textContent = 'Batch invoicing results';
+    modalBody.innerHTML = '<div class="notice">' + results.filter(r => r.status === 'Created').length + ' invoices created. ' + results.filter(r => r.status === 'Failed').length + ' work orders need attention.</div><div class="batch-document-list">' + results.map(r => '<div class="notice"><strong>' + esc(r.woNo) + ' — ' + esc(r.status) + '</strong><p style="white-space:pre-wrap">' + esc(r.detail) + '</p></div>').join('') + '</div>';
+    modalSave.style.display = 'none';
+    $('modalCancel').textContent = 'Close';
+    $('modal').style.display = 'flex';
+  } finally {
+    invoicingSelectedWorkOrders = false;
+    if (button?.isConnected) { button.disabled = false; button.textContent = 'Invoice Selected'; }
+  }
 }
 
 async function emailSelectedRepairPdfs() {
@@ -26467,25 +26515,26 @@ async function appendIssueWorkNote(wo, issue, mechanic, note) {
   await supabase.from("work_order_issues").update({ work_notes }).eq("id", row.id);
 }
 
-async function invoiceWorkOrder(woNo) {
-  const wo = currentRows.find((row) => row.wo_no === woNo);
-  if (!wo) return;
+async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) {
+  const notify = message => { if (batch) throw new Error(message); alert(message); };
+  const wo = workOrder || currentRows.find((row) => row.wo_no === woNo);
+  if (!wo) { notify("Work order not found."); return; }
   if (wo.invoice_no) {
-    alert(`Already invoiced as ${wo.invoice_no}.`);
+    notify(`Already invoiced as ${wo.invoice_no}.`);
     return;
   }
-  if (!/closed|complete/i.test(wo.status || "")) {
-    alert("Close or complete the work order before invoicing.");
+  if (!/closed|complete/i.test(wo.status || "") || /void|cancel/i.test(wo.status || "")) {
+    notify("Close or complete the work order before invoicing.");
     return;
   }
   const postingDate = workOrderClosingDate(wo);
   if (!postingDate) {
-    alert(`Work order ${wo.wo_no} does not have a Closing Date.\n\nOpen Edit or Close Work Order, enter the actual Closing Date, save it, and then create the invoice.`);
+    notify(`Work order ${wo.wo_no} does not have a Closing Date.\n\nOpen Edit or Close Work Order, enter the actual Closing Date, save it, and then create the invoice.`);
     return;
   }
   await loadAccountingCloseDate();
   if (isLockedAccountingDate(postingDate)) {
-    alert(`Work order ${wo.wo_no} cannot be invoiced using ${postingDate}.\n\nThat Closing Date is inside a closed accounting period. Reopen the period with proper authorization or correct the Closing Date before invoicing.`);
+    notify(`Work order ${wo.wo_no} cannot be invoiced using ${postingDate}.\n\nThat Closing Date is inside a closed accounting period. Reopen the period with proper authorization or correct the Closing Date before invoicing.`);
     return;
   }
   const products = productMeta.products?.length ? productMeta.products : await getAll("products");
@@ -26497,7 +26546,7 @@ async function invoiceWorkOrder(woNo) {
     ...[...(wo._labor || [])].filter((l) => !isReversedLabor(l)).sort(laborNarrativeSort).filter((l) => laborHours(l) > 0).flatMap((l) => workOrderLaborInvoiceLines(l, wo.wo_date, wo.bill_to_customer || wo.customer)),
   ];
   if (!lines.length) {
-    alert("No accepted parts or completed labor to invoice.");
+    notify("No accepted parts or completed labor to invoice.");
     return;
   }
   try {
@@ -26559,13 +26608,15 @@ async function invoiceWorkOrder(woNo) {
     })), "id");
     await postInvoiceLedger(invoice, lines);
     await ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products, postingDate);
-    await supabase.from("work_orders").update({ invoice_no: invoiceNo, status: "Invoiced" }).eq("id", wo.id);
+    const { error: linkError } = await supabase.from("work_orders").update({ invoice_no: invoiceNo, status: "Invoiced" }).eq("id", wo.id);
+    if (linkError) throw linkError;
     await releaseCompletedWorkOrderEquipment({ ...wo, invoice_no: invoiceNo, status: "Invoiced" });
-    alert(`Invoice ${invoiceNo} created for ${wo.wo_no}.\n\nUse Invoice PDF to view or save it, or Email to open a draft for the customer.`);
+    if (batch) return { invoiceNo, woNo };
+    notify(`Invoice ${invoiceNo} created for ${wo.wo_no}.\n\nUse Invoice PDF to view or save it, or Email to open a draft for the customer.`);
     await renderRepairsView(wo);
     document.querySelector('[data-repair-tab="invoiced"]')?.click();
   } catch (error) {
-    alert(`Could not invoice ${wo.wo_no}.\n\nProblem: ${error.message || error}\n\nHow to fix: Check that the work order is closed, has accepted parts or completed labor, and the invoice number is not already used.`);
+    notify(`Could not invoice ${wo.wo_no}.\n\nProblem: ${error.message || error}\n\nHow to fix: Check that the work order is closed, has accepted parts or completed labor, and the invoice number is not already used.`);
   }
 }
 
