@@ -3470,7 +3470,15 @@ function getTableDataRows(table) {
 }
 
 function getExcelColumnValues(table, col) {
-  const values = getTableDataRows(table).map((row) => excelFilterValue(row.children[col]?.textContent || ""));
+  // Ignore this column so multiple choices remain available; honor every other column.
+  const filters = [...table.querySelectorAll(".column-filter")].filter(input => Number(input.dataset.col || 0) !== Number(col));
+  const rows = getTableDataRows(table).filter(row => filters.every(input => {
+    const text = row.children[Number(input.dataset.col || 0)]?.textContent || "";
+    const selected = selectedExcelFilterValues(input);
+    return (!input.value || text.toLowerCase().includes(input.value.toLowerCase()))
+      && (!selected.length || selected.includes(excelFilterValue(text)));
+  }));
+  const values = rows.map((row) => excelFilterValue(row.children[col]?.textContent || ""));
   return [...new Set(values)].sort(compareTableValues);
 }
 
@@ -13725,7 +13733,7 @@ function productTableHtml(rows) {
   return `${notice}<div class="table-wrap"><table data-product-master-table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-product-column-filter="${esc(columns[i][0])}" data-col="${i}" value="${esc(productColumnFilterState[columns[i][0]] || "")}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${visibleRows.length ? visibleRows.map((p) => productRowHtml(p, columns)).join("") : `<tr><td colspan="${heads.length}" class="empty">No products match the current filters.</td></tr>`}</tbody></table></div>`;
 }
 
-function productRowsMatchingColumnFilters(rows, columns = productVisibleColumns()) {
+function productRowsMatchingColumnFilters(rows, columns = productVisibleColumns(), excludeKey = "") {
   const activeFilters = Object.entries(productColumnFilterState)
     .map(([key, value]) => [key, String(value || "").trim().toLowerCase()])
     .filter(([, value]) => value);
@@ -13736,11 +13744,11 @@ function productRowsMatchingColumnFilters(rows, columns = productVisibleColumns(
   if (!activeFilters.length && !activeExcelFilters.length) return rows;
   return rows.filter((product) => {
     const textMatches = activeFilters.every(([key, needle]) => {
-      if (!visibleKeys.has(key)) return true;
+      if (key === excludeKey || !visibleKeys.has(key)) return true;
       return productColumnFilterValue(product, key).toLowerCase().includes(needle);
     });
     const excelMatches = activeExcelFilters.every(([key, values]) => {
-      if (!visibleKeys.has(key)) return true;
+      if (key === excludeKey || !visibleKeys.has(key)) return true;
       return values.includes(excelFilterValue(productColumnFilterValue(product, key)));
     });
     return textMatches && excelMatches;
@@ -32483,6 +32491,14 @@ function isRollOffTruckingService(row = {}) {
   return /roll[\s-]*off/i.test(service);
 }
 
+function isContainerMoveService(row = {}) {
+  return /container|sidelift|trailer[\s/-]*move/i.test(String(row.service || row.requested_equipment_label || "")) && !isRollOffTruckingService(row);
+}
+
+function requiresTruckingDebris(row = {}) {
+  return isRollOffTruckingService(row) || (!isContainerMoveService(row) && /dump/i.test(String(row.service || row.requested_equipment_label || "")));
+}
+
 function truckingDebrisRates(debris, ticket = {}) {
   if (/^none$/i.test(String(debris || "").trim()) || !isRollOffTruckingService(ticket)) return [];
   return (productMeta.truckingRates || []).filter((row) => !/inactive/i.test(row.status || "")
@@ -32503,12 +32519,14 @@ function truckingTicketMaterialFields(row = {}) {
   const selected = types.find(type => type.toLowerCase() === current.toLowerCase()) || current;
   const legacyOption = current && !types.includes(selected) ? `<option value="${esc(current)}" selected>${esc(current)} (existing ticket value)</option>` : '';
   const freeText = !isRollOffTruckingService(row);
+  const required = requiresTruckingDebris(row);
+  const hidden = isContainerMoveService(row) ? "hidden" : "";
   const debrisControl = freeText
-    ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" required><small>Enter the debris or material carried. Tipping fees apply only to roll-off services.</small>`
+    ? `<input name="debris_type" value="${esc(current)}" placeholder="Enter debris or material type" ${required ? "required" : ""}><small>Enter the debris or material carried. Tipping fees apply only to roll-off services.</small>`
     : `<select name="debris_type" required><option value="">Select debris type</option>${legacyOption}${types.map(type => `<option value="${esc(type)}" ${type === selected ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select><small>Types come from active Tipping Fee entries in the Rate Sheet.</small>`;
-  return `<label class="field" data-trucking-debris-field>Type of Debris (required)${debrisControl}</label>
-    <label class="field">${freeText ? "Quantity (optional)" : "Quantity"}<input type="number" min="0" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
-    <label class="field">${freeText ? "Quantity Unit (optional)" : "Quantity Unit"}<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
+  return `<label class="field" data-trucking-debris-field ${hidden}>Type of Debris (${required ? "required" : "optional"})${debrisControl}</label>
+    <label class="field" data-trucking-quantity-field ${hidden}>${freeText ? "Quantity (optional)" : "Quantity"}<input type="number" min="0" step="any" name="debris_quantity" value="${esc(legacyQuantity)}" placeholder="Enter quantity"></label>
+    <label class="field" data-trucking-quantity-field ${hidden}>${freeText ? "Quantity Unit (optional)" : "Quantity Unit"}<select name="debris_unit"><option value="">Select CY or Ton</option><option value="CY" ${parsed.unit === "CY" ? "selected" : ""}>CY — Cubic yards</option><option value="Ton" ${parsed.unit === "Ton" ? "selected" : ""}>Ton — Weight</option></select></label>
     <input type="hidden" name="cy_ton" value="${esc(row.cy_ton || "")}">`;
 }
 
@@ -32520,7 +32538,12 @@ function syncTruckingDebrisField(root = modalBody) {
   const template = document.createElement("div");
   template.innerHTML = truckingTicketMaterialFields(row);
   const replacement = template.querySelector('[data-trucking-debris-field]');
-  if (replacement.querySelector('[name="debris_type"]').tagName === current.tagName) return;
+  const required = requiresTruckingDebris(row);
+  const containerMove = isContainerMoveService(row);
+  root.querySelectorAll('[data-trucking-quantity-field]').forEach(field => { field.hidden = containerMove; });
+  const containerInput = root.querySelector('[name="container_no"]');
+  if (containerInput) containerInput.required = containerMove;
+  if (replacement.querySelector('[name="debris_type"]').tagName === current.tagName && current.required === required && container.hidden === containerMove) return;
   container.replaceWith(replacement);
   replacement.querySelector('[name="debris_type"]').addEventListener("input", () => manualFinalTicketCalculation(root));
 }
@@ -32538,7 +32561,8 @@ function syncTruckingTicketQuantity(root = modalBody) {
 }
 
 function truckingTicketMaterialError(values) {
-  if (!String(values.debris_type || "").trim()) return "Type of Debris is required for every ticket.";
+  if (isContainerMoveService(values)) return String(values.container_no || "").trim() ? "" : "Container / Trailer # is required for a container move.";
+  if (requiresTruckingDebris(values) && !String(values.debris_type || "").trim()) return "Type of Debris is required for this service.";
   if (!isRollOffTruckingService(values) || /^none$/i.test(String(values.debris_type).trim())) return "";
   const { quantity, unit } = truckingQuantity(values.cy_ton);
   const rate = manualTruckingRate(values.service);
@@ -34128,7 +34152,7 @@ async function openAssignedDriverTask(ticketNo) {
       <label class="field">Ticket date<input type="date" name="move_date" value="${esc(row.move_date || truckingToday())}" required><small>This becomes the final date printed on the ticket.</small></label>
       <label class="field">Origin<input name="origin" value="${esc(row.origin || "")}"></label>
       <label class="field">Destination<input name="destination" value="${esc(row.destination || "")}"></label>
-      <label class="field">Container / Trailer #<input name="container_no" value="${esc(row.container_no || "")}"></label>
+      <label class="field">Container / Trailer #<input name="container_no" value="${esc(row.container_no || "")}" ${isContainerMoveService(row) ? "required" : ""}></label>
       <label class="field">Seal #<input name="seal_no" value="${esc(row.seal_no || "")}"></label>
       <label class="field">Vessel / Voyage<input name="vessel_voyage" value="${esc(row.vessel_voyage || "")}"></label>
       <label class="field">BL #<input name="bl_no" value="${esc(row.bl_no || "")}"></label>
@@ -34258,7 +34282,7 @@ async function saveAssignedDriverTask(row, driverCanvas, customerCanvas) {
   };
   const timeError = truckingTimeOrderError(update.start_time, update.end_time);
   if (timeError) return alert(timeError);
-  if (!operational.debris_type) return alert("Type of Debris is required for every ticket.");
+  if (requiresTruckingDebris(row) && !operational.debris_type) return alert("Type of Debris is required for this service.");
   if (!assignedStandbyFitsClockTime(operational, update.start_time, update.end_time)) return;
   if (update.start_time && update.end_time) {
     const moves = await getAll("trucking_moves").catch(() => []);
@@ -36720,6 +36744,7 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
     <label class="field">Time In (optional)<input type="time" name="start_time" value="${esc(value("start_time"))}"></label>
     <label class="field">Time Out (optional)<input type="time" name="end_time" value="${esc(value("end_time"))}"></label>
     <label class="field">Project<input class="suggest-input" data-suggest-source="locations" name="project" value="${esc(value("project", value("jobsite")))}" placeholder="Search project or jobsite" autocomplete="off"></label>
+    <label class="field">Container / Trailer #<input name="container_no" value="${esc(value("container_no"))}" placeholder="Enter container or trailer number"></label>
     ${truckingTicketMaterialFields(existingTicket || {})}
     <label class="field">Actual Hours<input type="number" name="worked_hours" min="0" step="0.01" value="${esc(value("actual_hours"))}" placeholder="Enter when ticket has no times"></label>
     <label class="field">Rate Used<input name="rate_display" readonly></label>
@@ -36781,6 +36806,7 @@ async function saveManualFinalTruckingTicket() {
     customer_signature: editingFinalTruckingTicket?.customer_signature || "Manual finalized ticket", equipment_label: values.equipment_label.trim(), service: calculation.rate?.service || values.service.trim(),
     requested_by: values.requested_by || null, po_no: values.po_no || null, origin: values.origin || null, destination: values.destination || null,
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: calculation.workedHours, move_description: values.move_description || null, notes: values.move_description || null,
+    container_no: String(values.container_no || "").trim() || null,
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
     rate: Number(calculation.rate?.rate || 0), rate_type: trainingEntry ? "Training / Non-billable" : (calculation.rate?.rate_type || ""), amount: trainingEntry ? 0 : calculation.serviceAmount, tipping_fee: trainingEntry ? null : (calculation.debrisRate?.service || null),
     tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: calculation.tippingCharge, amount_to_bill: calculation.total,
@@ -36808,7 +36834,7 @@ async function saveManualTruckingTicketDraft() {
   const values = Object.fromEntries([...modalBody.querySelectorAll("[name]")].map((el) => [el.name, el.value]));
   const timeError = truckingTimeOrderError(values.start_time, values.end_time);
   if (timeError) return alert(timeError);
-  if (!String(values.debris_type || "").trim()) return alert("Type of Debris is required for every ticket.");
+  if (requiresTruckingDebris(values) && !String(values.debris_type || "").trim()) return alert("Type of Debris is required for this service.");
   const ticketNo = String(values.ticket_no || "").trim();
   if (!ticketNo) return alert("A Ticket Number is required to save the draft.");
   const selectedEquipment = truckingFindAsset(values.equipment_label);
@@ -36826,6 +36852,7 @@ async function saveManualTruckingTicketDraft() {
     equipment_label: values.equipment_label || null, service: calculation.rate?.service || values.service || null, customer: values.customer || null,
     requested_by: values.requested_by || null, po_no: values.po_no || null, origin: values.origin || null, destination: values.destination || null,
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: nullableNumber(values.worked_hours), move_description: values.move_description || null, notes: values.move_description || null,
+    container_no: String(values.container_no || "").trim() || null,
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
     rate: Number(calculation.rate?.rate || 0), rate_type: calculation.rate?.rate_type || null, amount: Number(calculation.serviceAmount || 0), tipping_fee: calculation.debrisRate?.service || null, tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: Number(calculation.tippingCharge || 0), amount_to_bill: Number(calculation.total || 0),
     status: "Draft", billing_status: "Non-billable", finalized_at: null, accepted_at: null, driver_signature: null, customer_signature: null, driver_signed_at: null, customer_signed_at: null,
@@ -38121,7 +38148,7 @@ async function printTruckingTicket(ticketNo) {
         <div class="field"><span class="field-label">Destination</span><div class="field-value">${esc(row.destination || "")}</div></div><div class="field"><span class="field-label">Time</span><div class="field-value field-time-trio"><span>In: ${esc(row.start_time || "")}</span><span>Out: ${esc(row.end_time || "")}</span><span>Standby: ${Number(row.standby_hours || 0).toFixed(2)} hr</span></div></div>
         <div class="field"><span class="field-label">Jobsite / Project</span><div class="field-value">${esc(row.project || row.jobsite || "")}</div></div><div class="field"><span class="field-label">Equipment Requested</span><div class="field-value">${esc(requestedEquipment)}</div></div>
         <div class="field"><span class="field-label">Service / Equipment Used</span><div class="field-value">${esc(row.equipment_label || row.service || "")}</div></div><div class="field"><span class="field-label">Requested By / PO #</span><div class="field-value field-pair"><span>${esc(row.requested_by || "")}</span><span>${esc(row.po_no || "")}</span></div></div>
-        <div class="field"><span class="field-label">Type of Debris / CY or Ton</span><div class="field-value field-pair"><span>${esc(row.debris_type || "")}</span><span>${esc(row.cy_ton || "")}</span></div></div><div class="field"><span class="field-label">Additional Details</span><div class="field-value">${esc(row.container_no || row.seal_no || row.vessel_voyage || "")}</div></div>
+        <div class="field"><span class="field-label">${isContainerMoveService(row) ? "Seal # / Vessel / Voyage" : "Type of Debris / CY or Ton"}</span><div class="field-value field-pair"><span>${esc(isContainerMoveService(row) ? row.seal_no || "" : row.debris_type || "")}</span><span>${esc(isContainerMoveService(row) ? row.vessel_voyage || "" : row.cy_ton || "")}</span></div></div><div class="field"><span class="field-label">Container / Trailer #</span><div class="field-value">${esc(row.container_no || "")}</div></div>
         <div class="field wide"><span class="field-label">Move Description</span><div class="field-value">${esc(row.move_description || row.notes || "")}</div>${Number(row.standby_hours || 0) > 0 ? `<div class="standby-ticket-notes"><span class="field-label">Standby Notes</span><div class="field-value">${esc(row.standby_notes || "")}</div></div>` : ""}</div>
       </div>
       <div class="signatures"><div class="signatory"><div class="signatory-name" style="padding:0 2px 5px;font-size:10px;font-weight:800;color:#17212b"><span style="display:block;margin-bottom:2px;font-size:8px;text-transform:uppercase;letter-spacing:.04em;color:#536273">Customer Print</span>${esc(row.customer_print || row.customer || "")}</div><div class="signature-box"><div class="signature-head"><span>Customer Signature</span><span>Date: __________</span></div><div class="signature-content">${signatureHtml(row.customer_signature)}</div><div class="signature-note">Customer acknowledgement</div></div></div><div class="signatory"><div class="signatory-name" style="padding:0 2px 5px;font-size:10px;font-weight:800;color:#17212b"><span style="display:block;margin-bottom:2px;font-size:8px;text-transform:uppercase;letter-spacing:.04em;color:#536273">Driver Print</span>${esc(row.driver_print || row.driver_name || "")}</div><div class="signature-box"><div class="signature-head"><span>Driver Signature</span><span>Date: __________</span></div><div class="signature-content">${signatureHtml(row.driver_signature)}</div><div class="signature-note">Driver certification</div></div></div></div>
@@ -43074,7 +43101,7 @@ function openExcelFilterMenu(button) {
   const productKey = input.dataset.productColumnFilter || "";
   const isProductMaster = !!productKey && table.matches("[data-product-master-table]");
   const values = isProductMaster
-    ? [...new Set((filteredProductRows() || []).map((product) => excelFilterValue(productColumnFilterValue(product, productKey))))].sort(compareTableValues)
+    ? [...new Set(productRowsMatchingColumnFilters(filteredProductRows() || [], productVisibleColumns(), productKey).map((product) => excelFilterValue(productColumnFilterValue(product, productKey))))].sort(compareTableValues)
     : getExcelColumnValues(table, col);
   const dateColumn = /\bdate\b/i.test(title) || (values.length > 0 && values.filter(value => value !== "(Blanks)").every(value => tableFilterDateKey(value) !== null));
   const selected = isProductMaster ? (productColumnExcelFilterState[productKey] || []) : selectedExcelFilterValues(input);
@@ -43088,7 +43115,7 @@ function openExcelFilterMenu(button) {
       <button type="button" data-sort="desc">${dateColumn ? "Newest first" : "Sort Z-A"}</button>
     </div>
     <input class="excel-filter-search" type="search" placeholder="Search values">
-    <label class="excel-filter-check excel-filter-select-all"><input type="checkbox" ${active.size === values.length ? "checked" : ""}> Select all</label>
+    <label class="excel-filter-check excel-filter-select-all"><input type="checkbox" ${values.length && values.every(value => active.has(value)) ? "checked" : ""}> Select all</label>
     <div class="excel-filter-values">
       ${values.length ? values.map((value) => `<label class="excel-filter-check" data-value="${esc(value.toLowerCase())}"><input type="checkbox" value="${esc(value)}" ${active.has(value) ? "checked" : ""}> <span>${esc(value)}</span></label>`).join("") : `<div class="muted">No values</div>`}
     </div>

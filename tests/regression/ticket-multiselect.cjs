@@ -13,3 +13,23 @@ filters.forEach(f=>f.selected=[]);apply();assert.equal(visible,4);assert.ok(rows
 filters[0].value='ed';apply();assert.equal(visible,1);assert.equal(rows[2].hidden,false);
 assert.match(source,/truckingSimpleTable\(filtered, heads, \{\s+excelFilters: true,\s+wrapClass: "trucking-ticket-multifilter"/);
 console.log('PASS multiple choices, cross-column intersection, clear filters, text search and visible selection state');
+
+// Dropdown choices cascade through other columns, but not their own selection.
+context.getTableDataRows=()=>rows;
+context.compareTableValues=(a,b)=>a.localeCompare(b);
+vm.runInContext(functions(['getExcelColumnValues']),context);
+filters[0].value='';filters[0].selected=['Mark'];filters[1].selected=['Roll Off'];
+assert.deepEqual(Array.from(context.getExcelColumnValues(table,1)),['Dump Truck','Roll Off']);
+assert.deepEqual(Array.from(context.getExcelColumnValues(table,0)),['Edwin','Jonathan','Mark']);
+filters[0].value='jon';filters[0].selected=[];
+assert.deepEqual(Array.from(context.getExcelColumnValues(table,1)),['Roll Off']);
+filters[0].value='missing';assert.equal(context.getExcelColumnValues(table,1).length,0);
+filters.forEach(f=>{f.value='';f.selected=[];});
+assert.deepEqual(Array.from(context.getExcelColumnValues(table,1)),['Dump Truck','Roll Off']);
+context.productColumnFilterState={customer:'Hensel'};context.productColumnExcelFilterState={destination:['Conleyus']};
+context.productColumnFilterValue=(p,k)=>p[k];
+vm.runInContext(functions(['productRowsMatchingColumnFilters']),context);
+const products=[{customer:'Hensel',destination:'Conleyus'},{customer:'Hensel',destination:'HP - AAFB'},{customer:'Other',destination:'AAFB Housing'}];
+const columns=[['customer'],['destination']];
+assert.deepEqual(Array.from(context.productRowsMatchingColumnFilters(products,columns,'destination')).map(p=>p.destination),['Conleyus','HP - AAFB']);
+console.log('PASS cascading dropdowns: other columns, own multi-select, text filters, empty results, clearing and product filters');
