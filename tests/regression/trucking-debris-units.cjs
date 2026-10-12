@@ -35,9 +35,9 @@ const context = vm.createContext({
     querySelectorAll: () => Object.entries(fields).map(([name, field]) => ({ name, value: field.value })),
   },
 });
-for (const name of ['isRollOffTruckingService', 'truckingQuantity', 'truckingRateUnit', 'truckingRateForUnit', 'truckingDebrisRates', 'rankedTruckingSuggestOptions', 'truckingDebrisSuggestOptions', 'truckingTicketMaterialFields', 'syncTruckingTicketQuantity', 'truckingTicketMaterialError', 'manualTruckingRate', 'isRollOffEquipment', 'requiresTruckingCyTon', 'isTruckingTrainingEntry', 'manualFinalTicketCalculation', 'normalizeHeaderKey', 'truckingImportedDate', 'truckingImportedTime', 'finalizedTruckingUploadRecord', 'truckingTimeOrderError', 'saveManualTruckingTicketDraft', 'saveManualFinalTruckingTicket', 'saveAssignedDriverTask', 'finalizeAssignedDriverTask']) vm.runInContext(extract(name), context);
+for (const name of ['isContainerMoveService', 'requiresTruckingDebris', 'isRollOffTruckingService', 'truckingQuantity', 'truckingRateUnit', 'truckingRateForUnit', 'truckingDebrisRates', 'rankedTruckingSuggestOptions', 'truckingDebrisSuggestOptions', 'truckingTicketMaterialFields', 'syncTruckingTicketQuantity', 'truckingTicketMaterialError', 'manualTruckingRate', 'isRollOffEquipment', 'requiresTruckingCyTon', 'isTruckingTrainingEntry', 'manualFinalTicketCalculation', 'normalizeHeaderKey', 'truckingImportedDate', 'truckingImportedTime', 'finalizedTruckingUploadRecord', 'truckingTimeOrderError', 'saveManualTruckingTicketDraft', 'saveManualFinalTruckingTicket', 'saveAssignedDriverTask', 'finalizeAssignedDriverTask']) vm.runInContext(extract(name), context);
 const error = context.truckingTicketMaterialError;
-for (const service of ['Roll Off Bin', 'Dump Truck', 'End Dump', 'Flat Rack', 'Water Service', 'Training']) {
+for (const service of ['Roll Off Bin', 'Dump Truck', 'End Dump']) {
   assert.match(error({ service, debris_type: ' ' }), /Type of Debris is required/);
 }
 for (const cy_ton of ['12', '12 CY Ton', '-2 CY', '0 Ton', 'abc', '1e3 CY']) assert.match(error({ service: 'Roll Off Bin', debris_type: 'Green Waste', cy_ton }), /positive quantity/);
@@ -77,22 +77,22 @@ assert.match(html, /value="Ton" selected/);
 assert.match(html, /value="4.5"/);
 assert.match(html, /name="debris_type"[^>]*required/);
 (async () => {
-  set({ start_time: '', end_time: '', debris_type: '' });
+  set({ service:'Roll Off Bin', start_time: '', end_time: '', debris_type: '' });
   await context.saveManualTruckingTicketDraft();
   assert.match(alerts.pop(), /Type of Debris is required/);
-  set({ ticket_no: 'T1', move_date: '2026-09-21', driver_name: 'Driver', service: 'Flat Rack', equipment_label: 'Truck', customer: 'Customer', worked_hours: '2', debris_type: '' });
+  set({ ticket_no: 'T1', move_date: '2026-09-21', driver_name: 'Driver', service: 'Roll Off Bin', equipment_label: 'Truck', customer: 'Customer', worked_hours: '2', debris_type: '' });
   context.truckingFindAsset = () => ({});
   context.isTruckingContainerEquipment = () => false;
   await context.saveManualFinalTruckingTicket();
   assert.match(alerts.pop(), /Type of Debris is required/);
   context.assignedDriverOperationalUpdate = () => ({ move_date: '2026-09-21', debris_type: '', standby_hours: 0 });
-  await context.saveAssignedDriverTask({});
+  await context.saveAssignedDriverTask({service:'Roll Off Bin'});
   assert.match(alerts.pop(), /Type of Debris is required/);
   set({ start_time: '10:00', end_time: '12:00' });
   context.assignedStandbyFitsClockTime = () => true;
-  await context.finalizeAssignedDriverTask({ service: 'Flat Rack' });
+  await context.finalizeAssignedDriverTask({ service: 'Roll Off Bin' });
   assert.match(alerts.pop(), /Type of Debris is required/);
-  console.log('PASS: searchable debris; required debris for all services and four save paths; explicit positive CY/Ton; unit-matched active service/tipping rates; manual/upload totals; legacy unit rendering.');
+  console.log('PASS: searchable debris; service-specific debris and container requirements across save paths; explicit positive CY/Ton; unit-matched active service/tipping rates; manual/upload totals; legacy unit rendering.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
 for (const service of ['Dump Truck | 16 CY', 'End Dump', 'End-Dump Trailer']) {
@@ -135,3 +135,13 @@ for (const service of ['Rolloff Flat Rack Service','Flat Rack','Flatrack/Chamele
 }
 assert.equal(context.isRollOffTruckingService({service:'Roll Off Service',requested_equipment_label:'Roll Off Bin | 20 CY'}),true);
 assert.match(context.truckingTicketMaterialError({service:'Roll Off Service',debris_type:'Green Waste',cy_ton:''}),/positive quantity/);
+
+for(const service of ['Container/Trailer Move | Sidelifter | 20 ft','Container Move','Sidelifter']) {
+ assert.match(error({service}), /Container \/ Trailer # is required/);
+ assert.equal(error({service,container_no:'ABCD1234567'}), '');
+ assert.match(context.truckingTicketMaterialFields({service}), /data-trucking-debris-field hidden/);
+ assert.equal(context.truckingDebrisRates('Green Waste',{service}).length,0);
+}
+for(const service of ['Pump Service','Water Service','Training','Flat Rack']) assert.equal(error({service}), '');
+assert.match(extract('saveManualFinalTruckingTicket'), /container_no: String\(values.container_no/);
+assert.match(extract('saveManualTruckingTicketDraft'), /container_no: String\(values.container_no/);
