@@ -43097,7 +43097,7 @@ function enhanceExcelHeaderFilters() {
     inputs.forEach((input) => {
       const col = Number(input.dataset.col || 0);
       const th = headerCells[col];
-      if (!th || th.querySelector(".excel-filter-btn")) return;
+      if (!th || th.querySelector(".excel-filter-btn") || th.querySelector('input[type="checkbox"]')) return;
       const label = getHeaderLabel(th);
       if (/^(actions?|signature)$/i.test(label)) return;
       th.classList.add("excel-filter-header");
