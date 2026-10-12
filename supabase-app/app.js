@@ -38420,7 +38420,7 @@ async function openTruckingRateForm(service = "", copyMode = false) {
       <label>Rate key (optional)<input name="service" value="${copyMode ? "" : esc(row?.service || "")}" placeholder="Generated from the selections above"><small>Leave blank to generate a unique pricing key from Super Parent, Move Type, and Size.</small></label>
       <label>Required reference label<input name="reference_label" value="${esc(row?.reference_label || "")}" placeholder="Example: Container / Trailer number"></label>
       <label class="remember-login"><input type="checkbox" name="requires_equipment" ${row?.requires_equipment ? "checked" : ""}> Require Equipment Master lookup</label>
-      <label>Rate<input type="number" step="0.01" name="rate" value="${esc(row?.rate || 0)}"></label>
+      <label>Rate<input type="number" step="0.01" name="rate" value="${esc(row?.rate || 0)}"><small>Saving updates matching unbilled tickets and recalculates their discounts and totals.</small></label>
       <label>Type<select name="rate_type"><option>Hourly</option><option>Flat Rate</option><option>Daily</option><option>/cy</option><option>/ton</option></select></label>
       <label>Category<select name="category"><option>Service</option><option>Tipping Fee</option><option>Fuel/Water</option></select></label>
       <label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label>
@@ -38476,7 +38476,7 @@ async function openTruckingRateForm(service = "", copyMode = false) {
     const duplicate = liveRates.find((rate) => String(rate.service || "").trim().toLowerCase() === payload.service.toLowerCase());
     if ((!row || copyMode) && duplicate) return alert(`A rate with the key "${payload.service}" already exists. Add a Size / Capacity or enter a different Rate Key.`);
     const { error } = await supabase.from("trucking_rates").upsert(payload, { onConflict: "service" });
-    if (error) return alert(error.message || "Could not save rate.");
+    if (error) return alert(error.message || "Could not save rate. Unbilled ticket repricing must also succeed.");
     closeModal();
     productMeta.truckingLoaded = false;
     await renderTruckingRatesView();
