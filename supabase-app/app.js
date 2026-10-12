@@ -556,8 +556,24 @@ function openModuleListScope(view,options={}) {
   state={...state,tab,rows:[...state.rows],memo:new Map(),append:Boolean(options.append)};
   moduleListPages.set(cacheKey,state);moduleListScope=state;return state;
 }
+async function repairSearchRows(state) {
+  const tables = ['work_orders','work_order_issues','work_order_parts','work_order_labor','assets','outside_customer_fleet'];
+  tables.forEach(table => state.dependencies.add(table));
+  const data = await getViewData('repair-search-complete-data', signal => Promise.all(tables.map(table => getAll(table, { strict: true, signal }))), 60000);
+  const [orders,issues,parts,labor,assets,outside] = data;
+  const group = rows => { const map = new Map(); for (const row of rows) { const key=String(row.wo_id); if (!map.has(key)) map.set(key,[]); map.get(key).push(row); } return map; };
+  const issueMap=group(issues),partMap=group(parts),laborMap=group(labor);
+  return orders.map(wo => ({...wo, _issues:issueMap.get(String(wo.id))||[], _parts:partMap.get(String(wo.id))||[], _labor:laborMap.get(String(wo.id))||[], _searchAsset:workOrderAssetDetailsFromLists(wo,assets,outside), _searchLocation:assets.find(a=>a.asset_tag===wo.asset_tag)?.location || outside.find(a=>a.reference===wo.asset_tag)?.location || ''}))
+    .filter(wo => (!state.from || wo.wo_date>=state.from) && (!state.to || wo.wo_date<=state.to) && workOrderMatchesSearch(wo,state.query))
+    .sort((a,b)=>String(b.wo_date||'').localeCompare(String(a.wo_date||'')) || String(a.id).localeCompare(String(b.id)));
+}
+
 async function moduleListPrimary(state) {
   if(state.rows.length && !state.append)return structuredClone(state.rows);
+  if (state.query && ['repairs','partsissues'].includes(state.view)) {
+    state.rows = await repairSearchRows(state); state.more=false; state.append=false;
+    return structuredClone(state.rows);
+  }
   await loadListPartMatches(state);
   const offset=state.rows.length,[table,,sort]=state.spec,pageSize=50;
   const result=await getViewData('list-page:'+table+':'+state.cacheKey+':'+offset,async signal=>{
@@ -21986,7 +22002,7 @@ async function renderRepairsView(refreshWo = null) {
       ${statCard("Invoiced WO", repairRowsByTab("invoiced").length, "Locked unless reversed")}
       ${statCard("Voided WO", repairRowsByTab("void").length, "Kept for audit trail")}
     </div>
-    <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search WO, equipment, serial, plate, customer, jobsite, mechanic, parts or issue"></div>
+    <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search all columns: WO, equipment, serial, plate, people, dates, amounts, parts or issues"></div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Repair & Service History</strong><span>Work orders with mechanic time, inventory parts, labor, and next service</span></div><div class="actions"><button class="primary" id="repairInvoiceSelectedBtn">Invoice Selected</button><button id="repairEmailSelectedBtn">Email Selected PDFs</button><button id="mechanicClosingReportBtn">Mechanic Closing Report</button><button id="repairCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newWoBtn">New work order</button></div></div>
       <div class="tabbar"><button class="tabbtn active" data-repair-tab="open">Open WO ${openRows.length}</button><button class="tabbtn" data-repair-tab="partsissues">Parts Issues ${repairRowsByTab("partsissues").length}</button><button class="tabbtn" data-repair-tab="ready">Ready to Close ${repairRowsByTab("ready").length}</button><button class="tabbtn" data-repair-tab="closed">Closed Not Invoiced ${repairRowsByTab("closed").length}</button><button class="tabbtn" data-repair-tab="invoiced">Invoiced WO ${repairRowsByTab("invoiced").length}</button><button class="tabbtn" data-repair-tab="void">Voided WO ${repairRowsByTab("void").length}</button><button class="tabbtn" data-repair-tab="all">All Work Orders ${repairRowsByTab("all").length}</button></div>
@@ -22031,8 +22047,10 @@ function workOrderMatchesSearch(wo, query) {
   const scalarValues = (row) => Object.values(row || {}).filter((value) => value != null && typeof value !== "object").join(" ");
   const text = normalize([
     scalarValues(wo),
-    scalarValues(workOrderAssetDetails(wo)),
-    actualLocationForWorkOrder(wo),
+    scalarValues(wo._searchAsset || workOrderAssetDetails(wo)),
+    wo._searchLocation || actualLocationForWorkOrder(wo),
+    ...[wo.wo_date, workOrderClosingDate(wo), wo.void_date].filter(Boolean).map(formatDisplayDate),
+    money(repairPartsTotal(wo)), money(repairLaborTotal(wo)), money(repairTotal(wo)), repairLaborHours(wo).toFixed(2),
     ...(wo._issues || []).map(scalarValues),
     ...(wo._parts || []).map(scalarValues),
     ...(wo._labor || []).map(scalarValues),
@@ -22046,7 +22064,9 @@ function renderFilteredRepairs() {
   const tab = $("repairTableHost")?.dataset.tab || "open";
   const q = ($("repairSearch")?.value || "").toLowerCase();
   const rows = repairRowsByTab(tab).filter((wo) => workOrderMatchesSearch(wo, q));
-  $("repairTableHost").innerHTML = repairTableHtml(rows, tab);
+  const otherMatches = q && !rows.length ? currentRows.filter(wo => workOrderMatchesSearch(wo,q)).length : 0;
+  $("repairTableHost").innerHTML = (otherMatches ? '<div class="notice">No matches in this tab. ' + otherMatches + ' matching work order(s) are available in <button type="button" id="repairSearchAllTabs">All Work Orders</button>.</div>' : '') + repairTableHtml(rows, tab);
+  if ($('repairSearchAllTabs')) $('repairSearchAllTabs').onclick = () => document.querySelector('[data-repair-tab="all"]')?.click();
   bindRepairRows();
   const nextWrap = $("repairTableHost")?.querySelector(".table-wrap");
   if (previousView && nextWrap) restoreTableViewState(nextWrap, previousView);
