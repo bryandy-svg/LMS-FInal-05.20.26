@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const {functions}=require('../source.cjs');
+const c=vm.createContext({});vm.runInContext(functions(['salesPartReservationRows']),c);
+const orders=[{id:'a',order_no:'SO-1036',status:'Reserved'},{id:'b',order_no:'SO-1073',status:'Reserved'},{id:'c',status:'Void'},{id:'d',status:'Invoiced'}];
+const lines=[{order_id:'a',sku:'NAPA46',issued_qty:1,shipped_qty:0},{order_id:'b',sku:'napa46',issued_qty:3,shipped_qty:0},{order_id:'c',sku:'NAPA46',issued_qty:8,shipped_qty:0},{order_id:'d',sku:'NAPA46',issued_qty:2,shipped_qty:2},{order_id:'a',sku:'OTHER',issued_qty:9}];
+const rows=c.salesPartReservationRows(' NAPA46 ',orders,lines);
+assert.equal(rows.length,2);assert.equal(rows.reduce((sum,r)=>sum+r.reserved,0),4);
+const source=fs.readFileSync('supabase-app/app.js','utf8');
+const start=source.indexOf('const refreshReservedPreview =');const code=source.slice(start,source.indexOf('\n    const refreshAmount',start));
+const button={};const cell={querySelector:()=>button};const row={dataset:{issuedQty:'0',shippedQty:'0'},querySelector:()=>cell};
+const context=vm.createContext({tr:row,resolveProductLookup:()=>({id:'p',sku:'NAPA46',qty:4}),skuInput:{value:'NAPA46'},esc:String,showSalesPartReservations:()=>{}});
+vm.runInContext(code+'\nrefreshReservedPreview();',context);
+assert.match(cell.innerHTML,/^0<br>/,'On-hand stock must not fabricate a saved reservation');assert.equal(row.dataset.issuedQty,'0');
+row.dataset.issuedQty='2';vm.runInContext('refreshReservedPreview();',context);assert.match(cell.innerHTML,/^2<br>/);
+assert.equal(typeof button.onclick,'function');
+console.log('PASS saved ISS remains authoritative; active reservation breakdown excludes void and shipped stock');
