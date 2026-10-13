@@ -20346,11 +20346,40 @@ async function salesReservationShortages(orderNo, lines = []) {
   return availability.filter((line) => Math.max(0, Number(line.qty || 0) - Number(line.shipped_qty || 0)) > Number(line.available || 0));
 }
 
-async function salesReservationAvailability(orderNo, lines = []) {
-  const [orders, savedLines] = await Promise.all([getAll("sales_orders"), getAll("sales_order_lines")]);
+// Fresh scoped reads: stock and reservations must not come from the view cache.
+async function salesDeliveryRows(table, column, values, columns = "*") {
+  const unique = [...new Set(values.filter(Boolean))];
+  const groups = column === "sku" ? unique.map(value => [value]) : Array.from({ length: Math.ceil(unique.length / 100) }, (_, i) => unique.slice(i * 100, i * 100 + 100));
+  const results = await Promise.all(groups.map(async group => {
+    const rows = [];
+    for (let offset = 0; ; offset += 500) {
+      let query = supabase.from(table).select(columns);
+      query = column === "sku" ? query.ilike(column, group[0].replace(/[\\%_]/g, value => "\\" + value)) : query.in(column, group);
+      const { data, error } = await query.order("id").range(offset, offset + 499);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if ((data || []).length < 500) return rows;
+    }
+  }));
+  return [...new Map(results.flat().map(row => [row.id, row])).values()];
+}
+
+async function loadSalesDeliveryContext(lines = []) {
+  const skus = lines.map(line => String(line.sku || "").trim());
+  const [byId, bySku, savedLines] = await Promise.all([
+    salesDeliveryRows("products", "id", lines.map(line => line.product_id)),
+    salesDeliveryRows("products", "sku", skus),
+    salesDeliveryRows("sales_order_lines", "sku", skus, "id,order_id,sku,issued_qty,shipped_qty"),
+  ]);
+  const orders = await salesDeliveryRows("sales_orders", "id", savedLines.map(line => line.order_id), "id,order_no,status");
+  return { products: [...new Map([...bySku, ...byId].map(row => [row.id, row])).values()], orders, savedLines };
+}
+
+async function salesReservationAvailability(orderNo, lines = [], context = null) {
+  const { orders, savedLines, products } = context || await loadSalesDeliveryContext(lines);
   const activeOrderIds = new Set(orders.filter((order) => order.order_no !== orderNo && !/fulfilled|delivered|paid|void|reversed|cancel/i.test(order.status || "")).map((order) => String(order.id || "")));
   return (lines || []).map((line) => {
-    const product = (productMeta.products || []).find((row) => row.sku === line.sku);
+    const product = products.find((row) => String(row.sku || "").trim().toLowerCase() === String(line.sku || "").trim().toLowerCase());
     const reservedElsewhere = savedLines.filter((saved) => activeOrderIds.has(String(saved.order_id || "")) && String(saved.sku || "").trim().toLowerCase() === String(line.sku || "").trim().toLowerCase()).reduce((sum, saved) => sum + Math.max(0, Number(saved.issued_qty || 0) - Number(saved.shipped_qty || 0)), 0);
     const available = Math.max(0, Number(product?.qty || 0) - reservedElsewhere);
     return { ...line, available, reservedElsewhere };
@@ -20847,9 +20876,9 @@ async function issueSalesOrder(orderNo) {
   const order = currentRows.find((row) => row.order_no === orderNo);
   if (!order || /void|reversed|cancelled/i.test(order.status || "")) return;
   if (String(order.status || "").toLowerCase() === "quotation") return alert("Quotation cannot be issued. Convert or approve it first.");
-  const products = await getAll("products");
-  productMeta.products = products;
-  const reservationAvailability = await salesReservationAvailability(orderNo, order._lines || []);
+  const context = await loadSalesDeliveryContext(order._lines || []);
+  const products = context.products;
+  const reservationAvailability = await salesReservationAvailability(orderNo, order._lines || [], context);
   const availabilityBySku = new Map(reservationAvailability.map((line) => [String(line.sku || "").trim().toLowerCase(), line]));
   const rows = (order._lines || []).map((line, index) => {
     const product = products.find((item) => item.id === line.product_id || String(item.sku || "").toLowerCase() === String(line.sku || "").toLowerCase()) || {};
