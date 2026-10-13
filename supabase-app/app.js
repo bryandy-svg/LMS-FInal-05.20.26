@@ -19589,7 +19589,7 @@ function setSalesOrderModalReadOnly(order) {
   body.querySelectorAll("button").forEach((button) => {
     // Reference links remain available so the completed order can still be
     // traced to its related vendor purchase orders.
-    if (!button.matches("[data-linked-sales-po]")) button.disabled = true;
+    if (!button.matches("[data-linked-sales-po], [data-sales-reservations]")) button.disabled = true;
   });
   ["salesOrderInvoiceModalBtn", "salesOrderCreatePoModalBtn", "salesOrderSaveOnlyBtn", "modalSave"].forEach((id) => {
     const button = document.getElementById(id);
@@ -19889,14 +19889,12 @@ function wireSalesOrderLinePricing() {
         tr.dataset.issuedQty = "0";
         return;
       }
-      const ordered = Math.max(0, Number(qtyInput?.value || 0));
       const shipped = Math.max(0, Number(tr.dataset.shippedQty || 0));
       const existingIssued = Math.max(shipped, Number(tr.dataset.issuedQty || 0));
-      const existingOutstanding = Math.max(0, existingIssued - shipped);
-      const availableForThisOrder = Math.max(0, Number(product.available_qty ?? product.qty ?? 0) + existingOutstanding);
-      const previewIssued = shipped + Math.min(Math.max(0, ordered - shipped), availableForThisOrder);
-      issuedCell.textContent = String(previewIssued);
-      tr.dataset.issuedQty = String(previewIssued);
+      // ISS is persisted reservation history, never an estimate from on-hand stock.
+      issuedCell.innerHTML = `${esc(existingIssued)}<br><button type="button" class="linkbtn" data-sales-reservations>View reservations</button>`;
+      issuedCell.title = "Saved reserved quantity (ISS). Save the order to reserve available stock; other orders may already hold it.";
+      issuedCell.querySelector('[data-sales-reservations]').onclick = () => showSalesPartReservations(product.sku);
     };
     const refreshAmount = () => {
       const amountCell = tr.querySelector("[data-sales-amount]");
@@ -20357,6 +20355,30 @@ async function salesReservationAvailability(orderNo, lines = []) {
     const available = Math.max(0, Number(product?.qty || 0) - reservedElsewhere);
     return { ...line, available, reservedElsewhere };
   });
+}
+
+function salesPartReservationRows(sku, orders = [], lines = []) {
+  const active = new Map(orders.filter(order => !/fulfilled|delivered|paid|void|reversed|cancel/i.test(order.status || "")).map(order => [String(order.id), order]));
+  return lines.filter(line => String(line.sku || "").trim().toLowerCase() === String(sku || "").trim().toLowerCase() && active.has(String(line.order_id)))
+    .map(line => ({ ...active.get(String(line.order_id)), reserved: Math.max(0, Number(line.issued_qty || 0) - Number(line.shipped_qty || 0)) }))
+    .filter(row => row.reserved > 0);
+}
+
+async function showSalesPartReservations(sku) {
+  const dialog = document.createElement('dialog');
+  dialog.style.cssText = 'width:min(760px,92vw);max-height:85vh;overflow:auto;border:1px solid #cbd5e1;border-radius:12px;padding:24px';
+  dialog.innerHTML = `<h2>${esc(sku)} — Stock reservations</h2><div data-reservation-content>Loading saved reservations…</div><button type="button" data-reservation-close>Close</button>`;
+  document.body.append(dialog); dialog.showModal();
+  dialog.querySelector('[data-reservation-close]').onclick = () => { dialog.close(); dialog.remove(); };
+  dialog.addEventListener('cancel', () => dialog.remove());
+  try {
+    const [orders, lines, products] = await Promise.all([getAll('sales_orders'), getAll('sales_order_lines'), getAll('products')]);
+    if (!dialog.isConnected) return;
+    const rows = salesPartReservationRows(sku, orders, lines);
+    const product = products.find(row => String(row.sku || '').trim().toLowerCase() === String(sku || '').trim().toLowerCase());
+    const reserved = rows.reduce((sum, row) => sum + row.reserved, 0), onHand = Number(product?.qty || 0);
+    dialog.querySelector('[data-reservation-content]').innerHTML = `<p><strong>On hand:</strong> ${esc(onHand)} · <strong>Reserved:</strong> ${esc(reserved)} · <strong>Free available:</strong> ${esc(Math.max(0, onHand - reserved))}</p><div class="table-wrap"><table class="line-table"><thead><tr><th>Sales order</th><th>Date</th><th>Customer</th><th>Status</th><th>Reserved</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.order_no)}</td><td>${esc(formatDisplayDate(row.order_date))}</td><td>${esc(row.customer)}</td><td>${esc(row.status)}</td><td>${esc(row.reserved)}</td></tr>`).join('') || '<tr><td colspan="5">No active reservations.</td></tr>'}</tbody></table></div><p>ISS shows saved reservations. Reserved stock stays on hand until shipped or invoiced. Review older orders before releasing or changing their reservations.</p>`;
+  } catch (error) { if (dialog.isConnected) dialog.querySelector('[data-reservation-content]').textContent = error.message || String(error); }
 }
 
 async function salesReorderCandidates(sourceNo, lines = [], { includeAllLines = false } = {}) {
@@ -20960,7 +20982,7 @@ function confirmSalesOrderInvoiceDraft(order, billableLines = [], previousInvoic
           ${productInput("Invoice date", "draft_invoice_date", today())}
         </div>
         <div class="table-wrap"><table class="line-table"><thead><tr><th>SKU</th><th>Product / Description</th><th class="num">SHP to Invoice</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}${adjustments}<tr class="total-row"><td colspan="4" class="num"><strong>Draft Invoice Total</strong></td><td class="num"><strong>${money(total)}</strong></td></tr></tbody></table></div>
-        <p class="notice"><strong>Control:</strong> Only shipped quantities not previously invoiced are included. Confirming will not deduct inventory or SHP again.</p>
+        <p class="notice"><strong>Control:</strong> Only saved reserved quantities (ISS) not previously invoiced are included. Confirming ships any unshipped quantities and deducts their inventory; quantities already shipped are not deducted again. Unreserved parts remain on the Sales Order.</p>
       </section>`;
     $("modalSave").style.display = "";
     $("modalSave").textContent = "Confirm & Create Invoice";
