@@ -1,7 +1,8 @@
 {
   "files": {
     "api/create-user.js": "b4bf30e8d778af1bd4360ba86fc7b713621df82410eb1a445aac6ac65a869e98",
-    "api/email.js": "3836805962a5fa7353c47fa779470830dc1bcbcc7300727bc3b6051cd5179603",
+    "api/email-callback.js": "e3c4bfba3b010793f837082d86ee47aa54a79dd2744ff15b0e27fd9ce66c75d4",
+    "api/email.js": "41f8fb11afb888aec74edcde2410b273407197357a67f5463606ede24fb85a4e",
     "api/share-document.js": "3de2f140862a9e49645a9f7efa9ad84260474d42c77cde6e49ac09bbf28b198d",
     "package.json": "8998595478b3fc67eb2182c5ed6a69e668367d1992bfa36c8d914aaddaa943a2",
     "scripts/build-vercel.cjs": "83505257b87116162e4cde3b953d154a79da5ac0cc236f2eea46cb28ee4c605e",
@@ -82,7 +83,7 @@
     "tests/regression/closed-work-order-receiving.cjs": "f6f469e3127d522a7d320d1d3620901fac174203ed1264ea6dd66d54f6793a0e",
     "tests/regression/column-order-idempotence.cjs": "0b6e16daa6c6ad7dc831484ac194dd6808d220a93a22cfe3491bd0d1da043c8c",
     "tests/regression/compact-workspace-state.cjs": "c1ff0bf7525dd8173447849a5ece14071c32ea53a2582cb0f16fa201b5b8dda9",
-    "tests/regression/connected-email.cjs": "46a6c6d31b785e9248de2149147aefe472c9b8d4ff6e78d4264427ef808bd343",
+    "tests/regression/connected-email.cjs": "e1bf95cddee7f4207ee1738c604d1e8cb4803ee2b5a2392b8159f7d4516fd9ef",
     "tests/regression/consumed-inventory-cost.cjs": "3cc3010ef2cd7a642870cfbfed3754f4574ff828176186cce61c82caeffa71eb",
     "tests/regression/credit-card-settlement.cjs": "abc57d8a8ec9b2d4aecdb4bcaa56a2182460565f3a94e81085e9bdb66e5b5812",
     "tests/regression/dispatch-loading.cjs": "da5f997d1d5cb5e8ba05caa194c391ae0eceef13baf6255a179c37bbab72df27",
