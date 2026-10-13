@@ -1,4 +1,5 @@
 import { mountInsights } from "./module-insights.mjs";
+import { mountEmailDelivery, openEmailSettings, rememberEmailPdf } from "./connected-email.mjs";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./supabase-config.js";
 
@@ -1018,6 +1019,7 @@ function bindChrome() {
   setupThemeToggle();
   loadRememberedLogin();
   $("changePasswordBtn").onclick = openChangePasswordModal;
+  $("connectedEmailBtn").onclick = () => openEmailSettings(authenticatedAppFetch);
   $("mobileChangePasswordBtn").onclick = openChangePasswordModal;
   $("logoutBtn").onclick = logout;
   $("refreshBtn").onclick = () => { invalidateViewReads(); return loadView(currentView); };
@@ -18217,6 +18219,7 @@ async function createPublicPdfDownloadLink({ documentType, reference, fileName, 
     label: promptLabel || `Download ${reference}`,
     file: fileName,
   }).toString();
+  rememberEmailPdf(page.toString(), fileName, fileBase64);
   return page.toString();
 }
 
@@ -37327,9 +37330,11 @@ async function openTruckingTicketEmail(ticketNos = []) {
       <label class="field wide">Message<textarea id="truckingTicketEmailBody">${esc(body)}</textarea></label>
     </div>
     <div id="truckingTicketEmailValidation" class="notice" hidden></div>
-    <p class="notice">The formal message lists the selected ticket references without document links. You may save and attach the PDF using <strong>View Ticket / PDF</strong>. Customer-facing tickets do not show internal billing details.</p>`;
+    <p class="notice">Save the ticket PDF using <strong>View Ticket / PDF</strong>, then attach it below when sending directly. Customer-facing tickets do not show internal billing details.</p>`;
   $("modalSave").style.display = "";
+  $("modalSave").disabled = false;
   $("modalSave").textContent = "Open Email Draft";
+  const delivery = mountEmailDelivery({ host: $("modalBody"), saveButton: $("modalSave"), fetcher: authenticatedAppFetch, messageText: body });
   $("modalSave").onclick = async () => {
     const email = $("truckingTicketEmailTo")?.value.trim() || "";
     const cc = $("truckingTicketEmailCc")?.value.trim() || "";
@@ -37346,6 +37351,7 @@ async function openTruckingTicketEmail(ticketNos = []) {
     }
     const parameters = new URLSearchParams();
     if (emailRecipients(cc).length) parameters.set("cc", emailRecipients(cc).join(","));
+    if (await delivery.send({ to: email, cc, subject: emailSubject, text: emailBody })) return;
     parameters.set("subject", emailSubject);
     parameters.set("body", emailBody);
     window.location.href = `mailto:${mailtoRecipients(email)}?${parameters.toString().replace(/\+/g, "%20")}`;
@@ -40102,10 +40108,12 @@ function openEmailDraftPrompt({ title, message, email = "", cc = "", subject = "
         <label class="field wide">Message<textarea id="emailDraftBody" class="email-preview">${esc(body || "")}</textarea></label>
       </div>
       <div id="emailDraftValidation" class="notice" hidden></div>
-      <p class="notice">This uses the email account already set up on this computer. Review the draft, then click Send in your email app.</p>
+      <p class="notice">Review your message and choose a connected mailbox to send directly, or open a draft in your email app.</p>
     </div>`;
   $("modalSave").style.display = "";
+  $("modalSave").disabled = false;
   $("modalSave").textContent = "Open Email Draft";
+  const delivery = mountEmailDelivery({ host: $("modalBody"), saveButton: $("modalSave"), fetcher: authenticatedAppFetch, messageText: body });
   $("modalSave").onclick = async () => {
     const toValue = String($("emailDraftTo")?.value || "").trim();
     const ccValue = String($("emailDraftCc")?.value || "").trim();
@@ -40124,6 +40132,7 @@ function openEmailDraftPrompt({ title, message, email = "", cc = "", subject = "
     } catch (error) {
       return showValidation(error.message || String(error));
     }
+    if (await delivery.send({ to: toValue, cc: ccValue, subject: subjectValue, text: bodyValue })) return;
     const parameters = new URLSearchParams();
     if (emailRecipients(ccValue).length) parameters.set("cc", emailRecipients(ccValue).join(","));
     parameters.set("subject", subjectValue);
