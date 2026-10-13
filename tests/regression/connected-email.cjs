@@ -69,6 +69,7 @@ async function call(action, body, auth='owner', extras={}) {
   const start=await call('connect',{provider:'gmail'});assert.equal(start.statusCode,200);
   assert.match(start.headers['Set-Cookie'],/HttpOnly; Secure; SameSite=Lax/);
   const authorize=new URL(start.data.url);assert.equal(authorize.searchParams.get('code_challenge_method'),'S256');
+  assert.equal(authorize.searchParams.get('redirect_uri'),'https://lmsimports.vercel.app/api/email-callback');
   const cookie=start.headers['Set-Cookie'].split(';')[0];
   const bad=await call('callback',null,'owner',{url:'/api/email?action=callback&code=ok&state=wrong',headers:{cookie}});
   assert.equal(bad.statusCode,401);assert.equal(accounts.length,0);

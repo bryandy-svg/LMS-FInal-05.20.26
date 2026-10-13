@@ -15,7 +15,7 @@ delivery. Sending/Unknown must be checked in Sent Items before a new send reques
 2. Configure Vercel **server-only** environment variables below and redeploy.
    Never put secrets in `supabase-config.js`, source control, or chat.
 3. Register both providers' redirect URL exactly as:
-   `https://lmsimports.vercel.app/api/email?action=callback`
+   `https://lmsimports.vercel.app/api/email-callback`
 4. Each user signs in with their own Microsoft/Google credentials in the provider
    window. LMS never asks for or stores mailbox passwords.
 

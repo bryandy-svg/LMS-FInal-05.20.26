@@ -107,7 +107,7 @@ async function handler(req, res) {
       if (url.searchParams.has('error')) throw fail('Email permission was declined. You can close this window and try again.');
       const code = url.searchParams.get('code');
       if (!code) throw fail('Email sign-in did not return a code.');
-      const tokens = await tokenRequest(state.provider, { grant_type: 'authorization_code', code, redirect_uri: origin() + '/api/email?action=callback', code_verifier: state.verifier });
+      const tokens = await tokenRequest(state.provider, { grant_type: 'authorization_code', code, redirect_uri: origin() + '/api/email-callback', code_verifier: state.verifier });
       const profileUrl = state.provider === 'gmail' ? 'https://openidconnect.googleapis.com/v1/userinfo' : 'https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName';
       const r = await fetch(profileUrl, { headers: { Authorization: 'Bearer ' + tokens.access_token }, signal: AbortSignal.timeout(15000) });
       if (!r.ok) throw fail('Could not identify this mailbox. Reconnect and accept the requested permissions.');
@@ -136,7 +136,7 @@ async function handler(req, res) {
       const state = crypto.randomBytes(32).toString('base64url'), verifier = crypto.randomBytes(48).toString('base64url');
       const cookie = seal({ state, verifier, provider, userId: u.id, expires: Date.now() + 600000 }, 'oauth-state');
       res.setHeader('Set-Cookie', `__Host-lms_email=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);
-      const params = new URLSearchParams({ client_id: c.id, response_type: 'code', redirect_uri: origin() + '/api/email?action=callback', scope: c.scope, state, code_challenge: sha(verifier), code_challenge_method: 'S256', prompt: 'consent' });
+      const params = new URLSearchParams({ client_id: c.id, response_type: 'code', redirect_uri: origin() + '/api/email-callback', scope: c.scope, state, code_challenge: sha(verifier), code_challenge_method: 'S256', prompt: 'consent' });
       if (provider === 'gmail') params.set('access_type', 'offline');
       return reply(res, 200, { url: c.authorize + '?' + params });
     }
