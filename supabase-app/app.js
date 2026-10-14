@@ -14735,6 +14735,7 @@ async function renderPurchasingView() {
     await Promise.allSettled(statusCorrections.map((row) => supabase.from("purchase_orders").update({ status: row.status }).eq("id", row.id)));
   }
   productMeta.vendors = vendors.map((v) => v.name).filter(Boolean).sort();
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((v) => v.name).filter(Boolean).sort();
   productMeta.products = products.sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
   productMeta.warehouses = warehouses.map((v) => v.name).filter(Boolean).sort();
@@ -18615,7 +18616,7 @@ function wireQuotationLinePricing() {
       const unitCell = tr.querySelector("[data-quote-unit]");
       if (onHandCell) onHandCell.textContent = product.qty ?? "";
       if (unitCell) unitCell.textContent = product.unit || "";
-      if (priceInput) priceInput.value = product.selling_price ?? 0;
+      if (priceInput) priceInput.value = customerPartsSellingPrice(product, currentPricingCustomer());
       const costInput = tr.querySelector('[data-quote-line="unit_cost"]');
       if (costInput) costInput.value = product.cost ?? '';
       refreshAmount();
@@ -19247,6 +19248,7 @@ async function renderSalesOrdersView() {
     map.set(sku, Number(map.get(sku) || 0) + Math.max(0, Number(line.issued_qty || 0) - Number(line.shipped_qty || 0)));
     return map;
   }, new Map());
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.products = products.map((product) => {
     const reservedQty = Number(reservedBySku.get(String(product.sku || "").trim().toLowerCase()) || 0);
@@ -19486,6 +19488,7 @@ async function salesOrderLinkedPurchaseOrderMap(orderNo, openingData = null) {
 }
 
 async function openSalesOrderModal(order = null, options = {}) {
+  productMeta.customerRows = await getViewRows("customers");
   await ensureListEditorProducts();
   if (!Array.isArray(productMeta.products)) productMeta.products = await getViewRows("products");
   const readOnly = Boolean(order && (options.forceReadOnly || !salesOrderCanEdit(order)));
@@ -19496,7 +19499,12 @@ async function openSalesOrderModal(order = null, options = {}) {
   const depositDate = depositEntries.find((entry) => entry.reference === order?.deposit_invoice_no && entry.source === "Sales Order Deposit")?.posting_date || order?.order_date || prefill.order_date || today();
   productMeta.pendingSalesPoSource = options.sourcePo || (order?.source_po_no ? { po_no: order.source_po_no } : null);
   const orderNo = order?.order_no || "";
-  const lines = order?._lines?.length ? order._lines : prefill.lines?.length ? prefill.lines : [{ sku: "", product_name: "", qty: 1, price: 0 }];
+  const lines = (order?._lines?.length ? order._lines : prefill.lines?.length ? prefill.lines : [{ sku: "", product_name: "", qty: 1, price: 0 }]).map(line => {
+    const customer = order?.customer || prefill.customer || "";
+    const product = (productMeta.products || []).find(item => item.id === line.product_id || item.sku === line.sku);
+    return !readOnly && !Number(line.invoiced_qty || 0) && !order?.pricing_rate_id && customerPricingValue(customer, "parts_markup_percent") !== null && product
+      ? { ...line, price: customerPartsSellingPrice(product, customer) } : line;
+  });
   const sourcePoNo = order?.source_po_no || options.sourcePo?.po_no || "";
   const initialPaymentMode = order?.payment_mode || prefill.payment_mode || "PO";
   const initialReferenceLabel = paymentReferencePrintLabel(initialPaymentMode);
@@ -19570,6 +19578,14 @@ async function openSalesOrderModal(order = null, options = {}) {
     openPurchaseOrderRecord(po);
   });
   wireSalesOrderLinePricing();
+  if (!readOnly) document.querySelector('[data-product-field="customer"]')?.addEventListener("change", () => {
+    document.querySelectorAll("#salesLineBody tr").forEach(row => {
+      if (Number(row.dataset.invoicedQty || 0) > 0) return;
+      const product = resolveProductLookup(row.querySelector('[data-sales-line="sku"]')?.value || "");
+      const input = row.querySelector('[data-sales-line="price"]');
+      if (product && input) { input.value = salesPricingRatePrice(product, selectedSalesPricingRate()); input.dispatchEvent(new Event("input", { bubbles: true })); }
+    });
+  });
   if (readOnly) setSalesOrderModalReadOnly(order);
   if (!order) prepareOrderReference("order_no", () => orderReferencePreview("so", "SO-", "sales_orders", "order_no"));
 }
@@ -19647,12 +19663,32 @@ function bindPaymentReferenceField({ paymentSelector, referenceSelector, labelId
 
 function salesOrderPricingRateField(selectedId = "") {
   const rates = (productMeta.salesPricingRates || []).filter((rate) => rate.status !== "Inactive" || String(rate.id) === String(selectedId));
-  return `<div class="field"><label>Selling price rate (optional)</label><div class="sales-rate-selector"><select data-product-field="pricing_rate_id" id="salesPricingRateSelect"><option value="">Blank - Product Master / manual price</option>${rates.map((rate) => `<option value="${esc(rate.id)}" ${String(rate.id) === String(selectedId) ? "selected" : ""}>${esc(salesPricingRateLabel(rate))} (${Number(rate.markup_percent || 0).toFixed(2)}% of cost)</option>`).join("")}</select><button type="button" class="rowbtn" id="applySalesPricingRateBtn">Apply rate to all lines</button></div><small id="salesPricingRateHelp">${selectedId ? esc((rates.find((rate) => String(rate.id) === String(selectedId)) || {}).description || "Rate multiplies Inventory / FIFO Cost.") : "Optional. Blank leaves the line selling prices unchanged."}</small></div>`;
+  return `<div class="field"><label>Selling price rate (optional)</label><div class="sales-rate-selector"><select data-product-field="pricing_rate_id" id="salesPricingRateSelect"><option value="">Customer default / Product Master</option>${rates.map((rate) => `<option value="${esc(rate.id)}" ${String(rate.id) === String(selectedId) ? "selected" : ""}>${esc(salesPricingRateLabel(rate))} (${Number(rate.markup_percent || 0).toFixed(2)}% of cost)</option>`).join("")}</select><button type="button" class="rowbtn" id="applySalesPricingRateBtn">Apply rate to all lines</button></div><small id="salesPricingRateHelp">${selectedId ? esc((rates.find((rate) => String(rate.id) === String(selectedId)) || {}).description || "Rate multiplies Inventory / FIFO Cost.") : "Uses customer markup when entered; otherwise Product Master selling price."}</small></div>`;
+}
+
+function customerPricingValue(customerName, field) {
+  const value = customerPricingRow(customerName)?.[field];
+  return value != null && String(value).trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function currentPricingCustomer() {
+  return document.querySelector('[data-product-field="bill_to_customer"]')?.value || document.querySelector('[data-product-field="customer"]')?.value || editing?.bill_to_customer || editing?.customer || "";
+}
+
+function customerPartsSellingPrice(product, customerName, cost = salesInventoryUnitCost(product)) {
+  const markup = customerPricingValue(customerName, "parts_markup_percent");
+  return markup === null ? Number(product.selling_price || 0) : Number((Number(cost || 0) * (1 + markup / 100)).toFixed(2));
+}
+
+function customerMechanicRate(customerName, mechanic, fallback = 0) {
+  const rate = customerPricingValue(customerName, "mechanic_hourly_rate");
+  return rate ?? ((productMeta.mechanicsRows || []).find(row => row.name === mechanic)?.hourly_rate ?? fallback);
 }
 
 function selectedSalesPricingRate() {
   const id = document.getElementById("salesPricingRateSelect")?.value || "";
-  return (productMeta.salesPricingRates || []).find((rate) => String(rate.id) === String(id)) || null;
+  const markup = customerPricingValue(currentPricingCustomer(), "parts_markup_percent");
+  return (productMeta.salesPricingRates || []).find((rate) => String(rate.id) === String(id)) || (markup === null ? null : { rate_name: "Customer pricing", markup_percent: 100 + markup });
 }
 
 function applySelectedSalesPricingRate({ notify = true } = {}) {
@@ -21443,6 +21479,7 @@ async function loadEquipmentRentalMeta({ useCache = false } = {}) {
   const readRows = useCache ? getViewRows : getAll;
   const [customers, assets, products, rates] = await Promise.all([readRows("customers"), readRows("assets"), readRows("products"), readRows("equipment_rental_rates")]);
   productMeta.customerRows = customers;
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((row) => row.name).filter(Boolean).sort();
   productMeta.assets = assets;
   productMeta.products = products;
@@ -22018,6 +22055,7 @@ async function renderRepairsView(refreshWo = null) {
   productMeta.outsideFleet = outsideFleet;
   productMeta.mechanicsRows = mechanics;
   productMeta.mechanics = mechanics.map((m) => m.name).filter(Boolean).sort();
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.products = products.sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || "")));
   currentRows = workOrders.sort((a, b) => String(b.wo_date || "").localeCompare(String(a.wo_date || "")));
@@ -23625,8 +23663,9 @@ async function ensureWorkOrderModalMeta() {
       productMeta.mechanics = [];
     }));
   }
-  if (!Array.isArray(productMeta.customers) || !productMeta.customers.length) {
+  if (!Array.isArray(productMeta.customerRows) || !productMeta.customerRows.length) {
     loaders.push(getViewRows("customers").then((rows) => {
+      productMeta.customerRows = rows;
       productMeta.customers = rows.map((c) => c.name).filter(Boolean).sort();
     }).catch(() => { productMeta.customers = []; }));
   }
@@ -23940,7 +23979,7 @@ async function loadWorkOrderEditorRecord(wo) {
 
 async function openWorkOrderEditModal(wo, options = {}) {
   if (!wo) return;
-  [wo] = await Promise.all([loadWorkOrderEditorRecord(wo), ensureListEditorProducts(), ensureWorkOrderModalMeta()]);
+  [wo] = await Promise.all([loadWorkOrderEditorRecord(wo), ensureListEditorProducts(), ensureWorkOrderModalMeta(), getViewRows("customers").then(rows => { productMeta.customerRows = rows; })]);
   const auditReadOnly = Boolean(options.readOnly || wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || ""));
   productMeta.workOrderPartCosts = await loadWorkOrderPartCostContext(wo);
   editing = wo;
@@ -24059,6 +24098,25 @@ async function openWorkOrderEditModal(wo, options = {}) {
   bindAdminPartVoidButtons(wo);
   bindAdminLaborDeleteButtons();
   bindAdminLaborRowControls();
+  if (!auditReadOnly) document.querySelector('[data-product-field="bill_to_customer"]')?.addEventListener("change", () => {
+    const customer = currentPricingCustomer();
+    document.querySelectorAll("#adminPartBody tr").forEach(row => {
+      const cost = row.querySelector('[data-admin-part="unit_cost"]');
+      const markup = row.querySelector('[data-admin-part="markup_percent"]');
+      const price = row.querySelector('[data-admin-part="selling_price"]');
+      const sku = row.querySelector('[data-admin-part="sku"]');
+      const product = resolveProductLookup(sku?.value || "");
+      if (!product || !price) return;
+      if (markup) markup.value = customerPricingValue(customer, "parts_markup_percent") ?? product.markup_percent ?? "";
+      price.value = customerPartsSellingPrice(product, customer, cost?.value ?? product.cost);
+      price.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    document.querySelectorAll("[data-labor-row]").forEach(row => {
+      const mechanic = row.querySelector('[data-labor-field="mechanic"]')?.value || "";
+      const rate = row.querySelector('[data-labor-field="hourly_rate"]');
+      if (rate) { rate.value = customerMechanicRate(customer, mechanic, rate.value); rate.dispatchEvent(new Event("input", { bubbles: true })); }
+    });
+  });
   bindWorkOrderLocationControls();
   if (!auditReadOnly) bindWorkOrderEquipmentTransfer(wo);
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => quickCreateCustomerInOpenModal());
@@ -24848,7 +24906,7 @@ function repairLaborHours(wo) {
 }
 
 function repairLaborTotal(wo) {
-  return (wo._labor || []).reduce((s, l) => s + laborCharge(l), 0);
+  return (wo._labor || []).reduce((s, l) => s + laborCharge({ ...l, hourly_rate: wo.invoice_no ? l.hourly_rate : customerMechanicRate(wo.bill_to_customer || wo.customer, l.mechanic, l.hourly_rate || 0) }), 0);
 }
 
 function repairTotal(wo) {
@@ -24891,8 +24949,7 @@ function laborCharge(labor) {
 }
 
 function workOrderLaborInvoiceLines(labor, fallbackDate = "", customerName = "") {
-  const customerRate = customerPricingRow(customerName)?.mechanic_hourly_rate;
-  const rate = customerRate !== "" && customerRate != null && Number.isFinite(Number(customerRate)) ? Number(customerRate) : Number(labor?.hourly_rate || 0);
+  const rate = Number(customerMechanicRate(customerName, labor?.mechanic, labor?.hourly_rate || 0));
   const regularHours = Number(laborRegularHours(labor).toFixed(2));
   const overtimeHours = Number(laborOvertimeHours(labor).toFixed(2));
   const shiftRange = laborShiftTimeRange(labor);
@@ -25273,7 +25330,10 @@ function workOrderPartOriginPo(part = {}) {
 }
 
 function workOrderPartsAdminEditTable(wo) {
-  const activeParts = (wo._parts || []).filter((part) => !isWorkOrderPartHistory(part));
+  const activeParts = (wo._parts || []).filter((part) => !isWorkOrderPartHistory(part)).map(part => {
+    const markup = customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent");
+    return markup === null || wo.invoice_no ? part : { ...part, markup_percent: markup, selling_price: workOrderPartSellingPrice(part, {}, wo.bill_to_customer || wo.customer) };
+  });
   const voidedParts = (wo._parts || []).filter(isWorkOrderPartHistory);
   const rows = [...activeParts, ...Array.from({ length: Math.max(3, 6 - activeParts.length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
   const heads = ["Issue PDF", "Part / SKU", "Description", "O.H. Qty", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
@@ -25798,8 +25858,9 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
   const poControlled = Boolean(tr.dataset.sourcePo);
   const lookupCost = workOrderPartLookupCost(product, tr.dataset.sourcePo || "");
   if (Number(tr.dataset.originalAccepted || 0) <= 0) set("unit_cost", lookupCost, !replacePricing);
-  set("markup_percent", product.markup_percent ?? "", true);
-  if (!poControlled) set("selling_price", calculatedWorkOrderPartPrice(lookupCost, product.markup_percent, product.selling_price ?? lookupCost), !replacePricing);
+  const customerMarkup = customerPricingValue(currentPricingCustomer(), "parts_markup_percent");
+  set("markup_percent", customerMarkup ?? product.markup_percent ?? "", true);
+  if (!poControlled) set("selling_price", customerPartsSellingPrice(product, currentPricingCustomer(), lookupCost), !replacePricing);
   set("availability", Number(product.qty || 0) > 0 ? "OK" : "Out of stock");
   const status = tr.querySelector('[data-admin-part="status"]');
   if (status && /requested|shortage|needs/i.test(status.value || "")) status.value = Number(product.qty || 0) > 0 ? "Reserved" : "Shortage";
@@ -25873,7 +25934,7 @@ function repairLaborEditTable(wo) {
   const laborRates = (productMeta.laborPricingRates || []).filter((rate) => String(rate.status || "Active").toLowerCase() !== "inactive");
   return `<div class="actions"><button type="button" id="addAdminLaborRowBtn">Add labor entry</button><button type="button" id="addAdminHelperLaborRowBtn">Add helper mechanic hours</button><select id="workOrderLaborRateSelect" aria-label="Work Order labor pricing rate"><option value="">Select labor pricing rate</option>${laborRates.map((rate) => `<option value="${esc(rate.id)}">${esc(laborPricingRateLabel(rate))} - ${Number(rate.hourly_rate || 0).toFixed(2)}% of base cost</option>`).join("")}</select><button type="button" id="applyWorkOrderLaborRateBtn">Apply rate to labor</button></div>
     <datalist id="adminLaborMechanicOptions">${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}"></option>`).join("")}</datalist>
-    <div class="table-wrap"><table class="line-table work-order-labor-edit-table" data-custom-column-order="1"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody id="adminLaborEditRows">${rows.length ? rows.map((l) => repairLaborEditRow(l, l.id, isHelperLabor(l))).join("") : `<tr id="adminLaborEmptyRow"><td colspan="12" class="empty">No labor entries yet. Click Add labor entry to record missed hours.</td></tr>`}</tbody></table></div>
+    <div class="table-wrap"><table class="line-table work-order-labor-edit-table" data-custom-column-order="1"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody id="adminLaborEditRows">${rows.length ? rows.map((l) => repairLaborEditRow(l, l.id, isHelperLabor(l), wo.bill_to_customer || wo.customer || "")).join("") : `<tr id="adminLaborEmptyRow"><td colspan="12" class="empty">No labor entries yet. Click Add labor entry to record missed hours.</td></tr>`}</tbody></table></div>
     <p class="notice">Entries are ordered from newest Clock In to oldest. New labor entries are added at the top. Net Hours equals Clock In to Clock Out less Break. Upload work photos on the matching dated labor row; all selected photos are accepted and compressed. Keep Include in PDF checked for photos that should appear at the bottom of the PDF Draft and Invoice PDF; uncheck it to keep the photo saved internally without printing it. New photos are included by default.</p>`;
 }
 
@@ -25972,7 +26033,8 @@ function bindLaborTimeClipboard(row) {
 }
 
 
-function repairLaborEditRow(labor, rowKey = labor.id || `new-${Date.now()}`, helper = isHelperLabor(labor)) {
+function repairLaborEditRow(labor, rowKey = labor.id || `new-${Date.now()}`, helper = isHelperLabor(labor), customerName = currentPricingCustomer()) {
+  if (!editing?.invoice_no) labor = { ...labor, hourly_rate: customerMechanicRate(customerName, labor.mechanic, labor.hourly_rate || 0) };
   const displayedHours = labor.clock_in && labor.clock_out ? laborHours(labor).toFixed(2) : "";
   const registeredMechanic = resolveRegisteredMechanic(labor.mechanic || "");
   const baseHourlyRate = registeredMechanic ? Number(currentMechanicRate(registeredMechanic) || labor.hourly_rate || 0) : Number(labor.hourly_rate || 0);
@@ -26070,7 +26132,7 @@ function bindAdminLaborRowControls() {
       if (registered && rate) {
         const baseRate = Number(currentMechanicRate(registered) || 0);
         rate.dataset.baseHourlyRate = String(baseRate);
-        rate.value = baseRate.toFixed(2);
+        rate.value = Number(customerMechanicRate(currentPricingCustomer(), registered, baseRate)).toFixed(2);
       }
       updateCharge();
     };
@@ -28086,6 +28148,7 @@ async function openCustomerPaymentModal(invoice = null, payment = null) {
   editing = payment;
   if (!productMeta.invoiceRows) {
     const [payments, invoices, lines, customers] = await Promise.all([getAll("customer_payments"), getAll("invoices"), getAll("invoice_lines"), getAll("customers")]);
+    productMeta.customerRows = customers;
     productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
     productMeta.invoiceRows = invoices.map((inv) => ({ ...inv, _lines: lines.filter((line) => line.invoice_id === inv.id), _paid: payments.filter((p) => p.invoice_no === inv.invoice_no && !/void|reversed/i.test(p.status || "")).reduce((s, p) => s + Number(p.amount || 0), 0) }));
   }
@@ -30174,6 +30237,7 @@ async function renderEquipmentRepairQueueView() {
   });
   productMeta.locations = locations.map((l) => l.name).filter(Boolean).sort();
   productMeta.assetTypes = types.map((t) => t.name).filter(Boolean).sort();
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   currentRows = productMeta.assets.filter((asset) => asset._openWo || asset._completedWo || (/repair|subject/i.test(asset.status || "") && !repairQueueArchived(asset)));
   $("content").innerHTML = `
@@ -30325,6 +30389,7 @@ async function renderEquipmentRepairQuotesView() {
     getViewRows("assets").catch(() => []),
     getViewRows("outside_customer_fleet").catch(() => []),
   ]);
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((row) => row.name).filter(Boolean).sort();
   productMeta.assets = assets;
   productMeta.outsideFleet = outsideFleet;
@@ -30802,6 +30867,7 @@ async function renderOutsideCustomerFleetView() {
     getViewRows("work_orders"),
     getViewRows("customers"),
   ]);
+  productMeta.customerRows = customers;
   productMeta.customers = customers.map((c) => c.name).filter(Boolean).sort();
   productMeta.outsideFleet = rows;
   productMeta.workOrders = workOrders;
