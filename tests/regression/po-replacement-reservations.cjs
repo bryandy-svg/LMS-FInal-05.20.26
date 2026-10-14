@@ -29,3 +29,7 @@ vm.runInContext(functions(['purchaseOrderLineForReceipt','routePurchaseReceiptDe
 const routed=routing.routePurchaseReceiptDestinationQuantities({_lines:[{sku:'GAL1010',product_id:'a',destination_qty:0},{sku:'84115',product_id:'b',destination_qty:3}]},[{sku:'GAL1010',product_id:'a',received_qty:1},{sku:'84115',product_id:'b',received_qty:5}],[]);
 assert.equal(routed[0].destination_received_qty,0);assert.equal(routed[0].stock_received_qty,1);
 assert.equal(routed[1].destination_received_qty,3);assert.equal(routed[1].stock_received_qty,2);
+const landedRows=c.planWorkOrderPoReservations(po,[{...lines[0],unit_cost:4080.98,landed_unit_cost:5401.13}],[],[wo]);
+assert.equal(landedRows[0].unit_cost,5401.13,'New PO reservations carry landed cost');
+const acceptedLanded={...landedRows[0],accepted_qty:1,unit_cost:5000,status:'Accepted'};
+assert.equal(c.planWorkOrderPoReservations(po,[{...lines[0],landed_unit_cost:5401.13}],[acceptedLanded],[wo])[0].unit_cost,5000,'Accepted historical cost is preserved');
