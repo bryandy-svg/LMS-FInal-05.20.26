@@ -91,5 +91,6 @@
   "sales-delivery-loading",
   "beginning-ar-settlement",
   "work-order-editor-parts",
-  "customer-pricing-carryover"
+  "customer-pricing-carryover",
+  "transaction-available-stock"
 ]

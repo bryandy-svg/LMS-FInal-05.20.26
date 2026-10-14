@@ -2,7 +2,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const source=fs.readFileSync('supabase-app/app.js','utf8');
 const extract=n=>{const i=source.search(new RegExp('^function '+n+'\\(','m'));assert(i>=0);const t=source.slice(i);return t.slice(0,t.indexOf('\n}',t.indexOf('{'))+2);};
 const p={id:'p',sku:'SUBLET',cost:999,qty:8};
-const c=vm.createContext({productMeta:{workOrderPartCosts:{woNo:'W1',orders:[{id:'po',po_no:'PO-1',po_date:'2026-09-29'}],lines:[{po_id:'po',wo_no:'W1',product_id:'p',unit_cost:145.26}],movements:[{product_id:'p',qty:2,unit_fifo_cost:50},{product_id:'p',qty:2,unit_fifo_cost:70}]}},customerPricingValue:()=>null,currentPricingCustomer:()=>"",roundCurrency:n=>Math.round(n*100)/100,syncWorkOrderPartIssuanceCheckbox:()=>{},resolveProductLookup:()=>p,calculatedWorkOrderPartPrice:cost=>cost*1.4,isCommittedProductLookup:()=>false});
+const c=vm.createContext({productMeta:{workOrderPartCosts:{woNo:'W1',orders:[{id:'po',po_no:'PO-1',po_date:'2026-09-29'}],lines:[{po_id:'po',wo_no:'W1',product_id:'p',unit_cost:145.26}],movements:[{product_id:'p',qty:2,unit_fifo_cost:50},{product_id:'p',qty:2,unit_fifo_cost:70}]}},transactionAvailableStock:p=>p.qty,customerPricingValue:()=>null,currentPricingCustomer:()=>"",roundCurrency:n=>Math.round(n*100)/100,syncWorkOrderPartIssuanceCheckbox:()=>{},resolveProductLookup:()=>p,calculatedWorkOrderPartPrice:cost=>cost*1.4,isCommittedProductLookup:()=>false});
 for(const n of ['productFifoCost','workOrderPartLookupCost','syncAdminPartAcceptedStatus','refreshAdminPartEditLookup'])vm.runInContext(extract(n),c);
 assert.equal(c.workOrderPartLookupCost(p),145.26);
 assert.equal(c.workOrderPartLookupCost(p,'PO-1'),145.26);
