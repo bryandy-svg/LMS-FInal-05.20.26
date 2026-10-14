@@ -7864,7 +7864,7 @@ async function validateArSettlementAllocations(allocations, postingDate) {
   for (let i = 0; i < numbers.length; i += 100) {
     const batch = numbers.slice(i, i + 100);
     const results = await Promise.all([
-      supabase.from("invoices").select("invoice_no,customer,status").in("invoice_no", batch),
+      supabase.from("invoices").select("id,invoice_no,customer,status,type,invoice_date,invoice_lines(qty,rate)").in("invoice_no", batch),
       supabase.from("general_ledger").select("id,invoice_no,reference,customer,account,debit,credit,posting_date,entry_date,status").in("invoice_no", batch),
       supabase.from("general_ledger").select("id,invoice_no,reference,customer,account,debit,credit,posting_date,entry_date,status").in("reference", batch),
     ]);
@@ -7872,14 +7872,25 @@ async function validateArSettlementAllocations(allocations, postingDate) {
     invoices.push(...(results[0].data || []));
     results.slice(1).flatMap(result => result.data || []).forEach(row => ledger.set(row.id, row));
   }
+  const beginningNumbers = invoices.filter(invoice => /^beginning ar$/i.test(invoice.type || "")).map(invoice => invoice.invoice_no);
+  const beginningPayments = beginningNumbers.length ? await salesDeliveryRows("customer_payments", "invoice_no", beginningNumbers) : [];
   for (const item of allocations) {
     const invoice = invoices.find(row => row.invoice_no === item.row.invoice_no);
     if (!invoice || /void|revers|cancel|written off|paid/i.test(invoice.status || "")) throw new Error(item.row.invoice_no + " is no longer an open invoice. Refresh before posting.");
     const key = value => canonicalPartyName(value || "").trim().toLowerCase();
     if (key(invoice.customer) !== key(item.row.customer)) throw new Error(item.row.invoice_no + " customer changed. Refresh before posting.");
     const support = [...ledger.values()].filter(row => (row.invoice_no === invoice.invoice_no || (!row.invoice_no && row.reference === invoice.invoice_no)) && key(row.customer) === key(invoice.customer) && subledgerAccountMatches(row.account, "Accounts Receivable") && !/draft|unposted/i.test(row.status || "") && String(row.posting_date || row.entry_date || "").slice(0, 10) <= postingDate);
-    const balance = roundCurrency(support.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
-    if (!support.length || item.amount > balance + 0.005) throw new Error(invoice.invoice_no + " has only " + money(balance) + " posted Accounts Receivable available on " + postingDate + ". Review its reversals, payments, and correction dates before posting this settlement.");
+    const beginning = /^beginning ar$/i.test(invoice.type || "");
+    const opening = beginning && invoice.invoice_date && invoice.invoice_date <= postingDate
+      ? (invoice.invoice_lines || []).reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.rate || 0), 0) : 0;
+    // Beginning detail allocates the Trial Balance control total; it has no per-invoice opening GL debit.
+    let balance = roundCurrency(opening + support.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
+    if (beginning) {
+      const paid = beginningPayments.filter(row => row.invoice_no === invoice.invoice_no && !/void|revers|cancel/i.test(row.status || ""))
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      balance = Math.min(balance, roundCurrency(opening - paid));
+    }
+    if ((!beginning && !support.length) || item.amount > balance + 0.005) throw new Error(invoice.invoice_no + " has only " + money(balance) + " posted Accounts Receivable available on " + postingDate + ". Review its reversals, payments, and correction dates before posting this settlement.");
   }
 }
 
@@ -19892,7 +19903,7 @@ function wireSalesOrderLinePricing() {
       const shipped = Math.max(0, Number(tr.dataset.shippedQty || 0));
       const existingIssued = Math.max(shipped, Number(tr.dataset.issuedQty || 0));
       // ISS is persisted reservation history, never an estimate from on-hand stock.
-      issuedCell.innerHTML = `${esc(existingIssued)}<br><button type="button" class="linkbtn" data-sales-reservations>View reservations</button>`;
+      issuedCell.innerHTML = `${esc(existingIssued)}<br><button type="button" class="linkbtn" data-sales-reservations title="View reservations" aria-label="View reservations">R</button>`;
       issuedCell.title = "Saved reserved quantity (ISS). Save the order to reserve available stock; other orders may already hold it.";
       issuedCell.querySelector('[data-sales-reservations]').onclick = () => showSalesPartReservations(product.sku);
     };
@@ -20371,7 +20382,7 @@ async function loadSalesDeliveryContext(lines = []) {
     salesDeliveryRows("products", "sku", skus),
     salesDeliveryRows("sales_order_lines", "sku", skus, "id,order_id,sku,issued_qty,shipped_qty"),
   ]);
-  const orders = await salesDeliveryRows("sales_orders", "id", savedLines.map(line => line.order_id), "id,order_no,status");
+  const orders = await salesDeliveryRows("sales_orders", "id", savedLines.map(line => line.order_id), "id,order_no,status,order_date,customer");
   return { products: [...new Map([...bySku, ...byId].map(row => [row.id, row])).values()], orders, savedLines };
 }
 
@@ -20401,7 +20412,7 @@ async function showSalesPartReservations(sku) {
   dialog.querySelector('[data-reservation-close]').onclick = () => { dialog.close(); dialog.remove(); };
   dialog.addEventListener('cancel', () => dialog.remove());
   try {
-    const [orders, lines, products] = await Promise.all([getAll('sales_orders'), getAll('sales_order_lines'), getAll('products')]);
+    const { orders, savedLines: lines, products } = await loadSalesDeliveryContext([{ sku }]);
     if (!dialog.isConnected) return;
     const rows = salesPartReservationRows(sku, orders, lines);
     const product = products.find(row => String(row.sku || '').trim().toLowerCase() === String(sku || '').trim().toLowerCase());
