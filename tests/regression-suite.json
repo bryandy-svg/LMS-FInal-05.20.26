@@ -94,5 +94,6 @@
   "customer-pricing-carryover",
   "transaction-available-stock",
   "parts-bin-display",
-  "work-order-reopen-cache"
+  "work-order-reopen-cache",
+  "repair-report-multifilter"
 ]
