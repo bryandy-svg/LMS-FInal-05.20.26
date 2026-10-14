@@ -157,11 +157,12 @@ window.addEventListener('storage', receiveDatabaseChange);
 window.addEventListener('focus', refreshBankOnFocus);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshBankOnFocus(); });
 
-async function getViewData(name, loader, timeoutMs = 25000) {
+async function getViewData(name, loader, timeoutMs = 25000, maxAgeMs = Infinity) {
   // Keep successful screen reads for this session, until Refresh or a write.
   // Save/posting validations continue using uncached getAll reads.
   const key = String(session?.user?.id || "") + ":" + name;
-  const existing = !viewWritesInProgress && viewReadCache.get(key);
+  let existing = !viewWritesInProgress && viewReadCache.get(key);
+  if (existing?.loaded && Date.now() - existing.loadedAt >= maxAgeMs) { viewReadCache.delete(key); existing = null; }
   if (existing) { existing.promote?.(); return structuredClone(await existing.promise); }
   const generation = viewReadGeneration;
   const controller = new AbortController();
@@ -175,6 +176,7 @@ async function getViewData(name, loader, timeoutMs = 25000) {
     }, timeoutMs); }),
   ]).then(rows => {
     entry.loaded = true;
+    entry.loadedAt = Date.now();
     if (generation !== viewReadGeneration && viewReadCache.get(key) === entry) viewReadCache.delete(key);
     return rows;
   }).catch(error => {
@@ -743,13 +745,15 @@ function transactionAvailableStock(product = {}) {
 }
 
 async function loadTransactionReservations() {
-  const rows = [];
-  for (let offset = 0; ; offset += 500) {
-    const { data, error } = await supabase.rpc("get_product_inventory_control_totals").order("product_id").range(offset, offset + 499);
-    if (error) throw new Error("Could not load available stock. Please retry. " + error.message);
-    rows.push(...(data || []));
-    if ((data || []).length < 500) break;
-  }
+  const rows = await getViewData("transaction-reservations", async (signal) => {
+    const result = [];
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabase.rpc("get_product_inventory_control_totals").order("product_id").range(offset, offset + 499).abortSignal(signal);
+      if (error) throw new Error("Could not load available stock. Please retry. " + error.message);
+      result.push(...(data || []));
+      if ((data || []).length < 500) return result;
+    }
+  }, 25000, 15000);
   productMeta.transactionReservations = new Map(rows.map(row => [String(row.sku || "").trim().toLowerCase(), Number(row.reserved_qty || 0)]));
 }
 
@@ -24014,9 +24018,10 @@ async function loadWorkOrderEditorRecord(wo) {
 
 async function openWorkOrderEditModal(wo, options = {}) {
   if (!wo) return;
-  [wo] = await Promise.all([loadWorkOrderEditorRecord(wo), ensureListEditorProducts(), ensureWorkOrderModalMeta(), getViewRows("customers").then(rows => { productMeta.customerRows = rows; })]);
+  let costContext;
+  [wo] = await Promise.all([loadWorkOrderEditorRecord(wo).then(async fresh => { costContext = await loadWorkOrderPartCostContext(fresh); return fresh; }), ensureListEditorProducts(), ensureWorkOrderModalMeta(), getViewRows("customers").then(rows => { productMeta.customerRows = rows; })]);
   const auditReadOnly = Boolean(options.readOnly || wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || ""));
-  productMeta.workOrderPartCosts = await loadWorkOrderPartCostContext(wo);
+  productMeta.workOrderPartCosts = costContext;
   editing = wo;
   const editAssetDetails = workOrderAssetDetails(wo);
   $("modalTitle").textContent = `${auditReadOnly ? "View" : "Edit"} work order ${wo.wo_no}`;

@@ -93,5 +93,6 @@
   "work-order-editor-parts",
   "customer-pricing-carryover",
   "transaction-available-stock",
-  "parts-bin-display"
+  "parts-bin-display",
+  "work-order-reopen-cache"
 ]
