@@ -726,6 +726,16 @@ function finishModuleListScope(state) {
   more.onclick=()=>loadView(state.view,{append:true});
   if(state.more) moduleListTimer=setTimeout(grow,2500);
 }
+function partBinLocation(part = {}) {
+  const product = (productMeta.products || []).find(p => (part.product_id && p.id === part.product_id) || (part.sku && String(p.sku || "").trim().toLowerCase() === String(part.sku).trim().toLowerCase()));
+  return String(part.bin_shelf ?? product?.bin_shelf ?? "");
+}
+
+function refreshPartBinCell(tr, product = {}) {
+  const cell = tr?.querySelector('[data-part-bin]');
+  if (cell) cell.textContent = partBinLocation(product);
+}
+
 function transactionAvailableStock(product = {}) {
   const key = String(product.sku || "").trim().toLowerCase();
   const reserved = productMeta.transactionReservations?.get(key);
@@ -18585,7 +18595,7 @@ function refreshQuotationTotal() {
 }
 
 function quotationLineRows(lines) {
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>Available</th><th>Unit</th><th>Qty</th><th>Internal Unit Cost</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><th colspan="6">Quote total including freight</th><th id="quotationGrandTotal"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>Bin #</th><th>Available</th><th>Unit</th><th>Qty</th><th>Internal Unit Cost</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><th colspan="7">Quote total including freight</th><th id="quotationGrandTotal"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function quotationLineRowHtml(line = {}, index = 0) {
@@ -18596,6 +18606,7 @@ function quotationLineRowHtml(line = {}, index = 0) {
   const unit = line.unit || product.unit || "";
   return `<tr>
     <td><input class="suggest-input" list="poProductOptions" data-quote-line="sku" data-line-index="${index}" value="${esc(label)}" placeholder="Search SKU, name, vendor" autocomplete="off">${productOptionsDatalist()}</td>
+    <td data-part-bin>${esc(partBinLocation(product))}</td>
     <td data-quote-onhand>${esc(transactionAvailableStock(product))}</td>
     <td data-quote-unit>${esc(unit)}</td>
     <td><input type="number" step="0.01" data-quote-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}"></td>
@@ -18633,6 +18644,7 @@ function wireQuotationLinePricing() {
       const onHandCell = tr.querySelector("[data-quote-onhand]");
       const unitCell = tr.querySelector("[data-quote-unit]");
       if (onHandCell) onHandCell.textContent = transactionAvailableStock(product);
+      refreshPartBinCell(tr, product);
       if (unitCell) unitCell.textContent = product.unit || "";
       if (priceInput) priceInput.value = customerPartsSellingPrice(product, currentPricingCustomer());
       const costInput = tr.querySelector('[data-quote-line="unit_cost"]');
@@ -18649,6 +18661,7 @@ function wireQuotationLinePricing() {
           const onHandCell = tr.querySelector("[data-quote-onhand]");
           const unitCell = tr.querySelector("[data-quote-unit]");
           if (onHandCell) onHandCell.textContent = "";
+          refreshPartBinCell(tr);
           if (unitCell) unitCell.textContent = "";
           refreshAmount();
           return;
@@ -18735,6 +18748,7 @@ async function quickCreateQuotationPartFromRow(tr, { ask = true } = {}) {
   productMeta.products = await getAll("products");
   refreshProductDatalistOptions();
   if (skuInput) skuInput.value = `${saved.sku} - ${saved.name}`;
+  refreshPartBinCell(tr, saved);
   const onHandCell = tr.querySelector("[data-quote-onhand]");
   const unitCell = tr.querySelector("[data-quote-unit]");
   const amountCell = tr.querySelector("[data-quote-amount]");
@@ -19825,7 +19839,7 @@ function setupSalesOrderModalFooter(order = null) {
 }
 
 function salesLineRows(lines, linkedPoMap = {}, savedOrder = false) {
-  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th class="sales-po-select-col">PO</th><th>SKU</th><th>Product Name / Description</th><th>UOM</th><th title="Physical stock less active reservations">Available</th><th>Inventory / FIFO Cost</th><th title="Quantity ordered by the customer">ORD</th><th title="Quantity automatically reserved when the Sales Order is saved">ISS</th><th title="Quantity shipped/released to the customer and deducted from inventory">SHP</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th><th>Vendor PO Ref.</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i, linkedPoMap)).join("")}</tbody><tfoot><tr><th colspan="10">Parts subtotal</th><th id="salesOrderPartsSubtotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Customer-billed freight</th><th id="salesOrderFreightTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Sales order total</th><th id="salesOrderGrandTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Less customer deposit</th><th id="salesOrderDepositTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Amount due</th><th id="salesOrderAmountDue">$0.00</th><th colspan="2"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}<button class="rowbtn primary" type="button" id="createSelectedSalesPoBtn" ${savedOrder ? "" : "disabled"}>Create Vendor PO from Selected</button></div>`;
+  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th class="sales-po-select-col">PO</th><th>SKU</th><th>Product Name / Description</th><th>UOM</th><th title="Physical stock less active reservations">Available</th><th>Bin #</th><th>Inventory / FIFO Cost</th><th title="Quantity ordered by the customer">ORD</th><th title="Quantity automatically reserved when the Sales Order is saved">ISS</th><th title="Quantity shipped/released to the customer and deducted from inventory">SHP</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th><th>Vendor PO Ref.</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i, linkedPoMap)).join("")}</tbody><tfoot><tr><th colspan="11">Parts subtotal</th><th id="salesOrderPartsSubtotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="11">Customer-billed freight</th><th id="salesOrderFreightTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="11">Sales order total</th><th id="salesOrderGrandTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="11">Less customer deposit</th><th id="salesOrderDepositTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="11">Amount due</th><th id="salesOrderAmountDue">$0.00</th><th colspan="2"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}<button class="rowbtn primary" type="button" id="createSelectedSalesPoBtn" ${savedOrder ? "" : "disabled"}>Create Vendor PO from Selected</button></div>`;
 }
 
 function salesLineRowHtml(line = {}, index = 0, linkedPoMap = {}) {
@@ -19841,6 +19855,7 @@ function salesLineRowHtml(line = {}, index = 0, linkedPoMap = {}) {
     <td data-label="Product Name / Description"><textarea class="line-description compact-line-text" data-sales-line="description" data-line-index="${index}" rows="2" placeholder="Product name or description">${esc(line.description || line.product_name || product.name || "")}</textarea></td>
     <td data-label="UOM"><input class="line-uom compact-line-text" data-sales-line="unit" data-line-index="${index}" value="${esc(line.unit || product.unit || "")}" placeholder="EA"></td>
     <td data-label="Available" data-sales-onhand>${esc(transactionAvailableStock(product))}</td>
+    <td data-label="Bin #" data-part-bin>${esc(partBinLocation(product))}</td>
     <td data-label="Inventory / FIFO Cost" data-sales-cost title="Current inventory unit cost from Product Master">${product.id ? money(salesInventoryUnitCost(product)) : ""}</td>
     <td data-label="ORD"><input type="number" min="0" step="0.01" data-sales-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}" ${Number(line.issued_qty || 0) > 0 ? `min="${esc(line.issued_qty)}"` : ""}></td>
     <td data-label="ISS" class="num" data-sales-issued>${esc(Number(line.issued_qty || 0))}</td>
@@ -19985,6 +20000,7 @@ function wireSalesOrderLinePricing() {
       const costCell = tr.querySelector("[data-sales-cost]");
       const availabilityCell = tr.querySelector("[data-sales-availability]");
       if (onHandCell) onHandCell.textContent = transactionAvailableStock(product);
+      refreshPartBinCell(tr, product);
       if (costCell) costCell.textContent = money(salesInventoryUnitCost(product));
       if (availabilityCell) availabilityCell.innerHTML = salesAlternateAvailabilityHtml(product);
       const selectedRate = selectedSalesPricingRate();
@@ -20010,6 +20026,7 @@ function wireSalesOrderLinePricing() {
           const costCell = tr.querySelector("[data-sales-cost]");
           const availabilityCell = tr.querySelector("[data-sales-availability]");
           if (onHandCell) onHandCell.textContent = "";
+          refreshPartBinCell(tr);
           if (costCell) costCell.textContent = "";
           if (availabilityCell) availabilityCell.textContent = "";
           refreshPoSelection(null);
@@ -20956,10 +20973,10 @@ async function issueSalesOrder(orderNo) {
     const currentReservation = Math.max(0, issued - shipped);
     const freeAvailable = Math.max(0, Number(availability.available || 0) - currentReservation);
     const reserveNow = Math.min(issueRemaining, freeAvailable);
-    return `<tr data-partial-line="${index}" data-free-available="${esc(freeAvailable)}"><td>${esc(line.sku)}</td><td>${esc(line.product_name || line.description || "")}</td><td class="num">${ordered}</td><td class="num">${issued}</td><td class="num">${shipped}</td><td class="num">${Number(product.qty || 0)}</td><td class="num">${freeAvailable}</td><td><input type="number" min="0" max="${reserveNow}" step="0.01" data-issue-now value="${reserveNow}"></td><td><input type="number" min="0" max="${shipAvailable + reserveNow}" step="0.01" data-ship-now value="0"></td></tr>`;
+    return `<tr data-partial-line="${index}" data-free-available="${esc(freeAvailable)}"><td>${esc(line.sku)}</td><td>${esc(line.product_name || line.description || "")}</td><td>${esc(partBinLocation(product))}</td><td class="num">${ordered}</td><td class="num">${issued}</td><td class="num">${shipped}</td><td class="num">${Number(product.qty || 0)}</td><td class="num">${freeAvailable}</td><td><input type="number" min="0" max="${reserveNow}" step="0.01" data-issue-now value="${reserveNow}"></td><td><input type="number" min="0" max="${shipAvailable + reserveNow}" step="0.01" data-ship-now value="0"></td></tr>`;
   }).join("");
   $("modalTitle").textContent = `Reserve / Ship to Customer ${order.order_no}`;
-  $("modalBody").innerHTML = `<p class="notice"><strong>ORD</strong> = quantity ordered by the customer. <strong>ISS</strong> = quantity reserved automatically from available stock when the Sales Order is saved; it remains physically on hand but cannot be used by another order. <strong>SHP</strong> = quantity shipped/released and reduces physical inventory. ${order.work_order_no ? `<strong>Work Order charge:</strong> shipped quantities are added to ${esc(order.work_order_no)} and billed when that Work Order is finalized; no separate Sales Order invoice is created.` : "Invoice tracking remains separate so one Sales Order can have multiple invoices."}</p><div class="table-wrap"><table class="line-table"><thead><tr><th>SKU</th><th>Product</th><th>ORD</th><th>ISS</th><th>SHP</th><th>On Hand</th><th>Available</th><th>Additional Reserve</th><th>Ship to Customer</th></tr></thead><tbody id="partialSalesIssueBody">${rows}</tbody></table></div>`;
+  $("modalBody").innerHTML = `<p class="notice"><strong>ORD</strong> = quantity ordered by the customer. <strong>ISS</strong> = quantity reserved automatically from available stock when the Sales Order is saved; it remains physically on hand but cannot be used by another order. <strong>SHP</strong> = quantity shipped/released and reduces physical inventory. ${order.work_order_no ? `<strong>Work Order charge:</strong> shipped quantities are added to ${esc(order.work_order_no)} and billed when that Work Order is finalized; no separate Sales Order invoice is created.` : "Invoice tracking remains separate so one Sales Order can have multiple invoices."}</p><div class="table-wrap"><table class="line-table"><thead><tr><th>SKU</th><th>Product</th><th>Bin #</th><th>ORD</th><th>ISS</th><th>SHP</th><th>On Hand</th><th>Available</th><th>Additional Reserve</th><th>Ship to Customer</th></tr></thead><tbody id="partialSalesIssueBody">${rows}</tbody></table></div>`;
   $("modalSave").textContent = "Save Reservation / Customer Shipment";
   $("modalSave").onclick = () => savePartialSalesOrderIssue(order, products);
   $("modal").style.display = "flex";
@@ -25193,7 +25210,7 @@ function mechanicIssueEditRow(row = {}, index = 0) {
 
 function mechanicReservePartsTable(issueOptions) {
   const rows = Array.from({ length: 5 }, (_, index) => mechanicReservePartRow(index, issueOptions));
-  return `${productOptionsDatalist()}<div class="table-wrap" data-clock-table="part"><table class="line-table"><thead><tr><th>Part / SKU</th><th>Description Needed</th><th>Photo</th><th>On Hand</th><th>Available</th><th>Qty Needed</th><th>Unit Cost</th><th>Markup %</th><th>Selling Price</th><th>Issue</th><th>In-stock Alternatives</th></tr></thead><tbody id="clockPartBody">${rows.join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" data-add-clock-row="part">Add part row</button>${createPartButtonMarkup()}</div><p class="muted" id="clockPartPhotoStatus"></p><p class="notice">Product Master fills cost and selling price. If Markup % is entered, Selling Price recalculates from Unit Cost. Mechanics may still request by description/photo when the SKU is unknown.</p>`;
+  return `${productOptionsDatalist()}<div class="table-wrap" data-clock-table="part"><table class="line-table"><thead><tr><th>Part / SKU</th><th>Description Needed</th><th>Photo</th><th>Bin #</th><th>On Hand</th><th>Available</th><th>Qty Needed</th><th>Unit Cost</th><th>Markup %</th><th>Selling Price</th><th>Issue</th><th>In-stock Alternatives</th></tr></thead><tbody id="clockPartBody">${rows.join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" data-add-clock-row="part">Add part row</button>${createPartButtonMarkup()}</div><p class="muted" id="clockPartPhotoStatus"></p><p class="notice">Product Master fills cost and selling price. If Markup % is entered, Selling Price recalculates from Unit Cost. Mechanics may still request by description/photo when the SKU is unknown.</p>`;
 }
 
 function mechanicReservePartRow(index = 0, issueOptions = []) {
@@ -25201,6 +25218,7 @@ function mechanicReservePartRow(index = 0, issueOptions = []) {
     <td><input class="suggest-input" list="poProductOptions" data-clock-part="product_lookup" data-line-index="${index}" placeholder="Search part or leave blank" autocomplete="off"></td>
     <td><input data-clock-part="description" data-line-index="${index}" placeholder="Describe part needed"></td>
     <td><input class="file-cell-input" type="file" accept="image/*" data-clock-part="request_photo" data-line-index="${index}"></td>
+    <td data-part-bin></td>
     <td data-clock-part-display="on_hand"></td>
     <td data-clock-part-display="available"></td>
     <td><input type="number" step="0.01" data-clock-part="qty" data-line-index="${index}"></td>
@@ -25215,7 +25233,7 @@ function mechanicReservePartRow(index = 0, issueOptions = []) {
 function mechanicAcceptPartsTable(wo) {
   const rows = (wo._parts || []).map((part, index) => ({ part, index })).filter(({ part }) => remainingReservedQty(part) > 0 && !/accepted|issued/i.test(effectivePartStatus(part)));
   if (!rows.length) return `<div class="notice">No reserved parts waiting for mechanic acceptance.</div>`;
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Action</th><th>Part / Description</th><th>Issue</th><th>On Hand</th><th>Remaining Reserved</th><th>Qty to Accept</th><th>Status</th><th>In-stock Alternatives</th></tr></thead><tbody>${rows.map(({ part, index }) => mechanicAcceptPartRow(part, index)).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Action</th><th>Part / Description</th><th>Issue</th><th>Bin #</th><th>On Hand</th><th>Remaining Reserved</th><th>Qty to Accept</th><th>Status</th><th>In-stock Alternatives</th></tr></thead><tbody>${rows.map(({ part, index }) => mechanicAcceptPartRow(part, index)).join("")}</tbody></table></div>`;
 }
 
 function mechanicAcceptPartRow(part, index) {
@@ -25226,6 +25244,7 @@ function mechanicAcceptPartRow(part, index) {
     <td>${inlineSelect("data-accept-part", "mode", skuMissing ? ["No", "Remove Reserved"] : ["No", "Partial", "Full", "Remove Reserved"], "No", index, part.id)}</td>
     <td>${esc(`${part.sku || product.sku || ""} - ${part.product_name || product.name || ""}`)}</td>
     <td>${esc(part.issue || "General")}</td>
+    <td>${esc(partBinLocation(product))}</td>
     <td>${esc(product.qty ?? "")}</td>
     <td>${esc(remaining)}</td>
     <td><input type="number" min="0" max="${esc(remaining)}" step="0.01" data-accept-part="qty" data-line-index="${index}" data-part-id="${esc(part.id || "")}"></td>
@@ -25293,6 +25312,7 @@ function bindMechanicPartLookups() {
 function refreshMechanicPartLookup(input) {
   const tr = input.closest("tr");
   const product = resolveProductLookup(input.value);
+  refreshPartBinCell(tr, product || {});
   const set = (field, value) => {
     const target = tr?.querySelector(`[data-clock-part-display="${field}"]`);
     if (target) target.textContent = value;
@@ -25356,7 +25376,7 @@ function workOrderPartsAdminEditTable(wo) {
   });
   const voidedParts = (wo._parts || []).filter(isWorkOrderPartHistory);
   const rows = [...activeParts, ...Array.from({ length: Math.max(3, 6 - activeParts.length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
-  const heads = ["Issue PDF", "Part / SKU", "Description", "Available", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
+  const heads = ["Issue PDF", "Part / SKU", "Description", "Bin #", "Available", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
   const hidden = new Set(userColumnPreferences()["repairs|work-order-parts"] || []);
   const pricingRates = (productMeta.salesPricingRates || []).filter((rate) => String(rate.status || "Active").toLowerCase() !== "inactive");
   return `${workOrderAdminProductDatalist()}<div class="actions work-order-parts-rate-actions"><select id="workOrderPartsRateSelect" aria-label="Work Order parts pricing rate"><option value="">Select parts pricing rate</option>${pricingRates.map((rate) => `<option value="${esc(rate.id)}">${esc(salesPricingRateLabel(rate))} - ${Number(rate.markup_percent || 0).toFixed(2)}% of cost</option>`).join("")}</select><button type="button" id="applyWorkOrderPartsRateBtn">Apply rate to parts</button></div><details class="column-settings-inline"><summary>Show / Hide Parts Columns</summary><div class="column-chooser">${heads.map((head) => `<label class="checkline"><input type="checkbox" data-work-order-part-column="${esc(head)}" ${hidden.has(head) ? "" : "checked"}> ${esc(head)}</label>`).join("")}</div></details><div class="table-wrap"><table class="line-table admin-parts-table" data-column-preference-key="repairs|work-order-parts" data-resizable-columns><thead><tr>${heads.map((h, index) => `<th>${index === 0 ? `<label class="issuance-select-all" title="Select all rows for Issuance PDF"><input id="selectAllWorkOrderIssuanceParts" type="checkbox" checked aria-label="Select all rows for Issuance PDF"></label>` : esc(h)}</th>`).join("")}</tr></thead><tbody id="adminPartBody">${rows.map((row, index) => workOrderPartAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminPartRowBtn">Add part row</button>${createPartButtonMarkup()}<button class="rowbtn" type="button" id="createWorkOrderReorderPoBtn">Create Reorder PO</button><button class="rowbtn primary" type="button" id="workOrderPartsIssuancePdfBtn">Issuance PDF</button><button class="rowbtn" type="button" id="resetWorkOrderPartWidthsBtn">Reset column widths</button></div><p class="notice">Drag the right edge of any column heading to resize it. Widths are remembered on this device. New part rows are selected for the issuance PDF automatically.</p>${workOrderVoidedPartsTable(voidedParts)}`;
@@ -25383,6 +25403,7 @@ function printSelectedWorkOrderPartsIssuance(wo) {
     return {
       sku: product?.sku || saved?.sku || "",
       product_name: product?.name || get("product_name") || saved?.product_name || "",
+      bin_shelf: partBinLocation(product || saved || {}),
       issue: get("issue") || saved?.issue || "General",
       qty_needed: Number(get("qty_needed") || saved?.qty_needed || 0),
       accepted_qty: Number(get("accepted_qty") || saved?.accepted_qty || 0),
@@ -25394,7 +25415,7 @@ function printSelectedWorkOrderPartsIssuance(wo) {
   if (!selected.length) return alert("Check at least one populated part row for the issuance PDF.");
   const issuedTotal = selected.reduce((sum, row) => sum + row.accepted_qty, 0);
   const requestedBy = workOrderIssuanceRequestedBy(wo);
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(wo.wo_no || "Work Order")} Parts Issuance</title><style>@page{size:Letter landscape;margin:.35in}*{box-sizing:border-box}body{margin:0;color:#17212b;font:11px Arial,sans-serif}.sheet{width:100%}.head{display:flex;justify-content:space-between;gap:24px;padding-bottom:10px;border-bottom:3px solid #075f6d}.head h1{margin:0;color:#075f6d;font-size:22px}.head p{margin:5px 0 0}.meta{text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}.box{padding:8px;border:1px solid #c7d2dc;border-radius:5px}.box strong{display:block;margin-top:3px;font-size:13px}table{width:100%;border-collapse:collapse;table-layout:auto}th,td{padding:7px 6px;border-bottom:1px solid #d5dee5;text-align:left;vertical-align:top}th{background:#eaf0f4;color:#19334c;text-transform:uppercase;font-size:9px}.num{text-align:right;white-space:nowrap}.status{font-weight:700}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:44px}.sig{padding-top:8px;border-top:1px solid #17212b}.print{position:fixed;right:12px;top:12px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">Print / Save PDF</button><main class="sheet"><div class="head"><div><h1>LMS Imports — Parts Issuance</h1><p>Work Order ${esc(wo.wo_no || "")}</p></div><div class="meta"><strong>Prepared ${esc(formatDisplayDate(today()))}</strong><br>${esc(wo.asset_tag || "")} ${esc(wo.equipment_name || "")}<br>${esc(wo.jobsite_location || wo.actual_location || "")}</div></div><div class="summary"><div class="box">Customer<strong>${esc(wo.bill_to_customer || "Internal")}</strong></div><div class="box">Requested By<strong>${esc(requestedBy)}</strong></div><div class="box">Selected Lines<strong>${selected.length}</strong></div><div class="box">Total Issued Qty<strong>${esc(issuedTotal)}</strong></div></div><table><thead><tr><th>Part #</th><th>Description</th><th>Issue / Use</th><th class="num">Qty Requested</th><th class="num">Qty Issued</th><th>Issued Date</th><th>Issued By</th><th>Status</th></tr></thead><tbody>${selected.map((row) => `<tr><td><strong>${esc(row.sku)}</strong></td><td>${esc(row.product_name)}</td><td>${esc(row.issue)}</td><td class="num">${esc(row.qty_needed)}</td><td class="num">${esc(row.accepted_qty)}</td><td>${esc(row.issued_date || "Pending")}</td><td>${esc(row.issued_by || "Pending")}</td><td class="status">${esc(row.status)}</td></tr>`).join("")}</tbody></table><div class="signatures"><div class="sig">Issued by / Date</div><div class="sig">Received by / Date</div></div></main></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(wo.wo_no || "Work Order")} Parts Issuance</title><style>@page{size:Letter landscape;margin:.35in}*{box-sizing:border-box}body{margin:0;color:#17212b;font:11px Arial,sans-serif}.sheet{width:100%}.head{display:flex;justify-content:space-between;gap:24px;padding-bottom:10px;border-bottom:3px solid #075f6d}.head h1{margin:0;color:#075f6d;font-size:22px}.head p{margin:5px 0 0}.meta{text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}.box{padding:8px;border:1px solid #c7d2dc;border-radius:5px}.box strong{display:block;margin-top:3px;font-size:13px}table{width:100%;border-collapse:collapse;table-layout:auto}th,td{padding:7px 6px;border-bottom:1px solid #d5dee5;text-align:left;vertical-align:top}th{background:#eaf0f4;color:#19334c;text-transform:uppercase;font-size:9px}.num{text-align:right;white-space:nowrap}.status{font-weight:700}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:44px}.sig{padding-top:8px;border-top:1px solid #17212b}.print{position:fixed;right:12px;top:12px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">Print / Save PDF</button><main class="sheet"><div class="head"><div><h1>LMS Imports — Parts Issuance</h1><p>Work Order ${esc(wo.wo_no || "")}</p></div><div class="meta"><strong>Prepared ${esc(formatDisplayDate(today()))}</strong><br>${esc(wo.asset_tag || "")} ${esc(wo.equipment_name || "")}<br>${esc(wo.jobsite_location || wo.actual_location || "")}</div></div><div class="summary"><div class="box">Customer<strong>${esc(wo.bill_to_customer || "Internal")}</strong></div><div class="box">Requested By<strong>${esc(requestedBy)}</strong></div><div class="box">Selected Lines<strong>${selected.length}</strong></div><div class="box">Total Issued Qty<strong>${esc(issuedTotal)}</strong></div></div><table><thead><tr><th>Part #</th><th>Description</th><th>Bin #</th><th>Issue / Use</th><th class="num">Qty Requested</th><th class="num">Qty Issued</th><th>Issued Date</th><th>Issued By</th><th>Status</th></tr></thead><tbody>${selected.map((row) => `<tr><td><strong>${esc(row.sku)}</strong></td><td>${esc(row.product_name)}</td><td>${esc(partBinLocation(row))}</td><td>${esc(row.issue)}</td><td class="num">${esc(row.qty_needed)}</td><td class="num">${esc(row.accepted_qty)}</td><td>${esc(row.issued_date || "Pending")}</td><td>${esc(row.issued_by || "Pending")}</td><td class="status">${esc(row.status)}</td></tr>`).join("")}</tbody></table><div class="signatures"><div class="sig">Issued by / Date</div><div class="sig">Received by / Date</div></div></main></body></html>`;
   openPrintWindow(html, `${wo.wo_no || "work-order"}-parts-issuance`);
 }
 
@@ -25422,6 +25443,7 @@ async function openWorkOrderIssuanceHistory(wo = {}) {
 function printHistoricalWorkOrderIssuance(wo = {}, movements = []) {
   const requestedBy = workOrderIssuanceRequestedBy(wo);
   const rows = movements.map((movement) => ({
+    bin_shelf: partBinLocation(movement),
     sku: movement.sku || "",
     product_name: movement.product_name || "",
     qty: Math.abs(Number(movement.qty || 0)),
@@ -25430,7 +25452,7 @@ function printHistoricalWorkOrderIssuance(wo = {}, movements = []) {
     reason: movement.reason || movement.type || "Work order issuance",
   }));
   const total = rows.reduce((sum, row) => sum + row.qty, 0);
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(wo.wo_no || "Work Order")} Parts Issuance — REPRINTED</title><style>@page{size:Letter landscape;margin:.35in}*{box-sizing:border-box}body{margin:0;color:#17212b;font:11px Arial,sans-serif}.sheet{width:100%}.reprinted{display:inline-block;margin-top:7px;padding:4px 10px;border:2px solid #a72828;color:#a72828;font-size:14px;font-weight:900;letter-spacing:.12em}.head{display:flex;justify-content:space-between;gap:24px;padding-bottom:10px;border-bottom:3px solid #075f6d}.head h1{margin:0;color:#075f6d;font-size:22px}.head p{margin:5px 0 0}.meta{text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}.box{padding:8px;border:1px solid #c7d2dc;border-radius:5px}.box strong{display:block;margin-top:3px;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:7px 6px;border-bottom:1px solid #d5dee5;text-align:left;vertical-align:top}th{background:#eaf0f4;color:#19334c;text-transform:uppercase;font-size:9px}.num{text-align:right;white-space:nowrap}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:44px}.sig{padding-top:8px;border-top:1px solid #17212b}.print{position:fixed;right:12px;top:12px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">Print / Save PDF</button><main class="sheet"><div class="head"><div><h1>LMS Imports — Parts Issuance</h1><p>Work Order ${esc(wo.wo_no || "")}</p><span class="reprinted">REPRINTED</span></div><div class="meta"><strong>Reprinted ${esc(formatDisplayDate(today()))}</strong><br>${esc(wo.asset_tag || "")} ${esc(wo.equipment_name || "")}<br>${esc(wo.jobsite_location || wo.actual_location || "")}</div></div><div class="summary"><div class="box">Customer<strong>${esc(wo.bill_to_customer || "Internal")}</strong></div><div class="box">Requested By<strong>${esc(requestedBy)}</strong></div><div class="box">Historical Lines<strong>${rows.length}</strong></div><div class="box">Total Issued Qty<strong>${esc(total)}</strong></div></div><table><thead><tr><th>Part #</th><th>Description</th><th>Issue / Reason</th><th class="num">Qty Issued</th><th>Original Issued Date</th><th>Originally Issued By</th></tr></thead><tbody>${rows.map((row) => `<tr><td><strong>${esc(row.sku)}</strong></td><td>${esc(row.product_name)}</td><td>${esc(row.reason)}</td><td class="num">${esc(row.qty)}</td><td>${esc(formatDisplayDate(row.issued_date))}</td><td>${esc(row.issued_by)}</td></tr>`).join("")}</tbody></table><div class="signatures"><div class="sig">Reprinted by / Date</div><div class="sig">Received by / Date</div></div></main></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(wo.wo_no || "Work Order")} Parts Issuance — REPRINTED</title><style>@page{size:Letter landscape;margin:.35in}*{box-sizing:border-box}body{margin:0;color:#17212b;font:11px Arial,sans-serif}.sheet{width:100%}.reprinted{display:inline-block;margin-top:7px;padding:4px 10px;border:2px solid #a72828;color:#a72828;font-size:14px;font-weight:900;letter-spacing:.12em}.head{display:flex;justify-content:space-between;gap:24px;padding-bottom:10px;border-bottom:3px solid #075f6d}.head h1{margin:0;color:#075f6d;font-size:22px}.head p{margin:5px 0 0}.meta{text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}.box{padding:8px;border:1px solid #c7d2dc;border-radius:5px}.box strong{display:block;margin-top:3px;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:7px 6px;border-bottom:1px solid #d5dee5;text-align:left;vertical-align:top}th{background:#eaf0f4;color:#19334c;text-transform:uppercase;font-size:9px}.num{text-align:right;white-space:nowrap}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:44px}.sig{padding-top:8px;border-top:1px solid #17212b}.print{position:fixed;right:12px;top:12px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">Print / Save PDF</button><main class="sheet"><div class="head"><div><h1>LMS Imports — Parts Issuance</h1><p>Work Order ${esc(wo.wo_no || "")}</p><span class="reprinted">REPRINTED</span></div><div class="meta"><strong>Reprinted ${esc(formatDisplayDate(today()))}</strong><br>${esc(wo.asset_tag || "")} ${esc(wo.equipment_name || "")}<br>${esc(wo.jobsite_location || wo.actual_location || "")}</div></div><div class="summary"><div class="box">Customer<strong>${esc(wo.bill_to_customer || "Internal")}</strong></div><div class="box">Requested By<strong>${esc(requestedBy)}</strong></div><div class="box">Historical Lines<strong>${rows.length}</strong></div><div class="box">Total Issued Qty<strong>${esc(total)}</strong></div></div><table><thead><tr><th>Part #</th><th>Description</th><th>Bin #</th><th>Issue / Reason</th><th class="num">Qty Issued</th><th>Original Issued Date</th><th>Originally Issued By</th></tr></thead><tbody>${rows.map((row) => `<tr><td><strong>${esc(row.sku)}</strong></td><td>${esc(row.product_name)}</td><td>${esc(partBinLocation(row))}</td><td>${esc(row.reason)}</td><td class="num">${esc(row.qty)}</td><td>${esc(formatDisplayDate(row.issued_date))}</td><td>${esc(row.issued_by)}</td></tr>`).join("")}</tbody></table><div class="signatures"><div class="sig">Reprinted by / Date</div><div class="sig">Received by / Date</div></div></main></body></html>`;
   openPrintWindow(html, `${wo.wo_no || "work-order"}-parts-issuance-reprinted`);
 }
 
@@ -25630,6 +25652,7 @@ function workOrderPartAdminEditRow(row = {}, index = 0) {
     <td class="issuance-select-cell"><input type="checkbox" data-part-issuance-select data-was-eligible="${populated && !alreadyIssued ? "1" : "0"}" ${populated && !alreadyIssued ? "checked" : ""} ${alreadyIssued ? "disabled" : ""} ${populated ? "" : "hidden disabled"} aria-label="Include ${esc(row.sku || row.product_name || `part row ${index + 1}`)} in issuance PDF" title="${alreadyIssued ? "Already issued — excluded from the next issuance PDF" : "Include in issuance PDF"}"></td>
     <td><input class="suggest-input" list="workOrderAdminProductOptions" data-admin-part="product_lookup" value="${esc(lookup)}" placeholder="Search SKU, product, vendor" autocomplete="off"></td>
     <td><input data-admin-part="product_name" value="${esc(row.product_name || "")}" placeholder="Description requested"></td>
+    <td data-part-bin>${esc(partBinLocation(product))}</td>
     <td><input class="admin-part-number" type="number" data-admin-part="on_hand_qty" value="${esc(transactionAvailableStock(product))}" placeholder="Auto qty" readonly></td>
     <td><input class="admin-part-number" type="number" min="0" max="999999999999" step="0.01" data-admin-part="qty_needed" value="${esc(row.qty_needed ?? "")}"></td>
     <td><input class="admin-part-number" type="number" min="0" max="999999999999" step="0.01" data-admin-part="accepted_qty" value="${esc(row.accepted_qty ?? 0)}" readonly></td>
@@ -25855,6 +25878,7 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
   const tr = input.closest("tr");
   const product = resolveProductLookup(input.value);
   if (!tr) return;
+  refreshPartBinCell(tr, product || {});
   if (!input.value.trim()) {
     ["product_name", "on_hand_qty", "qty_needed", "accepted_qty", "unit_cost", "markup_percent", "selling_price", "availability", "notes"].forEach((field) => {
       const target = tr.querySelector(`[data-admin-part="${field}"]`);
@@ -28350,10 +28374,10 @@ function renderPartsIssuanceTable() {
   const host = $("partsIssuanceTableHost");
   if (!host) return;
   const rows = filteredPartsIssuanceRows();
-  host.innerHTML = `<div class="table-wrap"><table><thead><tr><th class="checkbox-column"><input type="checkbox" id="partsIssuanceSelectAll" aria-label="Select all shown issuance lines"></th><th>Issue Date</th><th>Type</th><th>Issued To / WO</th><th>Reference</th><th>Part #</th><th>Description</th><th>Qty</th><th>Unit Cost</th><th>Total Cost</th><th>Originally Issued By</th><th>Reason</th><th>Reprint</th></tr></thead><tbody>${rows.length ? rows.map((row) => {
+  host.innerHTML = `<div class="table-wrap"><table><thead><tr><th class="checkbox-column"><input type="checkbox" id="partsIssuanceSelectAll" aria-label="Select all shown issuance lines"></th><th>Issue Date</th><th>Type</th><th>Issued To / WO</th><th>Reference</th><th>Part #</th><th>Description</th><th>Bin #</th><th>Qty</th><th>Unit Cost</th><th>Total Cost</th><th>Originally Issued By</th><th>Reason</th><th>Reprint</th></tr></thead><tbody>${rows.length ? rows.map((row) => {
     const index = currentRows.indexOf(row);
-    return `<tr><td class="checkbox-column"><input type="checkbox" data-parts-issuance-select="${index}" aria-label="Select ${esc(row.issuance_reference || row.sku || "issuance")}"></td><td>${esc(formatDisplayDate(row.issuance_date))}</td><td>${badge(row.issuance_type)}</td><td><strong>${esc(row.issued_to)}</strong>${row.issuance_type === "Work Order" && row.work_order_customer ? `<small class="cell-note">${esc(row.work_order_customer)}</small>` : ""}</td><td>${esc(row.issuance_reference)}</td><td>${esc(row.sku || "")}</td><td>${esc(row.product_name || "")}</td><td>${esc(row.issued_qty)}</td><td>${money(row.unit_cost_value)}</td><td>${money(row.total_cost_value)}</td><td>${esc(row.issued_by)}</td><td>${esc(row.reason || row.type || "")}</td><td><button type="button" class="rowbtn" data-parts-issuance-reprint="${index}">Reprint PDF</button></td></tr>`;
-  }).join("") : `<tr><td colspan="13" class="empty">No posted work-order, mechanic, or General Shop parts issuances match these filters.</td></tr>`}</tbody></table></div>`;
+    return `<tr><td class="checkbox-column"><input type="checkbox" data-parts-issuance-select="${index}" aria-label="Select ${esc(row.issuance_reference || row.sku || "issuance")}"></td><td>${esc(formatDisplayDate(row.issuance_date))}</td><td>${badge(row.issuance_type)}</td><td><strong>${esc(row.issued_to)}</strong>${row.issuance_type === "Work Order" && row.work_order_customer ? `<small class="cell-note">${esc(row.work_order_customer)}</small>` : ""}</td><td>${esc(row.issuance_reference)}</td><td>${esc(row.sku || "")}</td><td>${esc(row.product_name || "")}</td><td>${esc(partBinLocation(row))}</td><td>${esc(row.issued_qty)}</td><td>${money(row.unit_cost_value)}</td><td>${money(row.total_cost_value)}</td><td>${esc(row.issued_by)}</td><td>${esc(row.reason || row.type || "")}</td><td><button type="button" class="rowbtn" data-parts-issuance-reprint="${index}">Reprint PDF</button></td></tr>`;
+  }).join("") : `<tr><td colspan="14" class="empty">No posted work-order, mechanic, or General Shop parts issuances match these filters.</td></tr>`}</tbody></table></div>`;
   if ($("partsIssuanceCount")) $("partsIssuanceCount").textContent = `${rows.length} issuance line${rows.length === 1 ? "" : "s"} shown`;
   const all = $("partsIssuanceSelectAll");
   if (all) all.onchange = () => document.querySelectorAll("[data-parts-issuance-select]").forEach((checkbox) => { checkbox.checked = all.checked; });
@@ -28374,7 +28398,7 @@ function printPartsIssuanceReprint(rows = []) {
   const totalQty = rows.reduce((sum, row) => sum + Number(row.issued_qty || 0), 0);
   const totalCost = rows.reduce((sum, row) => sum + Number(row.total_cost_value || 0), 0);
   const destinations = [...new Set(rows.map((row) => `${row.issuance_type}: ${row.issued_to}`).filter(Boolean))];
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Parts Issuance — REPRINTED</title><style>@page{size:Letter landscape;margin:.35in}*{box-sizing:border-box}body{margin:0;color:#17212b;font:10px Arial,sans-serif}.head{display:flex;justify-content:space-between;gap:24px;padding-bottom:10px;border-bottom:3px solid #075f6d}.head h1{margin:0;color:#075f6d;font-size:22px}.head p{margin:5px 0 0}.reprinted{display:inline-block;margin-top:7px;padding:4px 10px;border:2px solid #a72828;color:#a72828;font-size:14px;font-weight:900;letter-spacing:.12em}.meta{text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;margin:12px 0}.box{padding:8px;border:1px solid #c7d2dc;border-radius:5px}.box strong{display:block;margin-top:3px;font-size:12px}table{width:100%;border-collapse:collapse}th,td{padding:6px 5px;border-bottom:1px solid #d5dee5;text-align:left;vertical-align:top}th{background:#eaf0f4;color:#19334c;text-transform:uppercase;font-size:8px}.num{text-align:right;white-space:nowrap}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:38px}.sig{padding-top:8px;border-top:1px solid #17212b}.print{position:fixed;right:12px;top:12px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">Print / Save PDF</button><main><div class="head"><div><h1>LMS Imports — Parts Issuance</h1><p>Inventory issuance history</p><span class="reprinted">REPRINTED</span></div><div class="meta"><strong>Reprinted ${esc(formatDisplayDate(today()))}</strong><br>${esc(profile?.full_name || profile?.username || "System User")}</div></div><div class="summary"><div class="box">Issued To / Source<strong>${esc(destinations.length <= 3 ? destinations.join("; ") : `${destinations.length} destinations`)}</strong></div><div class="box">Historical Lines<strong>${rows.length}</strong></div><div class="box">Total Issued Qty<strong>${esc(totalQty)}</strong></div><div class="box">Inventory Cost<strong>${money(totalCost)}</strong></div></div><table><thead><tr><th>Original Issue Date</th><th>Type</th><th>Issued To / WO</th><th>Reference</th><th>Part #</th><th>Description</th><th class="num">Qty</th><th class="num">Unit Cost</th><th class="num">Total Cost</th><th>Originally Issued By</th><th>Reason</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(formatDisplayDate(row.issuance_date))}</td><td>${esc(row.issuance_type)}</td><td><strong>${esc(row.issued_to)}</strong></td><td>${esc(row.issuance_reference)}</td><td>${esc(row.sku || "")}</td><td>${esc(row.product_name || "")}</td><td class="num">${esc(row.issued_qty)}</td><td class="num">${money(row.unit_cost_value)}</td><td class="num">${money(row.total_cost_value)}</td><td>${esc(row.issued_by)}</td><td>${esc(row.reason || row.type || "")}</td></tr>`).join("")}</tbody></table><div class="signatures"><div class="sig">Reprinted by / Date</div><div class="sig">Received by / Date</div></div></main></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Parts Issuance — REPRINTED</title><style>@page{size:Letter landscape;margin:.35in}*{box-sizing:border-box}body{margin:0;color:#17212b;font:10px Arial,sans-serif}.head{display:flex;justify-content:space-between;gap:24px;padding-bottom:10px;border-bottom:3px solid #075f6d}.head h1{margin:0;color:#075f6d;font-size:22px}.head p{margin:5px 0 0}.reprinted{display:inline-block;margin-top:7px;padding:4px 10px;border:2px solid #a72828;color:#a72828;font-size:14px;font-weight:900;letter-spacing:.12em}.meta{text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;margin:12px 0}.box{padding:8px;border:1px solid #c7d2dc;border-radius:5px}.box strong{display:block;margin-top:3px;font-size:12px}table{width:100%;border-collapse:collapse}th,td{padding:6px 5px;border-bottom:1px solid #d5dee5;text-align:left;vertical-align:top}th{background:#eaf0f4;color:#19334c;text-transform:uppercase;font-size:8px}.num{text-align:right;white-space:nowrap}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:38px}.sig{padding-top:8px;border-top:1px solid #17212b}.print{position:fixed;right:12px;top:12px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">Print / Save PDF</button><main><div class="head"><div><h1>LMS Imports — Parts Issuance</h1><p>Inventory issuance history</p><span class="reprinted">REPRINTED</span></div><div class="meta"><strong>Reprinted ${esc(formatDisplayDate(today()))}</strong><br>${esc(profile?.full_name || profile?.username || "System User")}</div></div><div class="summary"><div class="box">Issued To / Source<strong>${esc(destinations.length <= 3 ? destinations.join("; ") : `${destinations.length} destinations`)}</strong></div><div class="box">Historical Lines<strong>${rows.length}</strong></div><div class="box">Total Issued Qty<strong>${esc(totalQty)}</strong></div><div class="box">Inventory Cost<strong>${money(totalCost)}</strong></div></div><table><thead><tr><th>Original Issue Date</th><th>Type</th><th>Issued To / WO</th><th>Reference</th><th>Part #</th><th>Description</th><th>Bin #</th><th class="num">Qty</th><th class="num">Unit Cost</th><th class="num">Total Cost</th><th>Originally Issued By</th><th>Reason</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(formatDisplayDate(row.issuance_date))}</td><td>${esc(row.issuance_type)}</td><td><strong>${esc(row.issued_to)}</strong></td><td>${esc(row.issuance_reference)}</td><td>${esc(row.sku || "")}</td><td>${esc(row.product_name || "")}</td><td>${esc(partBinLocation(row))}</td><td class="num">${esc(row.issued_qty)}</td><td class="num">${money(row.unit_cost_value)}</td><td class="num">${money(row.total_cost_value)}</td><td>${esc(row.issued_by)}</td><td>${esc(row.reason || row.type || "")}</td></tr>`).join("")}</tbody></table><div class="signatures"><div class="sig">Reprinted by / Date</div><div class="sig">Received by / Date</div></div></main></body></html>`;
   openPrintWindow(html, `parts-issuance-reprinted-${today()}`);
 }
 
@@ -28403,6 +28427,8 @@ async function reloadPartsIssuanceRange() {
     });
     if (version !== partsIssuanceLoadVersion || !host.isConnected) return;
     const eligible = movements.filter((row) => /repair|work order|supplies issue/i.test(String(row.type || "")) && !/revers|return|void|cancel/i.test(`${row.type || ""} ${row.reason || ""}`));
+    const binProducts = await salesDeliveryRows("products", "sku", eligible.map(row => row.sku));
+    eligible.forEach(row => { const product = binProducts.find(p => String(p.sku).toLowerCase() === String(row.sku).toLowerCase()); row.bin_shelf = row.bin_shelf ?? product?.bin_shelf ?? ""; });
     const numbers = [...new Set(eligible.map((row) => row.document_no).filter(Boolean))];
     const workOrders = [];
     for (let i = 0; i < numbers.length; i += 100) workOrders.push(...await workOrderScopedRows("work_orders", "wo_no", numbers.slice(i, i + 100)));
