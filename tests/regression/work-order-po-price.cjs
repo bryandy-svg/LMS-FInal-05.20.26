@@ -2,8 +2,8 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const source=fs.readFileSync('supabase-app/app.js','utf8');
 const extract=n=>{const i=source.search(new RegExp('^function '+n+'\\(','m'));assert(i>=0);const t=source.slice(i);return t.slice(0,t.indexOf('\n}',t.indexOf('{'))+2);};
 const p={id:'p',sku:'SUBLET',cost:999,qty:8};
-const c=vm.createContext({productMeta:{workOrderPartCosts:{woNo:'W1',orders:[{id:'po',po_no:'PO-1',po_date:'2026-09-29'}],lines:[{po_id:'po',wo_no:'W1',product_id:'p',unit_cost:145.26}],movements:[{product_id:'p',qty:2,unit_fifo_cost:50},{product_id:'p',qty:2,unit_fifo_cost:70}]}},transactionAvailableStock:p=>p.qty,customerPricingValue:()=>null,currentPricingCustomer:()=>"",roundCurrency:n=>Math.round(n*100)/100,syncWorkOrderPartIssuanceCheckbox:()=>{},resolveProductLookup:()=>p,calculatedWorkOrderPartPrice:cost=>cost*1.4,isCommittedProductLookup:()=>false});
-for(const n of ['productFifoCost','workOrderPartLookupCost','syncAdminPartAcceptedStatus','refreshAdminPartEditLookup'])vm.runInContext(extract(n),c);
+const c=vm.createContext({productMeta:{workOrderPartCosts:{woNo:'W1',orders:[{id:'po',po_no:'PO-1',po_date:'2026-09-29'}],lines:[{po_id:'po',wo_no:'W1',product_id:'p',unit_cost:145.26}],movements:[{product_id:'p',qty:2,unit_fifo_cost:50},{product_id:'p',qty:2,unit_fifo_cost:70}]}},editing:null,customerPartsSellingPrice:()=>123,transactionAvailableStock:p=>p.qty,customerPricingValue:()=>null,currentPricingCustomer:()=>"",roundCurrency:n=>Math.round(n*100)/100,syncWorkOrderPartIssuanceCheckbox:()=>{},resolveProductLookup:()=>p,calculatedWorkOrderPartPrice:cost=>cost*1.4,isCommittedProductLookup:()=>false});
+for(const n of ['calculatedWorkOrderPartPrice','productFifoCost','workOrderPartLookupCost','syncAdminPartAcceptedStatus','refreshAdminPartEditLookup'])vm.runInContext(extract(n),c);
 assert.equal(c.workOrderPartLookupCost(p),145.26);
 assert.equal(c.workOrderPartLookupCost(p,'PO-1'),145.26);
 c.productMeta.workOrderPartCosts.lines[0].unit_cost=0;assert.equal(c.workOrderPartLookupCost(p),0);
@@ -19,3 +19,14 @@ fields.status.value='Accepted';fields.qty_needed.value='3';fields.accepted_qty.v
 fields.status.value='Reserved';c.syncAdminPartAcceptedStatus(tr);assert.equal(tr.dataset.adminAutoAccept,'0');
 tr.dataset.originalAccepted='2';fields.unit_cost.value='44';c.refreshAdminPartEditLookup({value:'SUBLET',closest:()=>tr});assert.equal(fields.unit_cost.value,'44');
 console.log('PASS: PO-first pricing, zero PO price, FIFO fallback, unrelated/void PO exclusion, paste lookup, Accepted quantity, and issued cost preservation.');
+
+c.productMeta.workOrderPartCosts.lines[0].landed_unit_cost=5401.13;
+assert.equal(c.workOrderPartLookupCost(p,'PO-1'),5401.13);
+tr.dataset.originalAccepted='1';fields.unit_cost.value='5401.13';fields.markup_percent.value='40';fields.selling_price.value='5713.37';
+c.refreshAdminPartEditLookup({value:'SUBLET',closest:()=>tr},false);
+assert.equal(fields.selling_price.value,7561.58);
+assert.equal(fields.unit_cost.value,'5401.13');
+c.editing={invoice_no:'INV1'};fields.selling_price.value='5713.37';
+c.refreshAdminPartEditLookup({value:'SUBLET',closest:()=>tr},false);
+assert.equal(fields.selling_price.value,'5713.37','Invoiced prices stay fixed');
+console.log('PASS landed PO cost, stale selling price recalculation and invoiced price preservation');

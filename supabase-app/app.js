@@ -16543,7 +16543,7 @@ function planWorkOrderPoReservations(po, lines, parts, workOrders) {
       issue: existing?.issue || `PO ${po.po_no}`, product_id: line.product_id || null,
       sku: line.sku, product_name: line.product_name,
       qty_needed: Math.max(qty, accepted), accepted_qty: accepted,
-      unit_cost: accepted > 0 ? Number(existing.unit_cost || 0) : Number(line.unit_cost || 0),
+      unit_cost: accepted > 0 ? Number(existing.unit_cost || 0) : Number(line.landed_unit_cost ?? line.unit_cost ?? 0),
       status: accepted > 0 ? (accepted < qty ? 'Partially Accepted' : existing.status) : 'Reserved',
       availability: existing?.availability || 'Pending receipt / acceptance',
       notes: [existing?.notes, workOrderPartOriginPo(existing || {}) ? '' : `Reserved from PO ${po.po_no} for ${line.wo_no}`,
@@ -25350,7 +25350,9 @@ function workOrderPartOriginPo(part = {}) {
 function workOrderPartsAdminEditTable(wo) {
   const activeParts = (wo._parts || []).filter((part) => !isWorkOrderPartHistory(part)).map(part => {
     const markup = customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent");
-    return markup === null || wo.invoice_no ? part : { ...part, markup_percent: markup, selling_price: workOrderPartSellingPrice(part, {}, wo.bill_to_customer || wo.customer) };
+    if (wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || "")) return part;
+    const effectiveMarkup = markup ?? part.markup_percent;
+    return { ...part, markup_percent: effectiveMarkup, selling_price: calculatedWorkOrderPartPrice(part.unit_cost, effectiveMarkup, part.selling_price) };
   });
   const voidedParts = (wo._parts || []).filter(isWorkOrderPartHistory);
   const rows = [...activeParts, ...Array.from({ length: Math.max(3, 6 - activeParts.length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
@@ -25835,7 +25837,7 @@ function workOrderPartLookupCost(product, sourcePo = "", fifoFallback = true) {
     const pa = byId.get(String(a.po_id)), pb = byId.get(String(b.po_id));
     return String(pb.po_date || "").localeCompare(String(pa.po_date || "")) || String(pb.po_no || "").localeCompare(String(pa.po_no || ""), undefined, { numeric: true });
   });
-  return matches.length ? Number(matches[0].unit_cost) : fifoFallback ? productFifoCost(product, context.movements || [], context.receipts || []) : null;
+  return matches.length ? Number(matches[0].landed_unit_cost ?? matches[0].unit_cost) : fifoFallback ? productFifoCost(product, context.movements || [], context.receipts || []) : null;
 }
 
 function syncAdminPartAcceptedStatus(tr) {
@@ -25873,12 +25875,18 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
   };
   set("product_name", product.name || "");
   set("on_hand_qty", transactionAvailableStock(product));
-  const poControlled = Boolean(tr.dataset.sourcePo);
   const lookupCost = workOrderPartLookupCost(product, tr.dataset.sourcePo || "");
   if (Number(tr.dataset.originalAccepted || 0) <= 0) set("unit_cost", lookupCost, !replacePricing);
   const customerMarkup = customerPricingValue(currentPricingCustomer(), "parts_markup_percent");
   set("markup_percent", customerMarkup ?? product.markup_percent ?? "", true);
-  if (!poControlled) set("selling_price", customerPartsSellingPrice(product, currentPricingCustomer(), lookupCost), !replacePricing);
+  const displayedCost = tr.querySelector('[data-admin-part="unit_cost"]')?.value;
+  const displayedMarkup = tr.querySelector('[data-admin-part="markup_percent"]')?.value;
+  if (!editing?.invoice_no && !/invoiced|void|cancel/i.test(editing?.status || "")) {
+    const selling = tr.querySelector('[data-admin-part="selling_price"]');
+    const hasMarkup = displayedMarkup !== "" && displayedMarkup != null;
+    if (hasMarkup) set("selling_price", calculatedWorkOrderPartPrice(displayedCost, displayedMarkup, selling?.value));
+    else set("selling_price", customerPartsSellingPrice(product, currentPricingCustomer(), displayedCost), !replacePricing);
+  }
   set("availability", Number(product.qty || 0) > 0 ? "OK" : "Out of stock");
   const status = tr.querySelector('[data-admin-part="status"]');
   if (status && /requested|shortage|needs/i.test(status.value || "")) status.value = Number(product.qty || 0) > 0 ? "Reserved" : "Shortage";
