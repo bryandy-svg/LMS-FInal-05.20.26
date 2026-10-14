@@ -1,0 +1,6 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+let fail=false;const data={work_orders:[{id:'w',wo_no:'W100043',status:'Invoiced',invoice_no:'I1'}],work_order_parts:[{id:'p',wo_id:'w',sku:'NAPA46',accepted_qty:2}],work_order_issues:[],work_order_labor:[]};
+const calls=[];const c=vm.createContext({salesDeliveryRows:async(table,column,ids)=>{calls.push({table,column,ids});if(fail&&table==='work_order_parts')throw Error('parts unavailable');return data[table]}});vm.runInContext(functions(['loadWorkOrderEditorRecord']),c);
+(async()=>{const stale={id:'w',status:'Open',_parts:[]};let fresh=await c.loadWorkOrderEditorRecord(stale);assert.equal(fresh._parts.length,1);assert.equal(fresh.status,'Invoiced');assert.equal(stale._parts.length,0);assert(calls.every(call=>call.ids[0]==='w'));
+ data.work_order_parts.push({id:'p2',wo_id:'w',sku:'AF2033'});fresh=await c.loadWorkOrderEditorRecord(stale);assert.equal(fresh._parts.length,2,'Reopening must fetch fresh rows');
+ fail=true;await assert.rejects(c.loadWorkOrderEditorRecord(stale),/parts unavailable/);fail=false;data.work_orders=[];await assert.rejects(c.loadWorkOrderEditorRecord(stale),/no longer/);console.log('PASS fresh editor parts and status, scoped reads, refresh and failure protection');})().catch(e=>{console.error(e);process.exitCode=1});

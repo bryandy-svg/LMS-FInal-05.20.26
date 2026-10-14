@@ -23925,11 +23925,23 @@ function parseWorkOrderIssueRows() {
   }).filter((row) => row.issue || row.work_notes);
 }
 
+async function loadWorkOrderEditorRecord(wo) {
+  if (!wo?.id) throw new Error("The work order could not be identified. Refresh and try again.");
+  const [headers, parts, issues, labor] = await Promise.all([
+    salesDeliveryRows("work_orders", "id", [wo.id]),
+    salesDeliveryRows("work_order_parts", "wo_id", [wo.id]),
+    salesDeliveryRows("work_order_issues", "wo_id", [wo.id]),
+    salesDeliveryRows("work_order_labor", "wo_id", [wo.id]),
+  ]);
+  if (!headers.length) throw new Error("This work order is no longer available. Refresh and try again.");
+  const previousParts = new Map((wo._parts || []).map(part => [part.id, part]));
+  return { ...wo, ...headers[0], _parts: parts.map(part => ({ ...previousParts.get(part.id), ...part })), _issues: issues, _labor: labor };
+}
+
 async function openWorkOrderEditModal(wo, options = {}) {
-  await ensureListEditorProducts();
   if (!wo) return;
+  [wo] = await Promise.all([loadWorkOrderEditorRecord(wo), ensureListEditorProducts(), ensureWorkOrderModalMeta()]);
   const auditReadOnly = Boolean(options.readOnly || wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || ""));
-  await ensureWorkOrderModalMeta();
   productMeta.workOrderPartCosts = await loadWorkOrderPartCostContext(wo);
   editing = wo;
   const editAssetDetails = workOrderAssetDetails(wo);
