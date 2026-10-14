@@ -7864,7 +7864,7 @@ async function validateArSettlementAllocations(allocations, postingDate) {
   for (let i = 0; i < numbers.length; i += 100) {
     const batch = numbers.slice(i, i + 100);
     const results = await Promise.all([
-      supabase.from("invoices").select("invoice_no,customer,status").in("invoice_no", batch),
+      supabase.from("invoices").select("id,invoice_no,customer,status,type,invoice_date,invoice_lines(qty,rate)").in("invoice_no", batch),
       supabase.from("general_ledger").select("id,invoice_no,reference,customer,account,debit,credit,posting_date,entry_date,status").in("invoice_no", batch),
       supabase.from("general_ledger").select("id,invoice_no,reference,customer,account,debit,credit,posting_date,entry_date,status").in("reference", batch),
     ]);
@@ -7872,14 +7872,25 @@ async function validateArSettlementAllocations(allocations, postingDate) {
     invoices.push(...(results[0].data || []));
     results.slice(1).flatMap(result => result.data || []).forEach(row => ledger.set(row.id, row));
   }
+  const beginningNumbers = invoices.filter(invoice => /^beginning ar$/i.test(invoice.type || "")).map(invoice => invoice.invoice_no);
+  const beginningPayments = beginningNumbers.length ? await salesDeliveryRows("customer_payments", "invoice_no", beginningNumbers) : [];
   for (const item of allocations) {
     const invoice = invoices.find(row => row.invoice_no === item.row.invoice_no);
     if (!invoice || /void|revers|cancel|written off|paid/i.test(invoice.status || "")) throw new Error(item.row.invoice_no + " is no longer an open invoice. Refresh before posting.");
     const key = value => canonicalPartyName(value || "").trim().toLowerCase();
     if (key(invoice.customer) !== key(item.row.customer)) throw new Error(item.row.invoice_no + " customer changed. Refresh before posting.");
     const support = [...ledger.values()].filter(row => (row.invoice_no === invoice.invoice_no || (!row.invoice_no && row.reference === invoice.invoice_no)) && key(row.customer) === key(invoice.customer) && subledgerAccountMatches(row.account, "Accounts Receivable") && !/draft|unposted/i.test(row.status || "") && String(row.posting_date || row.entry_date || "").slice(0, 10) <= postingDate);
-    const balance = roundCurrency(support.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
-    if (!support.length || item.amount > balance + 0.005) throw new Error(invoice.invoice_no + " has only " + money(balance) + " posted Accounts Receivable available on " + postingDate + ". Review its reversals, payments, and correction dates before posting this settlement.");
+    const beginning = /^beginning ar$/i.test(invoice.type || "");
+    const opening = beginning && invoice.invoice_date && invoice.invoice_date <= postingDate
+      ? (invoice.invoice_lines || []).reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.rate || 0), 0) : 0;
+    // Beginning detail allocates the Trial Balance control total; it has no per-invoice opening GL debit.
+    let balance = roundCurrency(opening + support.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
+    if (beginning) {
+      const paid = beginningPayments.filter(row => row.invoice_no === invoice.invoice_no && !/void|revers|cancel/i.test(row.status || ""))
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      balance = Math.min(balance, roundCurrency(opening - paid));
+    }
+    if ((!beginning && !support.length) || item.amount > balance + 0.005) throw new Error(invoice.invoice_no + " has only " + money(balance) + " posted Accounts Receivable available on " + postingDate + ". Review its reversals, payments, and correction dates before posting this settlement.");
   }
 }
 
@@ -19892,7 +19903,7 @@ function wireSalesOrderLinePricing() {
       const shipped = Math.max(0, Number(tr.dataset.shippedQty || 0));
       const existingIssued = Math.max(shipped, Number(tr.dataset.issuedQty || 0));
       // ISS is persisted reservation history, never an estimate from on-hand stock.
-      issuedCell.innerHTML = `${esc(existingIssued)}<br><button type="button" class="linkbtn" data-sales-reservations>View reservations</button>`;
+      issuedCell.innerHTML = `${esc(existingIssued)}<br><button type="button" class="linkbtn" data-sales-reservations title="View reservations" aria-label="View reservations">R</button>`;
       issuedCell.title = "Saved reserved quantity (ISS). Save the order to reserve available stock; other orders may already hold it.";
       issuedCell.querySelector('[data-sales-reservations]').onclick = () => showSalesPartReservations(product.sku);
     };
@@ -20346,11 +20357,40 @@ async function salesReservationShortages(orderNo, lines = []) {
   return availability.filter((line) => Math.max(0, Number(line.qty || 0) - Number(line.shipped_qty || 0)) > Number(line.available || 0));
 }
 
-async function salesReservationAvailability(orderNo, lines = []) {
-  const [orders, savedLines] = await Promise.all([getAll("sales_orders"), getAll("sales_order_lines")]);
+// Fresh scoped reads: stock and reservations must not come from the view cache.
+async function salesDeliveryRows(table, column, values, columns = "*") {
+  const unique = [...new Set(values.filter(Boolean))];
+  const groups = column === "sku" ? unique.map(value => [value]) : Array.from({ length: Math.ceil(unique.length / 100) }, (_, i) => unique.slice(i * 100, i * 100 + 100));
+  const results = await Promise.all(groups.map(async group => {
+    const rows = [];
+    for (let offset = 0; ; offset += 500) {
+      let query = supabase.from(table).select(columns);
+      query = column === "sku" ? query.ilike(column, group[0].replace(/[\\%_]/g, value => "\\" + value)) : query.in(column, group);
+      const { data, error } = await query.order("id").range(offset, offset + 499);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if ((data || []).length < 500) return rows;
+    }
+  }));
+  return [...new Map(results.flat().map(row => [row.id, row])).values()];
+}
+
+async function loadSalesDeliveryContext(lines = []) {
+  const skus = lines.map(line => String(line.sku || "").trim());
+  const [byId, bySku, savedLines] = await Promise.all([
+    salesDeliveryRows("products", "id", lines.map(line => line.product_id)),
+    salesDeliveryRows("products", "sku", skus),
+    salesDeliveryRows("sales_order_lines", "sku", skus, "id,order_id,sku,issued_qty,shipped_qty"),
+  ]);
+  const orders = await salesDeliveryRows("sales_orders", "id", savedLines.map(line => line.order_id), "id,order_no,status,order_date,customer");
+  return { products: [...new Map([...bySku, ...byId].map(row => [row.id, row])).values()], orders, savedLines };
+}
+
+async function salesReservationAvailability(orderNo, lines = [], context = null) {
+  const { orders, savedLines, products } = context || await loadSalesDeliveryContext(lines);
   const activeOrderIds = new Set(orders.filter((order) => order.order_no !== orderNo && !/fulfilled|delivered|paid|void|reversed|cancel/i.test(order.status || "")).map((order) => String(order.id || "")));
   return (lines || []).map((line) => {
-    const product = (productMeta.products || []).find((row) => row.sku === line.sku);
+    const product = products.find((row) => String(row.sku || "").trim().toLowerCase() === String(line.sku || "").trim().toLowerCase());
     const reservedElsewhere = savedLines.filter((saved) => activeOrderIds.has(String(saved.order_id || "")) && String(saved.sku || "").trim().toLowerCase() === String(line.sku || "").trim().toLowerCase()).reduce((sum, saved) => sum + Math.max(0, Number(saved.issued_qty || 0) - Number(saved.shipped_qty || 0)), 0);
     const available = Math.max(0, Number(product?.qty || 0) - reservedElsewhere);
     return { ...line, available, reservedElsewhere };
@@ -20372,7 +20412,7 @@ async function showSalesPartReservations(sku) {
   dialog.querySelector('[data-reservation-close]').onclick = () => { dialog.close(); dialog.remove(); };
   dialog.addEventListener('cancel', () => dialog.remove());
   try {
-    const [orders, lines, products] = await Promise.all([getAll('sales_orders'), getAll('sales_order_lines'), getAll('products')]);
+    const { orders, savedLines: lines, products } = await loadSalesDeliveryContext([{ sku }]);
     if (!dialog.isConnected) return;
     const rows = salesPartReservationRows(sku, orders, lines);
     const product = products.find(row => String(row.sku || '').trim().toLowerCase() === String(sku || '').trim().toLowerCase());
@@ -20847,9 +20887,9 @@ async function issueSalesOrder(orderNo) {
   const order = currentRows.find((row) => row.order_no === orderNo);
   if (!order || /void|reversed|cancelled/i.test(order.status || "")) return;
   if (String(order.status || "").toLowerCase() === "quotation") return alert("Quotation cannot be issued. Convert or approve it first.");
-  const products = await getAll("products");
-  productMeta.products = products;
-  const reservationAvailability = await salesReservationAvailability(orderNo, order._lines || []);
+  const context = await loadSalesDeliveryContext(order._lines || []);
+  const products = context.products;
+  const reservationAvailability = await salesReservationAvailability(orderNo, order._lines || [], context);
   const availabilityBySku = new Map(reservationAvailability.map((line) => [String(line.sku || "").trim().toLowerCase(), line]));
   const rows = (order._lines || []).map((line, index) => {
     const product = products.find((item) => item.id === line.product_id || String(item.sku || "").toLowerCase() === String(line.sku || "").toLowerCase()) || {};

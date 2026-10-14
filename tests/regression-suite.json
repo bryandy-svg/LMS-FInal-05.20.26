@@ -87,5 +87,7 @@
   "work-order-open-period",
   "repairs-all-column-search",
   "connected-email",
-  "sales-reservation-visibility"
+  "sales-reservation-visibility",
+  "sales-delivery-loading",
+  "beginning-ar-settlement"
 ]
