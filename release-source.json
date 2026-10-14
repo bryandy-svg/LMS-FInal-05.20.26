@@ -116,7 +116,7 @@
     "tests/regression/po-issuance-recipients.cjs": "2325d48f4fecd15aa27f1dd364d3de691632240d5e82dfe34c99b9ee09c7a0f4",
     "tests/regression/po-line-save.cjs": "41e0743f59ff318e533c7e66e483fccb315ef76adfb79a52a10b8d8d104e243d",
     "tests/regression/po-match.cjs": "f5a6912c6b172238ac8e938213de9afef575504ba2a424119e3d9a8bdd9e77cc",
-    "tests/regression/po-replacement-reservations.cjs": "800c916059dd772b1bb90dd8d2760dc05b0b1746d74017e54793e349336a2fc3",
+    "tests/regression/po-replacement-reservations.cjs": "d2f8375608fdb07c773d9a35883001e59309322628ebbbe599419776fb8e9844",
     "tests/regression/posting-date-prompts.cjs": "429deafc017ffccdb7d7a9083d09a7d9d1455e1f89b418b974ea8c33626a5676",
     "tests/regression/product-deactivation.cjs": "c1657022f584d51be956ca8e6de473789e7f1593501df5f3529f432f8802e277",
     "tests/regression/product-exact-sku.cjs": "f8395e9f1412ba0a38afc69e7d6a6067e5f9229b32d6cd7e91df60d9b44fa4f8",
