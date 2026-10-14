@@ -33461,6 +33461,9 @@ function truckingSimpleTable(rows, columns, options = {}) {
   const filterSelect = (col, index) => {
     const values = [...new Set(safeRows.map((row) => filterValue(row?.[col])))]
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    if (String(options.wrapClass || "").split(/\s+/).includes("repair-report-table")) {
+      return `<details class="report-multi-filter" data-column-index="${index}" ontoggle="positionReportMultiFilter(this)"><summary aria-label="Filter ${safe(labels[col] || col)}">All</summary><div class="report-multi-options"><input type="search" placeholder="Search values" aria-label="Search filter values" oninput="searchReportMultiFilter(this)"><label><input type="checkbox" data-report-all checked onchange="toggleReportMultiFilterAll(this)"> Select all</label>${values.map(value => `<label data-report-option><input type="checkbox" value="${safe(value)}" checked onchange="applyReportMultiFilters(this)"> ${safe(value || "(Blank)")}</label>`).join("")}<button type="button" onclick="this.closest('details').open=false">Done</button></div></details>`;
+    }
     return `<select class="truck-column-filter" data-column-index="${index}" onchange="applyTruckingTableFilters(this)" aria-label="Filter ${safe(labels[col] || col)}">
       <option value="">All</option>
       ${values.map((value) => `<option value="${safe(value)}">${safe(value || "(Blank)")}</option>`).join("")}
@@ -33563,6 +33566,45 @@ function exportTruckingVisibleTable(button) {
   downloadCsv([headers, ...visibleRows, ...footerRows], `${fileView}-visible-${truckingToday()}.csv`);
 }
 
+function positionReportMultiFilter(details) {
+  if (!details.open) return;
+  const rect = details.querySelector('summary').getBoundingClientRect();
+  const menu = details.querySelector('.report-multi-options');
+  document.querySelectorAll('.report-multi-filter[open]').forEach(other => { if (other !== details) other.open = false; });
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 288)) + 'px';
+  menu.style.top = Math.min(rect.bottom + 4, Math.max(8, window.innerHeight - 330)) + 'px';
+}
+
+function searchReportMultiFilter(input) {
+  const query = input.value.trim().toLowerCase();
+  input.closest('details').querySelectorAll('[data-report-option]').forEach(label => { label.hidden = !label.textContent.toLowerCase().includes(query); });
+}
+
+function toggleReportMultiFilterAll(input) {
+  input.closest('details').querySelectorAll('[data-report-option] input').forEach(box => { if (!box.closest('label').hidden) box.checked = input.checked; });
+  applyReportMultiFilters(input);
+}
+
+function applyReportMultiFilters(control) {
+  const wrap = control.closest('.tablewrap');
+  if (!wrap) return;
+  const filters = [...wrap.querySelectorAll('.report-multi-filter')].map(details => {
+    const boxes = [...details.querySelectorAll('[data-report-option] input')];
+    const values = boxes.filter(box => box.checked).map(box => box.value);
+    details.querySelector('summary').textContent = values.length === boxes.length ? 'All' : values.length ? values.length + ' selected' : 'None';
+    const all = details.querySelector('[data-report-all]');
+    all.checked = values.length === boxes.length;
+    all.indeterminate = values.length > 0 && values.length < boxes.length;
+    return {col: Number(details.dataset.columnIndex), values: new Set(values)};
+  });
+  let heading = null;
+  for (const row of wrap.querySelectorAll('tbody tr')) {
+    if (row.dataset.truckingGroupRow === 'true') { heading = row; heading.hidden = true; continue; }
+    row.hidden = !filters.every(filter => filter.values.has(String(row.children[filter.col]?.dataset.filterValue ?? '')));
+    if (!row.hidden && heading) heading.hidden = false;
+  }
+}
+
 function applyTruckingTableFilters(control) {
   const wrap = control?.closest?.(".tablewrap");
   if (!wrap) return;
@@ -33596,6 +33638,17 @@ function syncTruckingTicketSelectAll(scope = document) {
 function clearTruckingTableFilters(button) {
   const wrap = button?.closest?.(".tablewrap");
   if (!wrap) return;
+  const multi = [...wrap.querySelectorAll('.report-multi-filter')];
+  if (multi.length) {
+    multi.forEach(details => {
+      details.querySelectorAll('[data-report-option] input').forEach(box => { box.checked = true; });
+      details.querySelectorAll('[data-report-option]').forEach(label => { label.hidden = false; });
+      details.querySelector('input[type="search"]').value = '';
+      details.open = false;
+    });
+    applyReportMultiFilters(button);
+    return;
+  }
   const excelInputs = [...wrap.querySelectorAll(".column-filter")];
   if (excelInputs.length) {
     excelInputs.forEach((input) => {
