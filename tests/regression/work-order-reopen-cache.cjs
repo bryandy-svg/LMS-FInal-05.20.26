@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
 let calls=0,now=1000,fail=false;
-const c=vm.createContext({Date:{now:()=>now},session:{user:{id:'u'}},productMeta:{},viewWritesInProgress:0,viewReadGeneration:0,viewReadCache:new Map(),moduleListPages:new Map(),sessionWarmAttempted:new Set(),structuredClone,AbortController,setTimeout,clearTimeout,supabase:{rpc(){calls++;return {order(){return this},range(){return this},abortSignal(){return Promise.resolve(fail?{error:{message:'offline'}}:{data:[{sku:'PART',reserved_qty:3}]})}}}}});
+const c=vm.createContext({assert,Date:{now:()=>now},session:{user:{id:'u'}},productMeta:{},viewWritesInProgress:0,viewReadGeneration:0,viewReadCache:new Map(),moduleListPages:new Map(),sessionWarmAttempted:new Set(),structuredClone,AbortController,setTimeout,clearTimeout,supabase:{rpc(){calls++;return {gt(column,value){assert.equal(column,'reserved_qty');assert.equal(value,0);return this},order(){return this},range(){return this},abortSignal(){return Promise.resolve(fail?{error:{message:'offline'}}:{data:[{sku:'PART',reserved_qty:3}]})}}}}});
 vm.runInContext(functions(['getViewData','invalidateChangedTable','loadTransactionReservations']),c);
 (async()=>{
 await Promise.all([c.loadTransactionReservations(),c.loadTransactionReservations()]);assert.equal(calls,1,'Concurrent opens share one request');

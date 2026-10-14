@@ -740,7 +740,7 @@ function refreshPartBinCell(tr, product = {}) {
 
 function transactionAvailableStock(product = {}) {
   const key = String(product.sku || "").trim().toLowerCase();
-  const reserved = productMeta.transactionReservations?.get(key);
+  const reserved = productMeta.transactionReservations ? (productMeta.transactionReservations.get(key) ?? 0) : null;
   return Math.max(0, reserved == null ? Number(product.available_qty ?? product.qty ?? 0) : Number(product.qty || 0) - reserved);
 }
 
@@ -748,7 +748,7 @@ async function loadTransactionReservations() {
   const rows = await getViewData("transaction-reservations", async (signal) => {
     const result = [];
     for (let offset = 0; ; offset += 500) {
-      const { data, error } = await supabase.rpc("get_product_inventory_control_totals").order("product_id").range(offset, offset + 499).abortSignal(signal);
+      const { data, error } = await supabase.rpc("get_product_inventory_control_totals").gt("reserved_qty", 0).order("product_id").range(offset, offset + 499).abortSignal(signal);
       if (error) throw new Error("Could not load available stock. Please retry. " + error.message);
       result.push(...(data || []));
       if ((data || []).length < 500) return result;
