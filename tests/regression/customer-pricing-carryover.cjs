@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+const customer={name:'LMS',parts_markup_percent:40,mechanic_hourly_rate:50};const c=vm.createContext({productMeta:{customerRows:[customer],mechanicsRows:[{name:'Tech',hourly_rate:35}],salesPricingRates:[]},normalizedMasterName:x=>x.toLowerCase(),canonicalPartyName:x=>x,salesInventoryUnitCost:p=>p.cost,document:{getElementById:()=>({value:''}),querySelector:()=>({value:'LMS'})},editing:null});
+vm.runInContext(functions(['customerPricingRow','customerPricingValue','currentPricingCustomer','customerPartsSellingPrice','customerMechanicRate','selectedSalesPricingRate','salesPricingRatePrice','workOrderPartSellingPrice']),c);
+const product={cost:100,selling_price:175};
+assert.equal(c.customerPartsSellingPrice(product,'LMS'),140);assert.equal(c.customerMechanicRate('LMS','Tech'),50);assert.equal(c.salesPricingRatePrice(product,c.selectedSalesPricingRate()),140);assert.equal(c.workOrderPartSellingPrice({unit_cost:100},product,'LMS'),140);
+customer.parts_markup_percent='';customer.mechanic_hourly_rate=null;assert.equal(c.customerPartsSellingPrice(product,'LMS'),175);assert.equal(c.customerMechanicRate('LMS','Tech'),35);assert.equal(c.selectedSalesPricingRate(),null);
+customer.parts_markup_percent=0;customer.mechanic_hourly_rate=0;assert.equal(c.customerPartsSellingPrice(product,'LMS'),100);assert.equal(c.customerMechanicRate('LMS','Tech'),0);
+customer.parts_markup_percent=' ';assert.equal(c.customerPricingValue('LMS','parts_markup_percent'),null);
+assert.equal(c.customerPartsSellingPrice(product,'Unknown'),175);assert.equal(c.customerMechanicRate('Unknown','Tech'),35);
+console.log('PASS customer markup and hourly rate, blank fallback, explicit zero, and sales cost multiplier');
