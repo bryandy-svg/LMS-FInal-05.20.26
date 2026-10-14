@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {functions}=require('../source.cjs');
+let printed='';
+const product={id:'p',sku:'PART',name:'Part',bin_shelf:'A1 / B2',qty:5};
+const c=vm.createContext({productMeta:{products:[product]},esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;'),money:v=>String(v),transactionAvailableStock:()=>5,productOptionsDatalist:()=>'',salesInventoryUnitCost:()=>10,salesAlternateAvailabilityHtml:()=>'',workOrderIssuanceRequestedBy:()=>'',formatDisplayDate:v=>v,today:()=>'',profile:{},openPrintWindow:html=>{printed=html;}});
+vm.runInContext(functions(['partBinLocation','refreshPartBinCell','quotationLineRowHtml','salesLineRowHtml','printHistoricalWorkOrderIssuance','printPartsIssuanceReprint']),c);
+assert.equal(c.partBinLocation({sku:'part'}),'A1 / B2');assert.equal(c.partBinLocation({sku:'unknown'}),'');assert.equal(c.partBinLocation({sku:'PART',bin_shelf:'C3'}),'C3');
+const cell={textContent:''},tr={querySelector:()=>cell};c.refreshPartBinCell(tr,product);assert.equal(cell.textContent,'A1 / B2');c.refreshPartBinCell(tr);assert.equal(cell.textContent,'');
+for(const fn of ['quotationLineRowHtml','salesLineRowHtml'])assert.match(c[fn]({sku:'PART'}),/data-part-bin>A1 \/ B2/);
+c.printHistoricalWorkOrderIssuance({wo_no:'W1'},[{sku:'PART',qty:-1}]);assert.match(printed,/<th>Bin #<\/th>/);assert.match(printed,/A1 \/ B2/);
+c.printPartsIssuanceReprint([{sku:'PART',issued_qty:1,unit_cost_value:1,total_cost_value:1}]);assert.match(printed,/<th>Bin #<\/th>/);assert.match(printed,/A1 \/ B2/);
+for(const name of ['printQuotation','printSalesOrder','printCustomerInvoice','printablePartsInvoiceLine','printableInvoiceLine'])assert.doesNotMatch(functions([name]),/partBinLocation|bin_shelf|Bin #/,'Customer output excludes bins: '+name);
+console.log('PASS editor bins, selection changes, missing bins, issuance printing, and customer PDF exclusion');
