@@ -21192,12 +21192,12 @@ async function postPartialSalesOrderInvoiceAccounting(order, invoice, lines = []
   assertBalancedLedgerRows(rows, `Partial Sales Order invoice ${invoice.invoice_no}`);
   await supabase.from("general_ledger").delete().eq("reference", invoice.invoice_no).eq("source", "Sales Order Invoice");
   if (rows.length) await upsertManyWithOptionalColumns("general_ledger", rows, "id", ["bank_reference"]);
-  if (paymentMode === "credit card" && netReceivable > 0) {
-    await settlePostedCreditCardInvoice(invoice, netReceivable);
+  if (["cash", "credit card"].includes(paymentMode) && netReceivable > 0) {
+    await settlePostedCreditCardInvoice(invoice, netReceivable, paymentMode === "cash" ? "Cash" : "Credit Card");
   }
 }
 
-async function settlePostedCreditCardInvoice(invoice, amount) {
+async function settlePostedCreditCardInvoice(invoice, amount, method = "Credit Card") {
   // Settlement detail only: the invoice posting already debited the bank.
   // Never call postCustomerPayment here, which would debit cash a second time.
   const { data: ledger, error: ledgerError } = await supabase.from("general_ledger")
@@ -21209,7 +21209,7 @@ async function settlePostedCreditCardInvoice(invoice, amount) {
   const ar = posted.filter((row) => /accounts receivable/i.test(row.account || ""))
     .reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
   if (!(amount > 0) || Math.abs(bank - amount) > 0.004 || Math.abs(ar) > 0.004) {
-    throw new Error(`Credit-card settlement for ${invoice.invoice_no} does not match its posted bank receipt. Review Accounting before marking it paid.`);
+    throw new Error(`Cash/card settlement for ${invoice.invoice_no} does not match its posted bank receipt. Review Accounting before marking it paid.`);
   }
   const { data: payments, error: paymentsError } = await supabase.from("customer_payments")
     .select("*").eq("invoice_no", invoice.invoice_no);
@@ -21221,7 +21221,7 @@ async function settlePostedCreditCardInvoice(invoice, amount) {
   }
   if (!active.length) await upsertOne("customer_payments", {
     receipt_no: receiptNo, invoice_no: invoice.invoice_no, customer: invoice.customer,
-    payment_date: invoice.invoice_date, amount, method: "Credit Card",
+    payment_date: invoice.invoice_date, amount, method,
     bank_reference: invoice.invoice_no, status: "Posted",
     notes: "Settlement link only: bank receipt already posted by Sales Order Invoice. Do not repost this receipt.",
   }, "receipt_no");
@@ -28112,6 +28112,7 @@ function invoiceFromPaymentLookup(value) {
 }
 
 async function saveCustomerPaymentModal() {
+  if (editing && !/draft/i.test(editing.status || "")) return alert("Posted receipts cannot be reposted by editing. Reverse the original receipt before entering a replacement.");
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
   const invoice = invoiceFromPaymentLookup(record.invoice_lookup || record.invoice_no || "");
@@ -28149,6 +28150,7 @@ async function saveCustomerPaymentModal() {
   }
   try {
     const wasNew = !editing;
+    if (record.status !== "Void") await validateArSettlementAllocations([{ row: { ...invoice, customer: record.customer }, amount: record.amount }], record.payment_date);
     await upsertOne("customer_payments", record, "receipt_no");
     if (record.status !== "Void") await postCustomerPayment(record, invoice);
     await writeAuditLog({ tableName: "customer_payments", action: wasNew ? "Created" : "Updated", beforeData: editing, afterData: record });
