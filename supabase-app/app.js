@@ -726,7 +726,25 @@ function finishModuleListScope(state) {
   more.onclick=()=>loadView(state.view,{append:true});
   if(state.more) moduleListTimer=setTimeout(grow,2500);
 }
+function transactionAvailableStock(product = {}) {
+  const key = String(product.sku || "").trim().toLowerCase();
+  const reserved = productMeta.transactionReservations?.get(key);
+  return Math.max(0, reserved == null ? Number(product.available_qty ?? product.qty ?? 0) : Number(product.qty || 0) - reserved);
+}
+
+async function loadTransactionReservations() {
+  const rows = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.rpc("get_product_inventory_control_totals").order("product_id").range(offset, offset + 499);
+    if (error) throw new Error("Could not load available stock. Please retry. " + error.message);
+    rows.push(...(data || []));
+    if ((data || []).length < 500) break;
+  }
+  productMeta.transactionReservations = new Map(rows.map(row => [String(row.sku || "").trim().toLowerCase(), Number(row.reserved_qty || 0)]));
+}
+
 async function ensureListEditorProducts() {
+  await loadTransactionReservations();
   productMeta.products ||= [];
   if(currentView==='orders') {
     productMeta.workOrders=await getPagedViewRows('work_orders');
@@ -18567,7 +18585,7 @@ function refreshQuotationTotal() {
 }
 
 function quotationLineRows(lines) {
-  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>On Hand</th><th>Unit</th><th>Qty</th><th>Internal Unit Cost</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><th colspan="6">Quote total including freight</th><th id="quotationGrandTotal"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
+  return `<div class="table-wrap"><table class="line-table"><thead><tr><th>Product</th><th>Available</th><th>Unit</th><th>Qty</th><th>Internal Unit Cost</th><th>Sales Price</th><th>Amount</th></tr></thead><tbody id="quoteLineBody">${lines.map((line, i) => quotationLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><th colspan="6">Quote total including freight</th><th id="quotationGrandTotal"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addQuoteLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
 function quotationLineRowHtml(line = {}, index = 0) {
@@ -18578,7 +18596,7 @@ function quotationLineRowHtml(line = {}, index = 0) {
   const unit = line.unit || product.unit || "";
   return `<tr>
     <td><input class="suggest-input" list="poProductOptions" data-quote-line="sku" data-line-index="${index}" value="${esc(label)}" placeholder="Search SKU, name, vendor" autocomplete="off">${productOptionsDatalist()}</td>
-    <td data-quote-onhand>${esc(product.qty ?? "")}</td>
+    <td data-quote-onhand>${esc(transactionAvailableStock(product))}</td>
     <td data-quote-unit>${esc(unit)}</td>
     <td><input type="number" step="0.01" data-quote-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}"></td>
     <td><input type="number" min="0" step="0.01" data-quote-line="unit_cost" value="${esc(line.unit_cost ?? product.cost ?? '')}" title="Internal cost — excluded from customer PDF"></td>
@@ -18614,7 +18632,7 @@ function wireQuotationLinePricing() {
       skuInput.value = `${product.sku} - ${product.name || ""}`;
       const onHandCell = tr.querySelector("[data-quote-onhand]");
       const unitCell = tr.querySelector("[data-quote-unit]");
-      if (onHandCell) onHandCell.textContent = product.qty ?? "";
+      if (onHandCell) onHandCell.textContent = transactionAvailableStock(product);
       if (unitCell) unitCell.textContent = product.unit || "";
       if (priceInput) priceInput.value = customerPartsSellingPrice(product, currentPricingCustomer());
       const costInput = tr.querySelector('[data-quote-line="unit_cost"]');
@@ -19807,7 +19825,7 @@ function setupSalesOrderModalFooter(order = null) {
 }
 
 function salesLineRows(lines, linkedPoMap = {}, savedOrder = false) {
-  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th class="sales-po-select-col">PO</th><th>SKU</th><th>Product Name / Description</th><th>UOM</th><th>On Hand</th><th>Inventory / FIFO Cost</th><th title="Quantity ordered by the customer">ORD</th><th title="Quantity automatically reserved when the Sales Order is saved">ISS</th><th title="Quantity shipped/released to the customer and deducted from inventory">SHP</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th><th>Vendor PO Ref.</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i, linkedPoMap)).join("")}</tbody><tfoot><tr><th colspan="10">Parts subtotal</th><th id="salesOrderPartsSubtotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Customer-billed freight</th><th id="salesOrderFreightTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Sales order total</th><th id="salesOrderGrandTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Less customer deposit</th><th id="salesOrderDepositTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Amount due</th><th id="salesOrderAmountDue">$0.00</th><th colspan="2"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}<button class="rowbtn primary" type="button" id="createSelectedSalesPoBtn" ${savedOrder ? "" : "disabled"}>Create Vendor PO from Selected</button></div>`;
+  return `<div class="table-wrap sales-line-wrap"><table class="line-table sales-line-table"><thead><tr><th class="sales-po-select-col">PO</th><th>SKU</th><th>Product Name / Description</th><th>UOM</th><th title="Physical stock less active reservations">Available</th><th>Inventory / FIFO Cost</th><th title="Quantity ordered by the customer">ORD</th><th title="Quantity automatically reserved when the Sales Order is saved">ISS</th><th title="Quantity shipped/released to the customer and deducted from inventory">SHP</th><th>Adjustable Selling Price</th><th>Amount</th><th>Alternate Part</th><th>Vendor PO Ref.</th></tr></thead><tbody id="salesLineBody">${lines.map((line, i) => salesLineRowHtml(line, i, linkedPoMap)).join("")}</tbody><tfoot><tr><th colspan="10">Parts subtotal</th><th id="salesOrderPartsSubtotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Customer-billed freight</th><th id="salesOrderFreightTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Sales order total</th><th id="salesOrderGrandTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Less customer deposit</th><th id="salesOrderDepositTotal">$0.00</th><th colspan="2"></th></tr><tr><th colspan="10">Amount due</th><th id="salesOrderAmountDue">$0.00</th><th colspan="2"></th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSalesLineBtn">Add row</button>${createPartButtonMarkup()}<button class="rowbtn primary" type="button" id="createSelectedSalesPoBtn" ${savedOrder ? "" : "disabled"}>Create Vendor PO from Selected</button></div>`;
 }
 
 function salesLineRowHtml(line = {}, index = 0, linkedPoMap = {}) {
@@ -19822,7 +19840,7 @@ function salesLineRowHtml(line = {}, index = 0, linkedPoMap = {}) {
     <td data-label="SKU"><input class="suggest-input compact-line-text" list="poProductOptions" data-suggest-source="products" data-sales-line="sku" data-line-index="${index}" value="${esc(label)}" placeholder="Search SKU" autocomplete="off" inputmode="search">${productOptionsDatalist()}</td>
     <td data-label="Product Name / Description"><textarea class="line-description compact-line-text" data-sales-line="description" data-line-index="${index}" rows="2" placeholder="Product name or description">${esc(line.description || line.product_name || product.name || "")}</textarea></td>
     <td data-label="UOM"><input class="line-uom compact-line-text" data-sales-line="unit" data-line-index="${index}" value="${esc(line.unit || product.unit || "")}" placeholder="EA"></td>
-    <td data-label="On Hand" data-sales-onhand>${esc(product.qty ?? "")}</td>
+    <td data-label="Available" data-sales-onhand>${esc(transactionAvailableStock(product))}</td>
     <td data-label="Inventory / FIFO Cost" data-sales-cost title="Current inventory unit cost from Product Master">${product.id ? money(salesInventoryUnitCost(product)) : ""}</td>
     <td data-label="ORD"><input type="number" min="0" step="0.01" data-sales-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}" ${Number(line.issued_qty || 0) > 0 ? `min="${esc(line.issued_qty)}"` : ""}></td>
     <td data-label="ISS" class="num" data-sales-issued>${esc(Number(line.issued_qty || 0))}</td>
@@ -19966,7 +19984,7 @@ function wireSalesOrderLinePricing() {
       const onHandCell = tr.querySelector("[data-sales-onhand]");
       const costCell = tr.querySelector("[data-sales-cost]");
       const availabilityCell = tr.querySelector("[data-sales-availability]");
-      if (onHandCell) onHandCell.textContent = product.qty ?? "";
+      if (onHandCell) onHandCell.textContent = transactionAvailableStock(product);
       if (costCell) costCell.textContent = money(salesInventoryUnitCost(product));
       if (availabilityCell) availabilityCell.innerHTML = salesAlternateAvailabilityHtml(product);
       const selectedRate = selectedSalesPricingRate();
@@ -25336,7 +25354,7 @@ function workOrderPartsAdminEditTable(wo) {
   });
   const voidedParts = (wo._parts || []).filter(isWorkOrderPartHistory);
   const rows = [...activeParts, ...Array.from({ length: Math.max(3, 6 - activeParts.length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
-  const heads = ["Issue PDF", "Part / SKU", "Description", "O.H. Qty", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
+  const heads = ["Issue PDF", "Part / SKU", "Description", "Available", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
   const hidden = new Set(userColumnPreferences()["repairs|work-order-parts"] || []);
   const pricingRates = (productMeta.salesPricingRates || []).filter((rate) => String(rate.status || "Active").toLowerCase() !== "inactive");
   return `${workOrderAdminProductDatalist()}<div class="actions work-order-parts-rate-actions"><select id="workOrderPartsRateSelect" aria-label="Work Order parts pricing rate"><option value="">Select parts pricing rate</option>${pricingRates.map((rate) => `<option value="${esc(rate.id)}">${esc(salesPricingRateLabel(rate))} - ${Number(rate.markup_percent || 0).toFixed(2)}% of cost</option>`).join("")}</select><button type="button" id="applyWorkOrderPartsRateBtn">Apply rate to parts</button></div><details class="column-settings-inline"><summary>Show / Hide Parts Columns</summary><div class="column-chooser">${heads.map((head) => `<label class="checkline"><input type="checkbox" data-work-order-part-column="${esc(head)}" ${hidden.has(head) ? "" : "checked"}> ${esc(head)}</label>`).join("")}</div></details><div class="table-wrap"><table class="line-table admin-parts-table" data-column-preference-key="repairs|work-order-parts" data-resizable-columns><thead><tr>${heads.map((h, index) => `<th>${index === 0 ? `<label class="issuance-select-all" title="Select all rows for Issuance PDF"><input id="selectAllWorkOrderIssuanceParts" type="checkbox" checked aria-label="Select all rows for Issuance PDF"></label>` : esc(h)}</th>`).join("")}</tr></thead><tbody id="adminPartBody">${rows.map((row, index) => workOrderPartAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminPartRowBtn">Add part row</button>${createPartButtonMarkup()}<button class="rowbtn" type="button" id="createWorkOrderReorderPoBtn">Create Reorder PO</button><button class="rowbtn primary" type="button" id="workOrderPartsIssuancePdfBtn">Issuance PDF</button><button class="rowbtn" type="button" id="resetWorkOrderPartWidthsBtn">Reset column widths</button></div><p class="notice">Drag the right edge of any column heading to resize it. Widths are remembered on this device. New part rows are selected for the issuance PDF automatically.</p>${workOrderVoidedPartsTable(voidedParts)}`;
@@ -25610,7 +25628,7 @@ function workOrderPartAdminEditRow(row = {}, index = 0) {
     <td class="issuance-select-cell"><input type="checkbox" data-part-issuance-select data-was-eligible="${populated && !alreadyIssued ? "1" : "0"}" ${populated && !alreadyIssued ? "checked" : ""} ${alreadyIssued ? "disabled" : ""} ${populated ? "" : "hidden disabled"} aria-label="Include ${esc(row.sku || row.product_name || `part row ${index + 1}`)} in issuance PDF" title="${alreadyIssued ? "Already issued — excluded from the next issuance PDF" : "Include in issuance PDF"}"></td>
     <td><input class="suggest-input" list="workOrderAdminProductOptions" data-admin-part="product_lookup" value="${esc(lookup)}" placeholder="Search SKU, product, vendor" autocomplete="off"></td>
     <td><input data-admin-part="product_name" value="${esc(row.product_name || "")}" placeholder="Description requested"></td>
-    <td><input class="admin-part-number" type="number" data-admin-part="on_hand_qty" value="${esc(product.qty ?? "")}" placeholder="Auto qty" readonly></td>
+    <td><input class="admin-part-number" type="number" data-admin-part="on_hand_qty" value="${esc(transactionAvailableStock(product))}" placeholder="Auto qty" readonly></td>
     <td><input class="admin-part-number" type="number" min="0" max="999999999999" step="0.01" data-admin-part="qty_needed" value="${esc(row.qty_needed ?? "")}"></td>
     <td><input class="admin-part-number" type="number" min="0" max="999999999999" step="0.01" data-admin-part="accepted_qty" value="${esc(row.accepted_qty ?? 0)}" readonly></td>
     <td><input class="admin-part-number" type="number" min="0" max="999999999999" step="0.01" data-admin-part="unit_cost" value="${esc(row.unit_cost ?? "")}" placeholder="Auto cost"></td>
@@ -25854,7 +25872,7 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
     if (target && (!onlyBlank || !target.value)) target.value = value ?? "";
   };
   set("product_name", product.name || "");
-  set("on_hand_qty", Number(product.qty || 0));
+  set("on_hand_qty", transactionAvailableStock(product));
   const poControlled = Boolean(tr.dataset.sourcePo);
   const lookupCost = workOrderPartLookupCost(product, tr.dataset.sourcePo || "");
   if (Number(tr.dataset.originalAccepted || 0) <= 0) set("unit_cost", lookupCost, !replacePricing);
