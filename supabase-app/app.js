@@ -36009,25 +36009,33 @@ async function consolidateRepairLocations(field, workOrders, button) {
     if (!options.sources.length) return alert("No named locations are available to consolidate. Refresh the report.");
     const dialog = document.createElement("dialog");
     dialog.className = "lookup-dialog fuel-jobsite-lookup-dialog";
-    dialog.innerHTML = '<form method="dialog"><h3>Consolidate jobsites / locations</h3><p>Choose the old name to remove and the name to keep. This combines matching records across all modules, customers and dates, including Jobsite and Actual Location. You will review the affected records before confirming.</p><div class="field"><label for="repairMergeSource">Old name to remove</label><select id="repairMergeSource" required><option value="">Select old name</option>' + options.sources.map(name => '<option value="'+esc(name)+'">'+esc(name)+'</option>').join("") + '</select></div><div class="field"><label for="repairMergeTarget">Name to keep</label><input id="repairMergeTarget" list="repairMergeTargets" maxlength="250" required autocomplete="off" placeholder="Choose an existing name or type the corrected name"><datalist id="repairMergeTargets">' + options.targets.map(name => '<option value="'+esc(name)+'"></option>').join("") + '</datalist></div><p>The old name will no longer be available after refresh. Saved entries using the retired name are redirected to the retained name. Original records remain in the audit history.</p><div class="actions"><button type="button" data-merge-cancel>Cancel</button><button class="primary" type="submit">Review consolidation</button></div></form>';
+    dialog.innerHTML = '<form method="dialog"><h3>Consolidate jobsites / locations</h3><p>Choose one or more old names to remove and the name to keep. This combines matching records across all modules, customers and dates, including Jobsite and Actual Location. You will review the affected records before confirming.</p><div class="field"><label for="repairMergeSearch">Old names to remove</label><input id="repairMergeSearch" type="search" placeholder="Search similar old names"><div id="repairMergeSources" style="max-height:220px;overflow:auto;border:1px solid #ccd7e0;padding:8px">' + options.sources.map(name => '<label data-merge-option style="display:flex;align-items:center;gap:8px;padding:6px"><input type="checkbox" data-merge-source value="'+esc(name)+'" style="width:auto">'+esc(name)+'</label>').join("") + '</div><small id="repairMergeSelected">0 selected</small></div><div class="field"><label for="repairMergeTarget">Name to keep</label><input id="repairMergeTarget" list="repairMergeTargets" maxlength="250" required autocomplete="off" placeholder="Choose an existing name or type the corrected name"><datalist id="repairMergeTargets">' + options.targets.map(name => '<option value="'+esc(name)+'"></option>').join("") + '</datalist></div><p>The old name will no longer be available after refresh. Saved entries using the retired name are redirected to the retained name. Original records remain in the audit history.</p><div class="actions"><button type="button" data-merge-cancel>Cancel</button><button class="primary" type="submit">Review consolidation</button></div></form>';
     document.body.appendChild(dialog);
     const selection = await new Promise(resolve => {
       let done = false;
       const finish = value => { if (done) return; done = true; dialog.close(); dialog.remove(); resolve(value); };
       dialog.querySelector('[data-merge-cancel]').onclick = () => finish(null);
       dialog.oncancel = event => { event.preventDefault(); finish(null); };
+      dialog.querySelector('#repairMergeSearch').oninput = event => {
+        const query = event.target.value.trim().toLowerCase();
+        dialog.querySelectorAll('[data-merge-option]').forEach(row => { row.hidden = !row.textContent.toLowerCase().includes(query); row.style.display = row.hidden ? 'none' : 'flex'; });
+      };
+      dialog.querySelector('#repairMergeSources').onchange = () => {
+        dialog.querySelector('#repairMergeSelected').textContent = dialog.querySelectorAll('[data-merge-source]:checked').length + ' selected';
+      };
       dialog.onsubmit = event => {
         event.preventDefault();
-        const oldName = dialog.querySelector('#repairMergeSource').value.trim();
+        const oldNames = [...dialog.querySelectorAll('[data-merge-source]:checked')].map(input => input.value.trim());
         const newName = dialog.querySelector('#repairMergeTarget').value.trim();
-        if (!oldName || !newName || oldName.toLowerCase() === newName.toLowerCase()) return alert("Choose two different names.");
+        if (!oldNames.length || !newName) return alert("Select at least one old name and enter the name to keep.");
+        if (oldNames.some(name => name.toLowerCase() === newName.toLowerCase())) return alert("The name to keep cannot also be selected for removal.");
         if (retired.some(row => row.old_key === newName.toLowerCase())) return alert("That name was already retired. Choose the retained name instead.");
-        finish({oldName, newName});
+        finish({oldNames, newName});
       };
       dialog.showModal();
-      dialog.querySelector('#repairMergeSource').focus();
+      dialog.querySelector('#repairMergeSearch').focus();
     });
-    if (selection) await mergeTruckingReportJobsite(selection.oldName, selection.newName, button);
+    if (selection) await mergeTruckingReportJobsite(selection.oldNames, selection.newName, button);
   } catch (error) {
     alert(error.message || "Could not load locations. Please try again.");
   } finally {
@@ -36037,25 +36045,46 @@ async function consolidateRepairLocations(field, workOrders, button) {
 
 async function mergeTruckingReportJobsite(oldName, newName, button) {
   if (!isBryanOwner()) return alert("Only the system owner can merge jobsites across the system.");
+  const names = [...new Map((Array.isArray(oldName) ? oldName : [oldName]).map(name => [String(name || "").trim().toLowerCase(), String(name || "").trim()])).values()].filter(Boolean);
+  newName = String(newName || "").trim();
+  if (!names.length || !newName || names.some(name => name.toLowerCase() === newName.toLowerCase())) return alert("Choose old names different from the name to keep.");
   const originalText = button?.textContent;
+  const reportView = currentView;
+  const scroll = {left: window.scrollX, top: window.scrollY};
+  const completed = [];
+  let attempted = false;
   if (button) { button.disabled = true; button.textContent = "Checking merge..."; }
   try {
-    const args = { p_old_name: oldName, p_new_name: newName, p_confirm: false };
-    const preview = await supabase.rpc("merge_jobsite", args);
-    if (preview.error) throw preview.error;
-    if (!preview.data || !Number(preview.data.records)) throw new Error("No records were found. Refresh the report and try again.");
-    const affected = Object.entries(preview.data.tables || {}).map(([table, count]) => `${table.replaceAll("_", " ")}: ${count}`).join("\n");
-    if (!confirm(`MERGE JOBSITE — SYSTEM-WIDE\n\nRemove old name: ${oldName}\nKeep name: ${newName}\n\n${preview.data.records} linked/master records across ALL customers and ALL dates:\n${affected}\n\nThe old name will be removed from active lists and searches. Original records are retained in the audit history. Financial amounts and dates stay unchanged.\n\nThis affects other modules too and reloads the page when complete. Proceed?`)) return;
-    if (button) button.textContent = "Merging...";
-    const merged = await supabase.rpc("merge_jobsite", { ...args, p_confirm: true });
-    if (merged.error) throw merged.error;
-    if (!merged.data?.merged) throw new Error("The database did not confirm the merge. Refresh before trying again.");
-    alert(`Merged ${oldName} into ${newName}. ${merged.data.records} records updated. The old master entries were retired; their originals remain in the audit history.`);
-    window.location.reload();
+    const previews = [];
+    for (const name of names) {
+      const preview = await supabase.rpc("merge_jobsite", {p_old_name:name,p_new_name:newName,p_confirm:false});
+      if (preview.error) throw preview.error;
+      if (!Number(preview.data?.records)) throw new Error("No records found for " + name + ". Refresh the report.");
+      previews.push(name + ": " + preview.data.records + " matching records");
+    }
+    if (!confirm("CONSOLIDATE JOBSITES / LOCATIONS — SYSTEM-WIDE\n\nOld names to remove:\n"+previews.join("\n")+"\n\nKeep: "+newName+"\n\nApplies across all customers, modules and dates. Original records remain in audit history; financial amounts and dates stay unchanged. Names are processed in sequence; if one fails, completed merges remain saved and the remaining names are reported.\n\nProceed?")) return;
+    for (const name of names) {
+      if (button) button.textContent = "Merging " + (completed.length+1) + " of " + names.length + "...";
+      attempted = true;
+      const merged = await supabase.rpc("merge_jobsite", {p_old_name:name,p_new_name:newName,p_confirm:true});
+      if (merged.error) throw merged.error;
+      if (!merged.data?.merged) throw new Error("Merge could not be confirmed for " + name + ".");
+      completed.push(name);
+    }
+    alert("Consolidated " + completed.length + " old name(s) into " + newName + ". Refreshing this report.");
   } catch (error) {
     console.error(error);
-    alert(error?.message || "The jobsite merge could not be confirmed. Refresh before trying again.");
+    alert((error?.message || "Consolidation could not be confirmed.") + (attempted ? "\n\nConfirmed completed: " + (completed.join(", ") || "None") + "\nNot confirmed: " + names.filter(name => !completed.includes(name)).join(", ") + "\nThe report will refresh. Check the remaining names before retrying." : "\nNo changes were made."));
   } finally {
+    if (attempted) {
+      invalidateViewReads();
+      moduleListPages.clear();
+      productMeta = { vendors: [], categories: [], units: [], warehouses: [], bins: [] };
+      if (currentView === reportView) {
+        try { await loadView(reportView); window.scrollTo(scroll); }
+        catch (error) { alert("Consolidation finished, but this report could not refresh: " + (error.message || error) + ". Use Refresh."); }
+      }
+    }
     if (button) { button.disabled = false; button.textContent = originalText; }
   }
 }
