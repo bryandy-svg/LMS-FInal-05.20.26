@@ -10,7 +10,7 @@ const parts=[{status:'Voided',accepted_qty:3,unit_cost:9.99,selling_price:15.4}]
 assert.equal(context.workOrderDraftIncome(wo,parts,rows),70300);
 assert.equal(context.workOrderDraftIncome(wo,[{status:'Accepted',accepted_qty:2,selling_price:25}],rows),70350);
 assert.equal(context.workOrderDraftIncome(wo,parts,[...rows,{...labor(4,200),reversed:true}]),70300);
-assert.equal((source.match(/"Income to Date"/g)||[]).length,2);
+assert.equal((source.slice(source.indexOf("async function renderRepairReportView")).match(/"Income to Date"/g)||[]).length,2);
 assert.equal((source.match(/"open_age_days", "income_to_date", "status"/g)||[]).length,2);
 assert(source.includes('income_to_date: workOrderDraftIncome(wo, woParts, woLabor)'));
 console.log('PASS: W100017 total $70,300; voids, reversals, parts, both aging columns.');

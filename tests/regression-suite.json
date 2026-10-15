@@ -97,5 +97,6 @@
   "work-order-reopen-cache",
   "repair-report-multifilter",
   "repair-location-reports",
-  "repair-location-consolidation"
+  "repair-location-consolidation",
+  "open-repair-location-detail"
 ]
