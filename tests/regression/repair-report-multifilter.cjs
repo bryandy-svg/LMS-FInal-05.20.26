@@ -7,3 +7,6 @@ const heading={dataset:{truckingGroupRow:'true'}};const row=(a,b)=>({dataset:{},
 const wrap={querySelectorAll:s=>s==='.report-multi-filter'?[sites,priorities]:rows};c.applyReportMultiFilters({closest:()=>wrap});assert.deepEqual(rows.map(r=>r.hidden),[false,false,false,true,true]);assert.equal(sites.summary.textContent,'2 selected');
 sites.boxes.forEach(b=>b.checked=false);c.applyReportMultiFilters({closest:()=>wrap});assert(rows.every(r=>r.hidden));assert.equal(sites.summary.textContent,'None');
 console.log('PASS multiple values per column, combined columns, no selections and empty groups');
+
+const {source}=require('../source.cjs');const exportsBlock=source.slice(source.indexOf('  Object.assign(window, {'),source.indexOf('async function refreshFuelListBalances'));
+for(const name of ['positionReportMultiFilter','searchReportMultiFilter','toggleReportMultiFilterAll','applyReportMultiFilters']) assert(exportsBlock.includes(name+','),name+' must be available to inline event handlers');
