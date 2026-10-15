@@ -14151,12 +14151,12 @@ function openInventoryCountSheet() {
       <div class="field wide"><label>Count reason / approval note</label><textarea data-product-field="count_reason" required placeholder="Example: Monthly physical count - Mall Lot Parts Shop">${esc(draft?.reason || "")}</textarea></div>
       <div class="field wide"><label>Search parts</label><input id="inventoryCountSearch" placeholder="Search SKU, product, warehouse, bin, category" autocomplete="off"><small>Search only changes what is visible; entered counts remain saved on the sheet.</small></div>
     </div>
-    <div class="actions table-actions"><button type="button" class="rowbtn" id="downloadInventoryCountSheetBtn">Download blank count sheet</button><button type="button" class="rowbtn" id="saveInventoryCountDraftBtn">Save &amp; Continue Later</button><button type="button" class="primary" id="implementInventoryCountBtn">Save &amp; Implement Inventory Adjustment</button></div>
+    <div class="actions table-actions"><button type="button" class="rowbtn" id="downloadInventoryCountSheetBtn">Download blank count sheet</button><button type="button" class="rowbtn" id="saveInventoryCountDraftBtn">Save &amp; Continue Later</button><button type="button" class="primary" id="implementInventoryCountBtn">Apply Selected</button><span id="inventoryCountSelectionSummary" aria-live="polite"></span></div>
     <p class="notice" id="inventoryCountResultNotice">${matchingRows.length > PRODUCT_RENDER_LIMIT ? `${matchingRows.length.toLocaleString()} products match the current filters. The first ${PRODUCT_RENDER_LIMIT.toLocaleString()} are shown initially; Search Parts searches all ${matchingRows.length.toLocaleString()} products.` : `${matchingRows.length.toLocaleString()} products available for this count.`}</p>
-    <div class="table-wrap"><table class="line-table"><thead><tr><th>SKU</th><th>Product</th><th>Warehouse</th><th>Bin / Shelf</th><th>Unit</th><th>System Qty</th><th>Counted Qty</th><th>Variance</th><th>Unit Cost</th><th>Value Variance</th></tr></thead><tbody id="inventoryCountBody">
+    <div class="table-wrap"><table class="line-table"><thead><tr><th><label><input type="checkbox" id="inventoryCountSelectVisible" aria-label="Select all visible parts"> Select visible</label></th><th>SKU</th><th>Product</th><th>Warehouse</th><th>Bin / Shelf</th><th>Unit</th><th>System Qty</th><th>Counted Qty</th><th>Variance</th><th>Unit Cost</th><th>Value Variance</th></tr></thead><tbody id="inventoryCountBody">
       ${rows.map((product) => inventoryCountRowHtml(product, draft?.items?.[product.sku])).join("")}
     </tbody></table></div>
-    <p class="notice">All matching active products are included, including products with zero quantity or Out status. Enter only products physically counted. If Product Master cost is zero, enter the verified unit cost here. Save &amp; Continue Later stores a draft on this device without changing inventory. Save &amp; Implement posts the approved quantity adjustments, eligible missing costs, stock movements, accounting entries, and audit history.</p>`;
+    <p class="notice">All matching active products are included, including products with zero quantity or Out status. Enter only products physically counted. If Product Master cost is zero, enter the verified unit cost here. Save &amp; Continue Later stores a draft on this device without changing inventory. Apply Selected posts only checked parts with an entered count or bin change. Unchecked counts stay in your saved draft. Selections remain checked when searching; Select visible affects only the rows currently shown.</p>`;
   $("modalSave").style.display = "none";
   $("modalCancel").textContent = "Cancel";
   document.querySelector(".modalbox")?.classList.add("wide-modal");
@@ -14184,7 +14184,7 @@ function inventoryCountRowHtml(product, draftItem = null) {
   const searchText = inventoryCountProductSearchText(product);
   const cost = draftItem?.cost ?? product.cost ?? 0;
   return `<tr data-inventory-count-row="${esc(product.sku)}" data-count-search="${esc(searchText)}">
-    <td><button type="button" class="linkbtn" data-count-part="${esc(product.sku)}">${esc(product.sku)}</button></td><td>${esc(product.name || "")}</td><td>${esc(product.warehouse || "")}</td><td>${esc(product.bin_shelf || "")}<input data-count-bin="${esc(product.sku)}" value="${esc(draftItem?.bin_shelf || "")}" placeholder="Move counted stock to bin" aria-label="New bin or shelf"></td><td>${esc(product.unit || "")}</td>
+    <td><input type="checkbox" data-count-selected="${esc(product.sku)}" ${draftItem?.selected === true ? "checked" : ""} aria-label="Select ${esc(product.sku)} for adjustment"></td><td><button type="button" class="linkbtn" data-count-part="${esc(product.sku)}">${esc(product.sku)}</button></td><td>${esc(product.name || "")}</td><td>${esc(product.warehouse || "")}</td><td>${esc(product.bin_shelf || "")}<input data-count-bin="${esc(product.sku)}" value="${esc(draftItem?.bin_shelf || "")}" placeholder="Move counted stock to bin" aria-label="New bin or shelf"></td><td>${esc(product.unit || "")}</td>
     <td data-system-qty>${esc(Number(product.qty || 0))}</td>
     <td><input type="number" min="0" step="0.01" data-inventory-count="${esc(product.sku)}" value="${esc(draftItem?.counted_qty ?? "")}" placeholder="Enter count"></td>
     <td data-count-variance></td><td><input type="number" min="0" step="0.0001" data-inventory-count-cost="${esc(product.sku)}" value="${esc(cost)}" ${Number(product.cost || 0) > 0 ? "readonly" : ""} placeholder="Enter verified cost"></td><td data-count-value></td>
@@ -14209,6 +14209,17 @@ function inventoryCountProductSearchText(product) {
 }
 
 function bindInventoryCountRows() {
+  document.querySelectorAll("[data-count-selected]").forEach((checkbox) => checkbox.onchange = () => {
+    persistInventoryCountDraft();
+    updateInventoryCountSelection();
+  });
+  const all = $("inventoryCountSelectVisible");
+  if (all) all.onchange = () => {
+    document.querySelectorAll("[data-count-selected]").forEach((checkbox) => { checkbox.checked = all.checked; });
+    persistInventoryCountDraft();
+    updateInventoryCountSelection();
+  };
+  updateInventoryCountSelection();
   document.querySelectorAll("[data-count-part]").forEach((button) => button.onclick = async () => {
     localStorage.setItem(INVENTORY_COUNT_DRAFT_KEY, JSON.stringify(inventoryCountFormState()));
     await openProductModal(inventoryCountSessionRows.find((product) => product.sku === button.dataset.countPart));
@@ -14220,13 +14231,26 @@ function bindInventoryCountRows() {
   document.querySelectorAll("[data-inventory-count-row]").forEach(refreshInventoryCountRow);
 }
 
+function updateInventoryCountSelection() {
+  const boxes = [...document.querySelectorAll("[data-count-selected]")];
+  const all = $("inventoryCountSelectVisible");
+  if (all) {
+    all.checked = boxes.length > 0 && boxes.every((box) => box.checked);
+    all.indeterminate = boxes.some((box) => box.checked) && !all.checked;
+    all.disabled = !boxes.length;
+  }
+  const count = Object.values(inventoryCountSessionItems).filter((item) => item.selected === true).length;
+  const summary = $("inventoryCountSelectionSummary");
+  if (summary) summary.textContent = count + " part(s) selected across this sheet";
+}
+
 function captureInventoryCountVisibleRows() {
   document.querySelectorAll("[data-inventory-count-row]").forEach((row) => {
     const sku = row.dataset.inventoryCountRow;
     const qty = row.querySelector("[data-inventory-count]");
     const cost = row.querySelector("[data-inventory-count-cost]");
     if (!sku) return;
-    if (qty?.value !== "" || cost?.value !== "") inventoryCountSessionItems[sku] = { counted_qty: qty?.value || "", cost: cost?.value || "", bin_shelf: row.querySelector("[data-count-bin]")?.value.trim() || "" };
+    if (qty?.value !== "" || cost?.value !== "" || row.querySelector("[data-count-selected]")?.checked || row.querySelector("[data-count-bin]")?.value.trim()) inventoryCountSessionItems[sku] = { counted_qty: qty?.value || "", cost: cost?.value || "", bin_shelf: row.querySelector("[data-count-bin]")?.value.trim() || "", selected: row.querySelector("[data-count-selected]")?.checked === true };
     else delete inventoryCountSessionItems[sku];
   });
 }
@@ -14299,14 +14323,14 @@ async function saveInventoryCountSheet() {
   if (!reason) return dialogWindow.alert("Count reason / approval note is required.");
   if (isLockedAccountingDate(countDate)) return dialogWindow.alert("This count date is inside the closed accounting period.");
   captureInventoryCountVisibleRows();
-  const counted = Object.entries(inventoryCountSessionItems).filter(([, item]) => String(item?.counted_qty ?? "").trim() !== "" || String(item?.bin_shelf || "").trim() !== "").map(([sku, item]) => {
+  const counted = Object.entries(inventoryCountSessionItems).filter(([, item]) => item?.selected === true && (String(item?.counted_qty ?? "").trim() !== "" || String(item?.bin_shelf || "").trim() !== "")).map(([sku, item]) => {
     const product = (inventoryCountSessionRows || []).find((row) => row.sku === sku);
     const binOnly = String(item.counted_qty ?? "").trim() === "";
     const countedQty = Number(binOnly ? product?.qty || 0 : item.counted_qty);
     const unitCost = Number(binOnly ? product?.cost || 0 : item.cost || product?.cost || 0);
     return { product, countedQty, unitCost, binOnly, variance: countedQty - Number(product?.qty || 0) };
   });
-  if (!counted.length) return dialogWindow.alert("Enter a Counted Qty or a new Bin / Shelf.");
+  if (!counted.length) return dialogWindow.alert("Select at least one part with a Counted Qty or a new Bin / Shelf. Unchecked parts will not be adjusted.");
   if (counted.some((row) => !row.product || !Number.isFinite(row.countedQty) || row.countedQty < 0)) return dialogWindow.alert("Every counted quantity must be a valid number of zero or more.");
   if (counted.some((row) => !Number.isFinite(row.unitCost) || row.unitCost < 0)) return dialogWindow.alert("Every unit cost must be a valid number of zero or more.");
   const missingCost = counted.find((row) => Math.abs(row.variance) > 0.000001 && Number(row.product.cost || 0) <= 0 && row.unitCost <= 0);
@@ -14320,7 +14344,7 @@ async function saveInventoryCountSheet() {
     dialogWindow.alert(`${counted.length} product${counted.length === 1 ? " was" : "s were"} counted with no variance. No correction was posted.`);
     return;
   }
-  if (!dialogWindow.confirm(`Implement this inventory count?\n\nQuantity corrections: ${corrections.length}\nBin transfers: ${binMoves.length}\nMissing costs to update: ${costUpdates.length}\nNet quantity variance: ${Number(totalVariance.toFixed(4))}\nNet value variance: ${money(valueVariance)}\n\nBin-only transfers preserve quantity and cost and create no accounting entries.`)) return;
+  if (!dialogWindow.confirm(`Apply ${counted.length} selected part(s)? Unchecked parts will remain in your draft.\n\nQuantity corrections: ${corrections.length}\nBin transfers: ${binMoves.length}\nMissing costs to update: ${costUpdates.length}\nNet quantity variance: ${Number(totalVariance.toFixed(4))}\nNet value variance: ${money(valueVariance)}\n\nBin-only transfers preserve quantity and cost and create no accounting entries.`)) return;
   inventoryCountSaving = true;
   const batch = Date.now().toString();
   try {
@@ -14370,7 +14394,10 @@ async function saveInventoryCountSheet() {
       if (error) throw error;
       await writeAuditLog({ tableName: "products", action: "Count sheet bin transfer", beforeData: { sku: product.sku, bin_shelf: product.bin_shelf }, afterData: { sku: product.sku, bin_shelf: destination, qty: countedQty } });
     }
-    localStorage.removeItem(INVENTORY_COUNT_DRAFT_KEY);
+    const remainingItems = { ...inventoryCountSessionItems };
+    counted.forEach(({ product }) => { delete remainingItems[product.sku]; });
+    localStorage.setItem(INVENTORY_COUNT_DRAFT_KEY, JSON.stringify({ count_date: countDate, reason, items: remainingItems, saved_at: new Date().toISOString() }));
+    inventoryCountSessionItems = remainingItems;
     dialogWindow.alert(`Inventory count implemented successfully: ${corrections.length} quantity correction${corrections.length === 1 ? "" : "s"} and ${costUpdates.length} missing-cost update${costUpdates.length === 1 ? "" : "s"}.`);
     closeModal();
     await renderProductsView();
