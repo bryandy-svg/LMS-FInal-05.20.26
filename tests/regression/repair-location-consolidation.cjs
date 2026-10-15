@@ -15,11 +15,15 @@ assert.match(source,/data-repair-location-merge=/);assert.match(source,/mergeBut
  assert.deepEqual(loaded,['asset_locations','jobsite_merges']);assert.equal(opened,1);assert.equal(loadAlerts.length,0);assert.equal(launch.disabled,false);
  fail=true;await loaderContext.consolidateRepairLocations('actual_location',[{actual_location:'Yard'}],launch);assert.equal(opened,1);assert.match(loadAlerts[0],/Network unavailable/);assert.equal(launch.disabled,false);
  const calls=[],alerts=[];let confirms=false,reloads=0,owner=true;
- const context=vm.createContext({isBryanOwner:()=>owner,alert:s=>alerts.push(s),confirm:()=>confirms,console,window:{location:{reload:()=>reloads++}},supabase:{rpc:async(name,args)=>{calls.push({name,args});return {data:{records:2,tables:{work_orders:1,asset_locations:1},merged:args.p_confirm}};}}});
+ const context=vm.createContext({isBryanOwner:()=>owner,alert:s=>alerts.push(s),confirm:()=>confirms,console,moduleListPages:new Map(),productMeta:{},currentView:"repairreport",invalidateViewReads(){},loadView:async view=>{assert.equal(view,"repairreport");reloads++;},assert,window:{scrollTo(){}},supabase:{rpc:async(name,args)=>{calls.push({name,args});return {data:{records:2,tables:{work_orders:1,asset_locations:1},merged:args.p_confirm}};}}});
  vm.runInContext(functions(['mergeTruckingReportJobsite']),context);
  const button={textContent:'Consolidate',disabled:false};
  await context.mergeTruckingReportJobsite('Old','New',button);assert.equal(calls.length,1);assert.equal(calls[0].args.p_confirm,false);assert.equal(reloads,0);
  confirms=true;calls.length=0;await context.mergeTruckingReportJobsite('Old','New',button);assert.deepEqual(calls.map(c=>c.args.p_confirm),[false,true]);assert.equal(reloads,1);assert.equal(button.disabled,false);
+ calls.length=0;await context.mergeTruckingReportJobsite(['Old A','Old B'],'New',button);assert.deepEqual(calls.map(c=>c.args.p_confirm),[false,false,true,true]);assert.equal(reloads,2);
+ calls.length=0;await context.mergeTruckingReportJobsite(['New'],'New',button);assert.equal(calls.length,0);
+ let writes=0;context.supabase.rpc=async(name,args)=>{calls.push({name,args});if(args.p_confirm && ++writes===2)return {error:{message:'Second merge failed'}};return {data:{records:1,merged:args.p_confirm}};};
+ await context.mergeTruckingReportJobsite(['Old A','Old B','Old C'],'New',button);assert.equal(writes,2);assert.match(alerts.at(-1),/Confirmed completed: Old A/);assert.match(alerts.at(-1),/Not confirmed: Old B, Old C/);assert.equal(reloads,3);
  owner=false;calls.length=0;await context.mergeTruckingReportJobsite('Old','New',button);assert.equal(calls.length,0);
  console.log('PASS repair consolidation options, retirement filtering, preview/cancel/confirm and owner gate');
 })().catch(e=>{console.error(e);process.exitCode=1;});
