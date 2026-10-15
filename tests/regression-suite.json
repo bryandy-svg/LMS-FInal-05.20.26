@@ -100,5 +100,6 @@
   "repair-location-consolidation",
   "open-repair-location-detail",
   "issuance-save-first",
-  "work-order-required-fields"
+  "work-order-required-fields",
+  "inventory-count-selected"
 ]
