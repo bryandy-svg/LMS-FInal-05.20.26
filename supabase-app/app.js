@@ -36004,7 +36004,7 @@ async function consolidateRepairLocations(field, workOrders, button) {
   button.disabled = true;
   try {
     // Refresh the small master/retirement lists; never offer a previously merged name.
-    const [masters, retired] = await Promise.all([readRows("asset_locations"), readRows("jobsite_merges")]);
+    const [masters, retired] = await Promise.all([getAll("asset_locations", { strict: true, columns: "name" }), getAll("jobsite_merges", { strict: true, columns: "old_key,canonical_name" })]);
     const options = repairLocationMergeOptions(workOrders, field, masters, retired);
     if (!options.sources.length) return alert("No named locations are available to consolidate. Refresh the report.");
     const dialog = document.createElement("dialog");

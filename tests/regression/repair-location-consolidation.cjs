@@ -7,6 +7,13 @@ assert.deepEqual(Array.from(opts.sources),['Yard']);assert.deepEqual(Array.from(
 assert.deepEqual(Array.from(c.repairLocationMergeOptions(rows,'jobsite_location',[],[]).sources),['Job A','Job B']);
 assert.match(source,/data-repair-location-merge=/);assert.match(source,/mergeButton.dataset.repairLocationMerge, workOrders, mergeButton/);
 (async()=>{
+ const loaded=[],loadAlerts=[];let opened=0,fail=false;
+ const dialog={querySelector:()=>({focus(){}}),showModal(){opened++;queueMicrotask(()=>this.oncancel({preventDefault(){}}));},close(){},remove(){}};
+ const loaderContext=vm.createContext({queueMicrotask,isBryanOwner:()=>true,esc:String,alert:message=>loadAlerts.push(message),document:{createElement:()=>dialog,body:{appendChild(){}}},canonicalizePartyFields:row=>row,pacedReadPage:async callback=>{if(fail)throw Error('Network unavailable');return callback();},supabase:{from:table=>{loaded.push(table);const query={select(){return query;},order(){return query;},range(){return query;},abortSignal(){return {data:table==='asset_locations'?[{name:'Yard'}]:[]};}};return query;}}});
+ vm.runInContext(functions(['getAll','repairLocationMergeOptions','consolidateRepairLocations']),loaderContext);
+ const launch={disabled:false};await loaderContext.consolidateRepairLocations('actual_location',[{actual_location:'Yard'}],launch);
+ assert.deepEqual(loaded,['asset_locations','jobsite_merges']);assert.equal(opened,1);assert.equal(loadAlerts.length,0);assert.equal(launch.disabled,false);
+ fail=true;await loaderContext.consolidateRepairLocations('actual_location',[{actual_location:'Yard'}],launch);assert.equal(opened,1);assert.match(loadAlerts[0],/Network unavailable/);assert.equal(launch.disabled,false);
  const calls=[],alerts=[];let confirms=false,reloads=0,owner=true;
  const context=vm.createContext({isBryanOwner:()=>owner,alert:s=>alerts.push(s),confirm:()=>confirms,console,window:{location:{reload:()=>reloads++}},supabase:{rpc:async(name,args)=>{calls.push({name,args});return {data:{records:2,tables:{work_orders:1,asset_locations:1},merged:args.p_confirm}};}}});
  vm.runInContext(functions(['mergeTruckingReportJobsite']),context);
