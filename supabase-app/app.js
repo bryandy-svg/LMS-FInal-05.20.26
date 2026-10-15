@@ -24188,14 +24188,14 @@ async function openWorkOrderEditModal(wo, options = {}) {
       const sku = row.querySelector('[data-admin-part="sku"]');
       const product = resolveProductLookup(sku?.value || "");
       if (!product || !price) return;
-      if (markup) markup.value = customerPricingValue(customer, "parts_markup_percent") ?? product.markup_percent ?? "";
-      price.value = customerPartsSellingPrice(product, customer, cost?.value ?? product.cost);
+      if (markup && markup.value === "") markup.value = customerPricingValue(customer, "parts_markup_percent") ?? product.markup_percent ?? "";
+      if (price.value === "") price.value = customerPartsSellingPrice(product, customer, cost?.value ?? product.cost);
       price.dispatchEvent(new Event("input", { bubbles: true }));
     });
     document.querySelectorAll("[data-labor-row]").forEach(row => {
       const mechanic = row.querySelector('[data-labor-field="mechanic"]')?.value || "";
       const rate = row.querySelector('[data-labor-field="hourly_rate"]');
-      if (rate) { rate.value = customerMechanicRate(customer, mechanic, rate.value); rate.dispatchEvent(new Event("input", { bubbles: true })); }
+      if (rate && rate.value === "") { rate.value = customerMechanicRate(customer, mechanic, rate.value); rate.dispatchEvent(new Event("input", { bubbles: true })); }
     });
   });
   bindWorkOrderLocationControls();
@@ -24571,7 +24571,7 @@ async function saveWorkOrderPartEdits(wo) {
     const markupPercent = markupText === "" ? null : Number(markupText);
     if (!Number.isFinite(unitCost) || unitCost < 0) throw new Error(`Unit Cost cannot be negative for ${description || product?.name || "a part line"}.`);
     if (markupPercent !== null && (!Number.isFinite(markupPercent) || markupPercent < 0)) throw new Error(`Markup % cannot be negative for ${description || product?.name || "a part line"}.`);
-    const sellingPrice = calculatedWorkOrderPartPrice(unitCost, markupText === "" ? null : markupPercent, get("selling_price") || existing?.selling_price || product?.selling_price || unitCost);
+    const sellingPrice = enteredWorkOrderPartPrice(get("selling_price"), unitCost, markupText === "" ? null : markupPercent, existing?.selling_price ?? product?.selling_price ?? unitCost);
     let status = get("status") || existing?.status || "Requested";
     let availability = get("availability") || existing?.availability || "";
     if (product) {
@@ -24921,19 +24921,27 @@ function customerPricingRow(customerName) {
 }
 
 function workOrderPartSellingPrice(part = {}, product = {}, customerName = "") {
-  const customerMarkup = customerPricingRow(customerName)?.parts_markup_percent;
+  const savedPrice = part.selling_price;
+  if (savedPrice !== "" && savedPrice != null && Number.isFinite(Number(savedPrice))) return Number(savedPrice);
+  const customerMarkup = part.markup_percent !== "" && part.markup_percent != null ? part.markup_percent : customerPricingRow(customerName)?.parts_markup_percent;
   if (customerMarkup !== "" && customerMarkup != null && Number.isFinite(Number(customerMarkup))) {
     const customerCost = Number(part.unit_cost ?? product.cost ?? 0);
     return Number((customerCost * (1 + Number(customerMarkup) / 100)).toFixed(2));
   }
-  const savedPrice = part.selling_price;
-  if (savedPrice !== "" && savedPrice != null && Number.isFinite(Number(savedPrice))) return Number(savedPrice);
   if (product.selling_price !== "" && product.selling_price != null && Number.isFinite(Number(product.selling_price))) return Number(product.selling_price);
   const cost = Number(part.unit_cost ?? product.cost ?? 0);
   const markup = part.markup_percent ?? product.markup_percent;
   return markup !== "" && markup != null && Number.isFinite(Number(markup))
     ? Number((cost * (1 + Number(markup) / 100)).toFixed(2))
     : cost;
+}
+
+function enteredWorkOrderPartPrice(price, cost, markup, fallback = cost) {
+  return price !== "" && price != null ? Number(price) : calculatedWorkOrderPartPrice(cost, markup, fallback);
+}
+
+function workOrderLaborRate(labor = {}, customerName = "") {
+  return labor.hourly_rate !== "" && labor.hourly_rate != null ? Number(labor.hourly_rate) : Number(customerMechanicRate(customerName, labor.mechanic, 0));
 }
 
 function calculatedWorkOrderPartPrice(costValue, markupValue, fallbackValue = 0) {
@@ -24988,7 +24996,7 @@ function repairLaborHours(wo) {
 }
 
 function repairLaborTotal(wo) {
-  return (wo._labor || []).reduce((s, l) => s + laborCharge({ ...l, hourly_rate: wo.invoice_no ? l.hourly_rate : customerMechanicRate(wo.bill_to_customer || wo.customer, l.mechanic, l.hourly_rate || 0) }), 0);
+  return (wo._labor || []).reduce((s, l) => s + laborCharge({ ...l, hourly_rate: wo.invoice_no ? l.hourly_rate : workOrderLaborRate(l, wo.bill_to_customer || wo.customer) }), 0);
 }
 
 function repairTotal(wo) {
@@ -25031,7 +25039,7 @@ function laborCharge(labor) {
 }
 
 function workOrderLaborInvoiceLines(labor, fallbackDate = "", customerName = "") {
-  const rate = Number(customerMechanicRate(customerName, labor?.mechanic, labor?.hourly_rate || 0));
+  const rate = workOrderLaborRate(labor, customerName);
   const regularHours = Number(laborRegularHours(labor).toFixed(2));
   const overtimeHours = Number(laborOvertimeHours(labor).toFixed(2));
   const shiftRange = laborShiftTimeRange(labor);
@@ -25418,8 +25426,8 @@ function workOrderPartsAdminEditTable(wo) {
   const activeParts = (wo._parts || []).filter((part) => !isWorkOrderPartHistory(part)).map(part => {
     const markup = customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent");
     if (wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || "")) return part;
-    const effectiveMarkup = markup ?? part.markup_percent;
-    return { ...part, markup_percent: effectiveMarkup, selling_price: calculatedWorkOrderPartPrice(part.unit_cost, effectiveMarkup, part.selling_price) };
+    const effectiveMarkup = part.markup_percent !== "" && part.markup_percent != null ? part.markup_percent : markup;
+    return { ...part, markup_percent: effectiveMarkup, selling_price: enteredWorkOrderPartPrice(part.selling_price, part.unit_cost, effectiveMarkup) };
   });
   const voidedParts = (wo._parts || []).filter(isWorkOrderPartHistory);
   const rows = [...activeParts, ...Array.from({ length: Math.max(3, 6 - activeParts.length) }, () => ({ issue: "", sku: "", product_name: "", qty_needed: "", accepted_qty: 0, unit_cost: "", markup_percent: "", selling_price: "", status: "Requested", availability: "", notes: "" }))];
@@ -25970,7 +25978,7 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
   if (!editing?.invoice_no && !/invoiced|void|cancel/i.test(editing?.status || "")) {
     const selling = tr.querySelector('[data-admin-part="selling_price"]');
     const hasMarkup = displayedMarkup !== "" && displayedMarkup != null;
-    if (hasMarkup) set("selling_price", calculatedWorkOrderPartPrice(displayedCost, displayedMarkup, selling?.value));
+    if (hasMarkup) set("selling_price", calculatedWorkOrderPartPrice(displayedCost, displayedMarkup, selling?.value), !replacePricing);
     else set("selling_price", customerPartsSellingPrice(product, currentPricingCustomer(), displayedCost), !replacePricing);
   }
   set("availability", Number(product.qty || 0) > 0 ? "OK" : "Out of stock");
@@ -26146,7 +26154,7 @@ function bindLaborTimeClipboard(row) {
 
 
 function repairLaborEditRow(labor, rowKey = labor.id || `new-${Date.now()}`, helper = isHelperLabor(labor), customerName = currentPricingCustomer()) {
-  if (!editing?.invoice_no) labor = { ...labor, hourly_rate: customerMechanicRate(customerName, labor.mechanic, labor.hourly_rate || 0) };
+  if (!editing?.invoice_no) labor = { ...labor, hourly_rate: workOrderLaborRate(labor, customerName) };
   const displayedHours = labor.clock_in && labor.clock_out ? laborHours(labor).toFixed(2) : "";
   const registeredMechanic = resolveRegisteredMechanic(labor.mechanic || "");
   const baseHourlyRate = registeredMechanic ? Number(currentMechanicRate(registeredMechanic) || labor.hourly_rate || 0) : Number(labor.hourly_rate || 0);
@@ -26244,7 +26252,7 @@ function bindAdminLaborRowControls() {
       if (registered && rate) {
         const baseRate = Number(currentMechanicRate(registered) || 0);
         rate.dataset.baseHourlyRate = String(baseRate);
-        rate.value = Number(customerMechanicRate(currentPricingCustomer(), registered, baseRate)).toFixed(2);
+        if (rate.value === "") rate.value = Number(customerMechanicRate(currentPricingCustomer(), registered, baseRate)).toFixed(2);
       }
       updateCharge();
     };
@@ -26687,7 +26695,7 @@ async function saveMechanicRequestedParts(wo, mechanic, activeIssue) {
         qty_needed: qty,
         unit_cost: Number(get("unit_cost") || 0),
         markup_percent: get("markup_percent") === "" ? null : Number(get("markup_percent")),
-        selling_price: calculatedWorkOrderPartPrice(get("unit_cost"), get("markup_percent"), get("selling_price") || get("unit_cost")),
+        selling_price: enteredWorkOrderPartPrice(get("selling_price"), get("unit_cost"), get("markup_percent")),
         availability: "Needs part number",
         status: "Requested",
         accepted_qty: 0,
@@ -26705,7 +26713,7 @@ async function saveMechanicRequestedParts(wo, mechanic, activeIssue) {
         qty_needed: qty,
         unit_cost: Number(get("unit_cost") || product.cost || 0),
         markup_percent: get("markup_percent") === "" ? (product.markup_percent ?? null) : Number(get("markup_percent")),
-        selling_price: calculatedWorkOrderPartPrice(get("unit_cost") || product.cost, get("markup_percent"), get("selling_price") || product.selling_price || product.cost),
+        selling_price: enteredWorkOrderPartPrice(get("selling_price"), get("unit_cost") || product.cost, get("markup_percent"), product.selling_price ?? product.cost),
         availability: shortage > 0 ? `Short ${shortage}` : "OK",
         status: shortage > 0 ? "Shortage" : "Reserved",
         accepted_qty: 0,
@@ -43982,7 +43990,7 @@ async function savePartRequestReviewModal() {
       qty_needed: qtyNeeded,
       unit_cost: unitCost,
       markup_percent: markupPercent,
-      selling_price: calculatedWorkOrderPartPrice(read("unit_cost"), read("markup_percent"), read("selling_price") || read("unit_cost")),
+      selling_price: enteredWorkOrderPartPrice(read("selling_price"), read("unit_cost"), read("markup_percent")),
       accepted_qty: acceptedQty,
       status,
       availability: product ? (hasStock ? "OK" : `Short ${Math.max(0, remainingQty - Number(product.qty || 0))}`) : "Needs part number",

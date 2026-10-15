@@ -6,7 +6,7 @@ const values = {...part,product_lookup:'TEST',product_name:'Part',notes:'Edited 
 const row = {dataset:{partId:'part'},querySelector:selector=>({value:values[selector.match(/="(.*?)"/)[1]] ?? ''})};
 const c = {document:{querySelectorAll:selector=>selector==='#adminPartBody tr'?[row]:[]},
   productMeta:{products:[{id:'product',sku:'TEST',qty:10}]},profile:{full_name:'Tester'},
-  resolveProductLookup:()=>({id:'product',sku:'TEST',name:'Part',qty:10}),calculatedWorkOrderPartPrice:()=>20,
+  resolveProductLookup:()=>({id:'product',sku:'TEST',name:'Part',qty:10}),calculatedWorkOrderPartPrice:()=>20,enteredWorkOrderPartPrice:()=>20,
   workOrderPartsPostingDate:async()=>{checks++;return null;},ensureWorkOrderAccountingAccounts:async()=>{},
   supabase:{from:table=>({select:()=>({eq:async()=>({data:table==='work_order_parts'?[part]:[],error:null})})}),
     rpc:async(name,args)=>{writes++;submitted=args;return {data:args.p_rows,error:null};}}};
