@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {source,functions}=require('../source.cjs');let table,footerRows;
+const c=vm.createContext({esc:v=>String(v).replaceAll('<','&lt;'),managementReportTotalFooter:rows=>{footerRows=rows;return '';},truckingSimpleTable:(rows,columns,options)=>{table={rows,columns,options};return 'TABLE';}});
+vm.runInContext(functions(['openRepairLocationReport']),c);
+const rows=[{wo_no:'W1',is_open:true,jobsite:'Job A',actual_location:'Yard',open_age_days:2,parts_cost:10},{wo_no:'W2',is_open:true,jobsite:'Job A',actual_location:'Depot',open_age_days:50,parts_cost:20},{wo_no:'W3',is_open:false,jobsite:'Job A'},{wo_no:'W4',is_open:true,voided:true,jobsite:'Job A'},{wo_no:'W5',is_open:true,jobsite:'Job B',actual_location:'',open_age_days:1,parts_cost:30}];
+const html=c.openRepairLocationReport('Open Work Orders by Jobsite',rows,'jobsite','Jobsite');
+assert.deepEqual(Array.from(table.rows,r=>r.wo_no),['W2','W1','W5']);assert.equal(table.options.groupBy(rows[0]),'Job A');assert.match(table.options.groupLabel('Job A'),/2 open work orders/);assert.equal(footerRows.reduce((n,r)=>n+r.parts_cost,0),60);assert.match(html,/all opening dates/);
+for(const key of ['requested_by','customer_po','asset_description','jobsite','actual_location','report_mechanics','issue_details','priority','status','open_age_days','operational_cost'])assert(table.columns.includes(key),key);
+assert.match(table.options.format.issue_details('<test>'),/&lt;test>/);
+c.openRepairLocationReport('Open Work Orders by Actual Location',rows,'actual_location','Actual Location');assert.equal(table.options.groupBy(rows[4]),'Unspecified');assert.equal(table.options.groupBy(rows[0]),'Yard');assert.equal(table.rows.length,3);
+c.openRepairLocationReport('Empty',[],'jobsite','Jobsite');assert.equal(table.rows.length,0);assert.match(table.options.empty,/No open work orders/);
+assert(source.includes('openRepairLocationReport("Open Work Orders by Jobsite", openReportRows'));assert(source.includes('openRepairLocationReport("Open Work Orders by Actual Location", openReportRows'));assert(source.includes('wo.opening_mechanic, ...reportIssues.map(row => row.assigned_mechanic)'));
+console.log('PASS detailed open reports: location grouping, age order, closed/void exclusion, totals, empty and missing locations');
