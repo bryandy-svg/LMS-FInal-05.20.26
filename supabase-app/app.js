@@ -35989,6 +35989,52 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   return `<div class="report-document-heading"><strong>LMS IMPORTS</strong><span>Trucking Performance Report</span><small>${esc(periodLabel || "Selected period")} · ${dailyMode ? "Daily breakdown" : "Covered-period summary"}</small></div>${renderedSections}`;
 }
 
+function repairLocationMergeOptions(workOrders, field, masters, retired) {
+  const oldKeys = new Set(retired.map(row => String(row.old_key || "").toLowerCase()));
+  const names = values => [...new Set(values.map(value => String(value || "").trim()).filter(value => value && !oldKeys.has(value.toLowerCase())))].sort((a,b) => a.localeCompare(b));
+  return {
+    sources: names(workOrders.map(row => row[field])),
+    targets: names([...masters.map(row => row.name), ...workOrders.flatMap(row => [row.jobsite_location, row.actual_location])])
+  };
+}
+
+async function consolidateRepairLocations(field, workOrders, button) {
+  if (!isBryanOwner()) return alert("Only the system owner can consolidate jobsites and locations.");
+  if (!["jobsite_location", "actual_location"].includes(field)) return;
+  button.disabled = true;
+  try {
+    // Refresh the small master/retirement lists; never offer a previously merged name.
+    const [masters, retired] = await Promise.all([readRows("asset_locations"), readRows("jobsite_merges")]);
+    const options = repairLocationMergeOptions(workOrders, field, masters, retired);
+    if (!options.sources.length) return alert("No named locations are available to consolidate. Refresh the report.");
+    const dialog = document.createElement("dialog");
+    dialog.className = "lookup-dialog fuel-jobsite-lookup-dialog";
+    dialog.innerHTML = '<form method="dialog"><h3>Consolidate jobsites / locations</h3><p>Choose the old name to remove and the name to keep. This combines matching records across all modules, customers and dates, including Jobsite and Actual Location. You will review the affected records before confirming.</p><div class="field"><label for="repairMergeSource">Old name to remove</label><select id="repairMergeSource" required><option value="">Select old name</option>' + options.sources.map(name => '<option value="'+esc(name)+'">'+esc(name)+'</option>').join("") + '</select></div><div class="field"><label for="repairMergeTarget">Name to keep</label><input id="repairMergeTarget" list="repairMergeTargets" maxlength="250" required autocomplete="off" placeholder="Choose an existing name or type the corrected name"><datalist id="repairMergeTargets">' + options.targets.map(name => '<option value="'+esc(name)+'"></option>').join("") + '</datalist></div><p>The old name will no longer be available after refresh. Saved entries using the retired name are redirected to the retained name. Original records remain in the audit history.</p><div class="actions"><button type="button" data-merge-cancel>Cancel</button><button class="primary" type="submit">Review consolidation</button></div></form>';
+    document.body.appendChild(dialog);
+    const selection = await new Promise(resolve => {
+      let done = false;
+      const finish = value => { if (done) return; done = true; dialog.close(); dialog.remove(); resolve(value); };
+      dialog.querySelector('[data-merge-cancel]').onclick = () => finish(null);
+      dialog.oncancel = event => { event.preventDefault(); finish(null); };
+      dialog.onsubmit = event => {
+        event.preventDefault();
+        const oldName = dialog.querySelector('#repairMergeSource').value.trim();
+        const newName = dialog.querySelector('#repairMergeTarget').value.trim();
+        if (!oldName || !newName || oldName.toLowerCase() === newName.toLowerCase()) return alert("Choose two different names.");
+        if (retired.some(row => row.old_key === newName.toLowerCase())) return alert("That name was already retired. Choose the retained name instead.");
+        finish({oldName, newName});
+      };
+      dialog.showModal();
+      dialog.querySelector('#repairMergeSource').focus();
+    });
+    if (selection) await mergeTruckingReportJobsite(selection.oldName, selection.newName, button);
+  } catch (error) {
+    alert(error.message || "Could not load locations. Please try again.");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function mergeTruckingReportJobsite(oldName, newName, button) {
   if (!isBryanOwner()) return alert("Only the system owner can merge jobsites across the system.");
   const originalText = button?.textContent;
@@ -36841,7 +36887,7 @@ async function renderRepairReportView() {
     const summaryColumns = ["label", "work_orders", "open", "closed", "labor_hours", "parts_cost", "labor_cost", "operational_cost", "income", "profit", "margin"];
     const columns = ["date", "wo_no", "customer", "asset_tag", "asset_description", "jobsite", "actual_location", "mechanics", "description", "priority", "status", "labor_hours", "parts_cost", "labor_cost", "income", "profit"];
     const sorted = [...rows].sort((a,b) => String(a[field] || "Unspecified").localeCompare(String(b[field] || "Unspecified")) || String(a.date || "").localeCompare(String(b.date || "")) || String(a.wo_no || "").localeCompare(String(b.wo_no || "")));
-    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>${esc(title)}</h3><h4>Summary</h4>${truckingSimpleTable(summary, summaryColumns, {labels:[label,"Work Orders","Open","Closed","Labor Hrs","Parts Cost","Labor Cost","Total Cost","Invoice Income","Gross Profit","Margin %"],format:formats,footer:managementReportTotalFooter(summary,summaryColumns),wrapClass:"trucking-report-table repair-report-table"})}<h4>Work Orders</h4>${truckingSimpleTable(sorted,columns,{labels:["Opened","WO #","Customer","Asset #","Equipment Name","Jobsite","Actual Location","Mechanic(s)","Repair Description","Priority","Status","Labor Hrs","Parts Cost","Labor Cost","Invoice Income","Gross Profit"],format:formats,groupBy:row=>String(row[field] || "").trim() || "Unspecified",groupLabel:value=>esc(label+": "+value),footer:managementReportTotalFooter(sorted,columns),wrapClass:"trucking-report-table repair-report-table"})}</section>`;
+    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>${esc(title)}</h3>${isBryanOwner() ? `<div class="actions no-print"><button type="button" data-repair-location-merge="${field === "jobsite" ? "jobsite_location" : "actual_location"}">Consolidate jobsites / locations</button></div>` : ""}<h4>Summary</h4>${truckingSimpleTable(summary, summaryColumns, {labels:[label,"Work Orders","Open","Closed","Labor Hrs","Parts Cost","Labor Cost","Total Cost","Invoice Income","Gross Profit","Margin %"],format:formats,footer:managementReportTotalFooter(summary,summaryColumns),wrapClass:"trucking-report-table repair-report-table"})}<h4>Work Orders</h4>${truckingSimpleTable(sorted,columns,{labels:["Opened","WO #","Customer","Asset #","Equipment Name","Jobsite","Actual Location","Mechanic(s)","Repair Description","Priority","Status","Labor Hrs","Parts Cost","Labor Cost","Invoice Income","Gross Profit"],format:formats,groupBy:row=>String(row[field] || "").trim() || "Unspecified",groupLabel:value=>esc(label+": "+value),footer:managementReportTotalFooter(sorted,columns),wrapClass:"trucking-report-table repair-report-table"})}</section>`;
   };
   const preferenceKey = "lms.repairReport.preferences.v1";
   const apply = () => {
@@ -36928,6 +36974,8 @@ async function renderRepairReportView() {
     reorderRenderedManagementReportSections($("repairReportHost"), "[data-repair-report-section]", $("repairReportSections"));
   };
   $('repairReportHost').onclick=event=>{
+    const mergeButton = event.target.closest('[data-repair-location-merge]');
+    if (mergeButton) return consolidateRepairLocations(mergeButton.dataset.repairLocationMerge, workOrders, mergeButton);
     const button=event.target.closest('[data-report-wo-priority]');if(!button)return;
     const wo=workOrders.find(row=>String(row.id)===button.dataset.reportWoPriority);
     if(wo)openReportWorkOrderPriority(wo,apply);
