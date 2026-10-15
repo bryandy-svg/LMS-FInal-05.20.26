@@ -23646,7 +23646,7 @@ async function openNewWorkOrderModal(prefill = {}) {
     <div class="form-grid">
       ${productInput("Work order #", "wo_no", woNo)}
       ${productInput("Opening Date", "wo_date", today(), "date")}
-      ${productSelect("Bill to customer", "bill_to_customer", productMeta.customers || [], prefill.billToCustomer || "", "New customer")}
+      ${productSelect("Customer *", "bill_to_customer", productMeta.customers || [], prefill.billToCustomer || "", "New customer", true)}
       ${productInput("Customer PO #", "customer_po", prefill.customerPO || "")}
       ${productInput("Operator", "operator", prefill.operator || prefillAsset?.assigned_operator || outsideAsset?.operator || outsideAsset?.assigned_operator || "")}
       ${productInput("Requested by *", "requested_by", prefill.requestedBy || "")}
@@ -23660,7 +23660,7 @@ async function openNewWorkOrderModal(prefill = {}) {
       <div class="field"><label>Equipment name</label><input id="newWorkOrderEquipmentName" value="${esc(prefillAsset?.name || outsideAsset?.description || "")}" readonly></div>
       ${productSelect("Work type", "work_type", ["Repair", "Preventive Maintenance", "Breakdown", "Inspection", "Rental Checkout"], prefill.workType || "Repair")}
       ${productSelect("Priority", "priority", ["Low", "Medium", "High"], prefill.priority || "Medium")}
-      ${workOrderLocationInput("Jobsite (for charging)", "jobsite_location", prefill.jobsiteLocation || prefill.jobsite || "")}
+      ${workOrderLocationInput("Jobsite (for charging) *", "jobsite_location", prefill.jobsiteLocation || prefill.jobsite || "", true)}
       ${workOrderLocationInput("Actual Equipment Location", "actual_location", prefill.actualLocation || prefill.location || prefillAsset?.location || outsideAsset?.location || "")}
       ${productInput("Vendor / shop", "vendor_shop", prefill.vendorShop || "")}
       ${productInput("Odometer", "odometer", prefill.odometer || 0, "number")}
@@ -23738,8 +23738,8 @@ async function ensureWorkOrderModalMeta() {
   ].map((value) => String(value || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
-function workOrderLocationInput(label, field, value = "") {
-  return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" data-suggest-source="locations" data-product-field="${esc(field)}" value="${esc(value)}" placeholder="Type jobsite or equipment location" autocomplete="off" inputmode="search"><div class="actions"><button type="button" class="rowbtn" data-create-work-order-location="${esc(field)}">+ Create new location</button></div><small>Results appear in separate columns only after typing. Use Create new location when it is not listed.</small></div>`;
+function workOrderLocationInput(label, field, value = "", required = false) {
+  return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" ${required ? 'required aria-required="true"' : ""} data-suggest-source="locations" data-product-field="${esc(field)}" value="${esc(value)}" placeholder="Type jobsite or equipment location" autocomplete="off" inputmode="search"><div class="actions"><button type="button" class="rowbtn" data-create-work-order-location="${esc(field)}">+ Create new location</button></div><small>Results appear in separate columns only after typing. Use Create new location when it is not listed.</small></div>`;
 }
 
 function workOrderLocationDatalist() {
@@ -23849,10 +23849,21 @@ function addNewWorkOrderIssueRow() {
   body?.insertAdjacentHTML("beforeend", mechanicIssueEditRow({ issue_date: today(), issue: "", status: "Open", assigned_mechanic: "", work_notes: "" }, index));
 }
 
+function validateWorkOrderCustomerJobsite(record) {
+  record.bill_to_customer = String(record.bill_to_customer || "").trim();
+  record.jobsite_location = String(record.jobsite_location || "").trim();
+  if (!record.bill_to_customer || !record.jobsite_location) {
+    alert("Customer and Jobsite are required. Complete both before saving the work order.");
+    return false;
+  }
+  return true;
+}
+
 async function saveNewWorkOrderModal() {
   const generatedWorkOrderNo = $("modalBody")?.dataset.generatedWorkOrderNo || "";
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
+  if (!validateWorkOrderCustomerJobsite(record)) return;
   const asset = resolveAssetLookup(record.asset_lookup);
   const openingMechanic = resolveRegisteredMechanic(record.opening_mechanic);
   record.priority_override=document.querySelector('[data-product-field="priority"]')?.dataset.priorityManual==='1';
@@ -24033,7 +24044,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
     <div class="form-grid">
       <div class="field"><label>Work order #</label><input value="${esc(wo.wo_no || "")}" readonly aria-readonly="true"><small>Assigned when the work order is created and cannot be changed afterward.</small></div>
       ${productInput("Opening Date", "wo_date", wo.wo_date || today(), "date")}
-      ${productSelect("Bill to customer", "bill_to_customer", productMeta.customers || [], wo.bill_to_customer || "", "New customer")}
+      ${productSelect("Customer *", "bill_to_customer", productMeta.customers || [], wo.bill_to_customer || "", "New customer", true)}
       ${productInput("Customer PO #", "customer_po", wo.customer_po || "")}
       ${productInput("Operator", "operator", wo.operator || workOrderAssetDetails(wo).operator || "")}
       ${productInput("Requested by *", "requested_by", wo.requested_by || "")}
@@ -24048,7 +24059,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
       ${auditReadOnly ? "" : `<div class="field wide" id="workOrderAssetTransferPanel" hidden><label>Transfer ${esc(wo.wo_no || "")} to equipment *</label><input class="suggest-input" id="workOrderAssetTransferLookup" data-suggest-source="equipment" data-equipment-source="master" placeholder="Type asset #, equipment, plate, serial, VIN, type, or location" autocomplete="off" inputmode="search"><div class="actions"><button type="button" class="rowbtn primary" id="confirmWorkOrderAssetTransferBtn">Use selected equipment</button><button type="button" class="rowbtn" id="cancelWorkOrderAssetTransferBtn">Cancel transfer</button></div><small>Select the destination equipment. The work-order number, issues, parts, labor, and accounting history stay with this work order.</small></div>`}
       ${productSelect("Work type", "work_type", ["Repair", "Preventive Maintenance", "Breakdown", "Inspection", "Rental Checkout"], wo.work_type || "Repair")}
       ${productSelect("Priority", "priority", ["Low", "Medium", "High"], wo.priority || "Medium")}
-      ${workOrderLocationInput("Jobsite (for charging)", "jobsite_location", wo.jobsite_location || "")}
+      ${workOrderLocationInput("Jobsite (for charging) *", "jobsite_location", wo.jobsite_location || "", true)}
       ${workOrderLocationInput("Actual Equipment Location", "actual_location", actualLocationForWorkOrder(wo))}
       ${productInput("Vendor / shop", "vendor_shop", wo.vendor_shop || "")}
       ${productInput("Odometer", "odometer", wo.odometer || 0, "number")}
@@ -24345,6 +24356,7 @@ async function parkWorkOrderForPartsIssuance(wo, trigger) {
 async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance = false } = {}) {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
+  if (!validateWorkOrderCustomerJobsite(record)) return;
   // An existing work order number is an immutable document identifier. Never
   // accept a replacement value from the edit form or from altered page markup.
   record.wo_no = editing?.wo_no || record.wo_no;
@@ -42476,14 +42488,14 @@ function partyMasterSuggestSource(field) {
   return "";
 }
 
-function productSelect(label, field, values, value, quickLabel = "") {
+function productSelect(label, field, values, value, quickLabel = "", required = false) {
   const listId = `${field}-${label}`.replace(/[^a-z0-9_-]/gi, "-");
   const unique = [...new Set((values || []).map((v) => String(v ?? "").trim()).filter(Boolean))];
   const masterSource = partyMasterSuggestSource(field);
   const pickerAttributes = masterSource ? `data-suggest-source="${masterSource}" inputmode="search"` : `data-suggest-list="${esc(listId)}" inputmode="search"`;
   const datalist = masterSource ? "" : `<datalist id="${esc(listId)}">${unique.map((v) => `<option value="${esc(v)}"></option>`).join("")}</datalist>`;
   const helper = masterSource ? `<small>Start typing to search ${masterSource === "customers" ? "Customer Master" : "Vendor Master"} by reference, name, email, or phone.</small>` : "";
-  return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" ${pickerAttributes} data-product-field="${field}" value="${esc(value || "")}" placeholder="Type to search ${esc(label.toLowerCase())}" autocomplete="off">${datalist}${quickLabel ? `<button class="rowbtn" type="button" data-product-quick="${esc(field)}">${esc(quickLabel)}</button>` : ""}${helper}</div>`;
+  return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" ${required ? 'required aria-required="true"' : ""} ${pickerAttributes} data-product-field="${field}" value="${esc(value || "")}" placeholder="Type to search ${esc(label.toLowerCase())}" autocomplete="off">${datalist}${quickLabel ? `<button class="rowbtn" type="button" data-product-quick="${esc(field)}">${esc(quickLabel)}</button>` : ""}${helper}</div>`;
 }
 
 function alternateSkuRows(values) {

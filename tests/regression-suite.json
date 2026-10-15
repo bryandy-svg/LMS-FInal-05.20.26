@@ -99,5 +99,6 @@
   "repair-location-reports",
   "repair-location-consolidation",
   "open-repair-location-detail",
-  "issuance-save-first"
+  "issuance-save-first",
+  "work-order-required-fields"
 ]
