@@ -95,5 +95,6 @@
   "transaction-available-stock",
   "parts-bin-display",
   "work-order-reopen-cache",
-  "repair-report-multifilter"
+  "repair-report-multifilter",
+  "repair-location-reports"
 ]
