@@ -98,5 +98,6 @@
   "repair-report-multifilter",
   "repair-location-reports",
   "repair-location-consolidation",
-  "open-repair-location-detail"
+  "open-repair-location-detail",
+  "issuance-save-first"
 ]

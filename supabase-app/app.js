@@ -2238,7 +2238,7 @@ function resetModalSaveButton() {
   save.disabled = false;
   save.classList.remove("modal-save-busy");
   if (save.textContent === "Saving…") save.textContent = save.dataset.normalText || "Save";
-  ["journalSaveOnlyBtn", "poSaveOnlyBtn", "poReceiveBtn", "poPdfBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn"].forEach((id) => {
+  ["journalSaveOnlyBtn", "poSaveOnlyBtn", "poReceiveBtn", "poPdfBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn", "workOrderPartsIssuancePdfBtn"].forEach((id) => {
     const button = document.getElementById(id);
     if (!button) return;
     button.disabled = false;
@@ -2253,7 +2253,7 @@ async function runExclusiveModalSave(trigger, action) {
   modalSaveInProgress = true;
   const saveButtons = [
     $("modalSave"),
-    ...["journalSaveOnlyBtn", "poSaveOnlyBtn", "poReceiveBtn", "poPdfBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn"]
+    ...["journalSaveOnlyBtn", "poSaveOnlyBtn", "poReceiveBtn", "poPdfBtn", "salesOrderSaveOnlyBtn", "workOrderSaveOnlyBtn", "parkForPartsIssuanceWoBtn", "closeFinalizeWoBtn", "workOrderPartsIssuancePdfBtn"]
       .map((id) => document.getElementById(id)),
   ].filter(Boolean);
   saveButtons.forEach((button) => {
@@ -24113,7 +24113,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
   $("addAdminPartRowBtn").onclick = addAdminPartEditRow;
   if ($("applyWorkOrderPartsRateBtn")) $("applyWorkOrderPartsRateBtn").onclick = applySelectedWorkOrderPartsRate;
   if ($("createWorkOrderReorderPoBtn")) $("createWorkOrderReorderPoBtn").onclick = () => openInventoryReorderPoOverlay(workOrderReorderContext(wo));
-  if ($("workOrderPartsIssuancePdfBtn")) $("workOrderPartsIssuancePdfBtn").onclick = () => printSelectedWorkOrderPartsIssuance(wo);
+  if ($("workOrderPartsIssuancePdfBtn")) $("workOrderPartsIssuancePdfBtn").onclick = () => runExclusiveModalSave($("workOrderPartsIssuancePdfBtn"), () => saveAndPrintWorkOrderIssuance(wo));
   if ($("workOrderPartsIssuancePdfBtn") && !$("workOrderIssuanceHistoryBtn")) {
     const historyButton = document.createElement("button");
     historyButton.id = "workOrderIssuanceHistoryBtn";
@@ -25384,7 +25384,7 @@ function workOrderPartsAdminEditTable(wo) {
   const heads = ["Issue PDF", "Part / SKU", "Description", "Bin #", "Available", "Qty Needed", "Qty Accepted by Mechanic", "U.C.", "Markup %", "Selling Price", "Status", "Availability", "Notes", "Void", "PO #", "Issued Date", "Issued By"];
   const hidden = new Set(userColumnPreferences()["repairs|work-order-parts"] || []);
   const pricingRates = (productMeta.salesPricingRates || []).filter((rate) => String(rate.status || "Active").toLowerCase() !== "inactive");
-  return `${workOrderAdminProductDatalist()}<div class="actions work-order-parts-rate-actions"><select id="workOrderPartsRateSelect" aria-label="Work Order parts pricing rate"><option value="">Select parts pricing rate</option>${pricingRates.map((rate) => `<option value="${esc(rate.id)}">${esc(salesPricingRateLabel(rate))} - ${Number(rate.markup_percent || 0).toFixed(2)}% of cost</option>`).join("")}</select><button type="button" id="applyWorkOrderPartsRateBtn">Apply rate to parts</button></div><details class="column-settings-inline"><summary>Show / Hide Parts Columns</summary><div class="column-chooser">${heads.map((head) => `<label class="checkline"><input type="checkbox" data-work-order-part-column="${esc(head)}" ${hidden.has(head) ? "" : "checked"}> ${esc(head)}</label>`).join("")}</div></details><div class="table-wrap"><table class="line-table admin-parts-table" data-column-preference-key="repairs|work-order-parts" data-resizable-columns><thead><tr>${heads.map((h, index) => `<th>${index === 0 ? `<label class="issuance-select-all" title="Select all rows for Issuance PDF"><input id="selectAllWorkOrderIssuanceParts" type="checkbox" checked aria-label="Select all rows for Issuance PDF"></label>` : esc(h)}</th>`).join("")}</tr></thead><tbody id="adminPartBody">${rows.map((row, index) => workOrderPartAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminPartRowBtn">Add part row</button>${createPartButtonMarkup()}<button class="rowbtn" type="button" id="createWorkOrderReorderPoBtn">Create Reorder PO</button><button class="rowbtn primary" type="button" id="workOrderPartsIssuancePdfBtn">Issuance PDF</button><button class="rowbtn" type="button" id="resetWorkOrderPartWidthsBtn">Reset column widths</button></div><p class="notice">Drag the right edge of any column heading to resize it. Widths are remembered on this device. New part rows are selected for the issuance PDF automatically.</p>${workOrderVoidedPartsTable(voidedParts)}`;
+  return `${workOrderAdminProductDatalist()}<div class="actions work-order-parts-rate-actions"><select id="workOrderPartsRateSelect" aria-label="Work Order parts pricing rate"><option value="">Select parts pricing rate</option>${pricingRates.map((rate) => `<option value="${esc(rate.id)}">${esc(salesPricingRateLabel(rate))} - ${Number(rate.markup_percent || 0).toFixed(2)}% of cost</option>`).join("")}</select><button type="button" id="applyWorkOrderPartsRateBtn">Apply rate to parts</button></div><details class="column-settings-inline"><summary>Show / Hide Parts Columns</summary><div class="column-chooser">${heads.map((head) => `<label class="checkline"><input type="checkbox" data-work-order-part-column="${esc(head)}" ${hidden.has(head) ? "" : "checked"}> ${esc(head)}</label>`).join("")}</div></details><div class="table-wrap"><table class="line-table admin-parts-table" data-column-preference-key="repairs|work-order-parts" data-resizable-columns><thead><tr>${heads.map((h, index) => `<th>${index === 0 ? `<label class="issuance-select-all" title="Select all rows for Issuance PDF"><input id="selectAllWorkOrderIssuanceParts" type="checkbox" checked aria-label="Select all rows for Issuance PDF"></label>` : esc(h)}</th>`).join("")}</tr></thead><tbody id="adminPartBody">${rows.map((row, index) => workOrderPartAdminEditRow(row, index)).join("")}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addAdminPartRowBtn">Add part row</button>${createPartButtonMarkup()}<button class="rowbtn" type="button" id="createWorkOrderReorderPoBtn">Create Reorder PO</button><button class="rowbtn primary" type="button" id="workOrderPartsIssuancePdfBtn">Save & Print Issuance</button><button class="rowbtn" type="button" id="resetWorkOrderPartWidthsBtn">Reset column widths</button></div><p class="notice">Drag the right edge of any column heading to resize it. Widths are remembered on this device. New part rows are selected for the issuance PDF automatically.</p>${workOrderVoidedPartsTable(voidedParts)}`;
 }
 
 function workOrderIssuanceRequestedBy(wo = {}) {
@@ -25400,23 +25400,37 @@ function workOrderIssuanceRequestedBy(wo = {}) {
   return startingMechanic === "Not recorded" ? "" : startingMechanic;
 }
 
-function printSelectedWorkOrderPartsIssuance(wo) {
-  const selected = [...document.querySelectorAll("#adminPartBody tr")].filter((tr) => tr.querySelector('[data-part-issuance-select]')?.checked).map((tr) => {
-    const get = (field) => tr.querySelector(`[data-admin-part="${field}"]`)?.value || "";
-    const saved = (wo._parts || []).find((part) => String(part.id || "") === String(tr.dataset.partId || ""));
-    const product = resolveProductLookup(get("product_lookup"));
-    return {
-      sku: product?.sku || saved?.sku || "",
-      product_name: product?.name || get("product_name") || saved?.product_name || "",
-      bin_shelf: partBinLocation(product || saved || {}),
-      issue: get("issue") || saved?.issue || "General",
-      qty_needed: Number(get("qty_needed") || saved?.qty_needed || 0),
-      accepted_qty: Number(get("accepted_qty") || saved?.accepted_qty || 0),
-      status: get("status") || effectivePartStatus(saved || {}),
-      issued_date: workOrderPartIssuedDate(saved),
-      issued_by: workOrderPartIssuedBy(saved),
-    };
-  }).filter((row) => row.sku || row.product_name || row.qty_needed > 0);
+async function saveAndPrintWorkOrderIssuance(wo) {
+  if (wo.invoice_no || /invoiced|void|cancel/i.test(wo.status || "")) throw new Error("Use Reprint Issuance PDF for this work order.");
+  const selectedRows = [...document.querySelectorAll("#adminPartBody tr")].filter((tr) => tr.querySelector('[data-part-issuance-select]')?.checked);
+  if (!selectedRows.some((tr) => tr.querySelector('[data-admin-part="product_lookup"]')?.value || tr.dataset.partId)) throw new Error("Check at least one populated part row for the issuance PDF.");
+  await saveWorkOrderPartEdits(wo);
+  const selectedIds = selectedRows.map((tr) => tr.dataset.partId).filter(Boolean);
+  // The atomic save has committed. A failed history read must never trigger another posting.
+  let movements;
+  try { movements = await workOrderScopedRows("stock_movements", "document_no", [wo.wo_no]); }
+  catch (error) { throw new Error("Parts were saved, but issuance details could not be loaded. Use Reprint Issuance PDF to retry. " + (error.message || "")); }
+  for (const part of wo._parts || []) {
+    const issued = movements.filter((row) => Number(row.qty || 0) < 0 && /repair/i.test(row.type || "") && String(row.sku || "").toLowerCase() === String(part.sku || "").toLowerCase()
+      && (String(row.reason || "").includes('[WO part:') ? String(row.reason).includes('[WO part:' + part.id + ']') : (wo._parts || []).filter((other) => String(other.sku || "").toLowerCase() === String(part.sku || "").toLowerCase()).length === 1));
+    part._issued_dates = [...new Set(issued.map((row) => row.movement_date || String(row.created_at || "").slice(0, 10)).filter(Boolean))];
+    part._issued_by = [...new Set(issued.map((row) => row.entered_by).filter(Boolean))];
+  }
+  printSelectedWorkOrderPartsIssuance(wo, selectedIds);
+}
+
+function printSelectedWorkOrderPartsIssuance(wo, selectedIds = []) {
+  const selected = (wo._parts || []).filter((part) => selectedIds.includes(part.id)).map((saved) => ({
+    sku: saved.sku || "",
+    product_name: saved.product_name || "",
+    bin_shelf: partBinLocation(resolveProductLookup(saved.sku) || saved),
+    issue: saved.issue || "General",
+    qty_needed: Number(saved.qty_needed || 0),
+    accepted_qty: Number(saved.accepted_qty || 0),
+    status: effectivePartStatus(saved),
+    issued_date: workOrderPartIssuedDate(saved),
+    issued_by: workOrderPartIssuedBy(saved),
+  }));
   if (!selected.length) return alert("Check at least one populated part row for the issuance PDF.");
   const issuedTotal = selected.reduce((sum, row) => sum + row.accepted_qty, 0);
   const requestedBy = workOrderIssuanceRequestedBy(wo);
