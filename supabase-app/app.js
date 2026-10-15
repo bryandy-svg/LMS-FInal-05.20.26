@@ -3114,7 +3114,10 @@ function refreshSuggestMenu() {
 }
 
 function selectSuggestOption(input, value) {
-  if (isProductSuggestInput(input)) input.dataset.pendingProductSuggestion = value;
+  if (isProductSuggestInput(input)) {
+    value = resolveProductLookup(value)?.sku || value;
+    input.dataset.pendingProductSuggestion = value;
+  }
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -15856,7 +15859,7 @@ function purchaseLineRowHtml(line = {}, index = 0) {
   const lastCost = line._last_cost_source || lastPurchaseCostForProduct(product, editing?.vendor || "");
   const enteredCost = Number(line.unit_cost || 0);
   const displayedCost = line.id ? enteredCost : enteredCost > 0 ? enteredCost : Number(lastCost?.cost ?? product.cost ?? 0);
-  const label = sku ? `${sku} - ${line.product_name || product.name || ""}` : "";
+  const label = sku || "";
   const woLabel = line.wo_no ? workOrderOptionLabel((productMeta.openWorkOrders || []).find((wo) => wo.wo_no === line.wo_no) || { wo_no: line.wo_no, asset_tag: "", bill_to_customer: "", status: "" }) : "";
   const destinationQty = purchaseOrderLineDestinationQty(editing || {}, line);
   return `<tr data-po-line-id="${esc(line.id || crypto.randomUUID())}">
@@ -16191,7 +16194,7 @@ function bindPurchaseLineLookups() {
       const selectedVendor = document.querySelector('[data-product-field="vendor"]')?.value || "";
       const lastCost = lastPurchaseCostForProduct(product, selectedVendor);
       const suggestedCost = Number(lastCost?.cost ?? product.cost ?? 0);
-      input.value = `${product.sku || ""} - ${product.name || ""}`;
+      input.value = product.sku || "";
       if (unit) unit.value = product.unit || "";
       if (cost) cost.value = suggestedCost;
       if (landed) landed.value = suggestedCost;
@@ -18605,7 +18608,7 @@ function quotationLineRows(lines) {
 function quotationLineRowHtml(line = {}, index = 0) {
   const sku = line.sku || "";
   const product = productMeta.products?.find((p) => p.sku === sku) || {};
-  const label = sku ? `${sku} - ${line.product_name || product.name || ""}` : "";
+  const label = sku || "";
   const price = line.price ?? product.selling_price ?? 0;
   const unit = line.unit || product.unit || "";
   return `<tr>
@@ -18644,7 +18647,7 @@ function wireQuotationLinePricing() {
       if (!consumeExplicitProductSuggestion(skuInput)) return;
       const product = resolveProductLookup(skuInput.value);
       if (!product) return;
-      skuInput.value = `${product.sku} - ${product.name || ""}`;
+      skuInput.value = product.sku || "";
       const onHandCell = tr.querySelector("[data-quote-onhand]");
       const unitCell = tr.querySelector("[data-quote-unit]");
       if (onHandCell) onHandCell.textContent = transactionAvailableStock(product);
@@ -18751,7 +18754,7 @@ async function quickCreateQuotationPartFromRow(tr, { ask = true } = {}) {
   const saved = await upsertOne("products", row, "sku");
   productMeta.products = await getAll("products");
   refreshProductDatalistOptions();
-  if (skuInput) skuInput.value = `${saved.sku} - ${saved.name}`;
+  if (skuInput) skuInput.value = saved.sku || "";
   refreshPartBinCell(tr, saved);
   const onHandCell = tr.querySelector("[data-quote-onhand]");
   const unitCell = tr.querySelector("[data-quote-unit]");
@@ -19849,7 +19852,7 @@ function salesLineRows(lines, linkedPoMap = {}, savedOrder = false) {
 function salesLineRowHtml(line = {}, index = 0, linkedPoMap = {}) {
   const sku = line.sku || "";
   const product = productMeta.products?.find((p) => p.sku === sku) || {};
-  const label = sku ? `${sku} - ${line.product_name || product.name || ""}` : "";
+  const label = sku || "";
   const canCreateVendorPo = Boolean(product.id);
   const linkedPos = linkedPoMap[String(sku).trim().toLowerCase()] || [];
   const linkedPoHtml = linkedPos.length ? linkedPos.map((po) => `<button type="button" class="rowbtn sales-line-po-link" data-linked-sales-po="${esc(po.po_no)}" title="Open ${esc(po.po_no)} (${esc(po.status)})">${esc(po.po_no)}</button>`).join(" ") : `<span class="muted">None</span>`;
@@ -19997,7 +20000,7 @@ function wireSalesOrderLinePricing() {
       if (!consumeExplicitProductSuggestion(skuInput)) return;
       const product = resolveProductLookup(skuInput?.value);
       if (!product) return;
-      skuInput.value = `${product.sku} - ${product.name || ""}`;
+      skuInput.value = product.sku || "";
       if (descriptionInput) descriptionInput.value = product.name || product.sku || "";
       if (unitInput) unitInput.value = product.unit || "Each";
       const onHandCell = tr.querySelector("[data-sales-onhand]");
@@ -20155,7 +20158,7 @@ async function useSalesAlternate(lineRow, sourceProduct, alternateProduct) {
     await rememberSalesAlternate(sourceProduct, alternateProduct);
     const skuInput = lineRow.querySelector('[data-sales-line="sku"]');
     if (skuInput) {
-      skuInput.value = `${alternateProduct.sku} - ${alternateProduct.name || ""}`;
+      skuInput.value = alternateProduct.sku || "";
       skuInput.dispatchEvent(new Event("input", { bubbles: true }));
       skuInput.dispatchEvent(new Event("change", { bubbles: true }));
     }
@@ -25663,7 +25666,7 @@ function workOrderAdminProductDatalist() {
 }
 
 function workOrderPartAdminEditRow(row = {}, index = 0) {
-  const lookup = [row.sku && !/^TBD$/i.test(row.sku) ? row.sku : "", row.product_name].filter(Boolean).join(" - ");
+  const lookup = row.sku && !/^TBD$/i.test(row.sku) ? row.sku : "";
   const product = (productMeta.products || []).find((item) => item.id === row.product_id || String(item.sku || "").toLowerCase() === String(row.sku || "").toLowerCase()) || {};
   const populated = Boolean(lookup || row.product_name || Number(row.qty_needed || 0) > 0);
   const alreadyIssued = Number(row.accepted_qty || 0) > 0;
@@ -25912,6 +25915,7 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
     syncWorkOrderPartIssuanceCheckbox(tr);
     return;
   }
+  input.value = product.sku || "";
   const set = (field, value, onlyBlank = false) => {
     const target = tr.querySelector(`[data-admin-part="${field}"]`);
     if (target && (!onlyBlank || !target.value)) target.value = value ?? "";
@@ -27266,7 +27270,7 @@ function invoiceLineRowHtml(line = {}, index = 0) {
   const product = (productMeta.products || []).find((row) => row.id === line.product_id || row.sku === line.sku) || {};
   const sku = line.sku || product.sku || "";
   const productName = line.product_name || product.name || "";
-  const lookup = sku ? `${sku} - ${productName}` : "";
+  const lookup = sku || "";
   return `<tr data-ordered-qty="${esc(line.ordered_qty ?? line.qty ?? "")}" data-issued-qty="${esc(line.issued_qty ?? line.qty ?? "")}">
     <td><input class="suggest-input compact-line-text" list="poProductOptions" data-invoice-line="product" data-line-index="${index}" value="${esc(lookup)}" placeholder="Search SKU" autocomplete="off">${productOptionsDatalist()}</td>
     <td><textarea class="line-description compact-line-text" data-invoice-line="description" data-line-index="${index}" rows="2" placeholder="Product name or description">${esc(line.description || productName)}</textarea></td>
@@ -27313,7 +27317,7 @@ function wireInvoiceLinePricing() {
     const applyProduct = () => {
       const product = resolveProductLookup(productInput?.value);
       if (!product) return;
-      productInput.value = `${product.sku} - ${product.name || ""}`;
+      productInput.value = product.sku || "";
       productInput.dataset.productId = product.id || "";
       productInput.dataset.sku = product.sku || "";
       productInput.dataset.productName = product.name || "";
@@ -28872,7 +28876,7 @@ function bindSupplyIssueLineRows() {
         return;
       }
       if (!product) return;
-      lookup.value = `${product.sku} - ${product.name || ""}`;
+      lookup.value = product.sku || "";
       if (name) name.value = product.name || "";
       if (cost && !cost.value) cost.value = Number(product.cost || 0);
       if (warehouse && !warehouse.value) warehouse.value = [product.warehouse, product.bin_shelf].filter(Boolean).join(" / ");
@@ -29377,7 +29381,7 @@ async function renderPropertyWorkOrdersView() {
 }
 
 function propertyMaintenanceMaterialRowHtml(line = {}, index = 0) {
-  const lookup = [line.sku, line.product_name].filter(Boolean).join(" - ");
+  const lookup = line.sku || "";
   return `<tr data-pm-material-row><td><input class="suggest-input pm-material-product" data-suggest-source="products" data-pm-material="lookup" data-line-index="${index}" value="${esc(lookup)}" placeholder="Search SKU, product, or vendor" autocomplete="off" inputmode="search"></td><td><input class="pm-material-description" data-pm-material="description" value="${esc(line.product_name)}" placeholder="Material description"></td><td><input type="number" min="0" step="0.01" data-pm-material="quantity" value="${esc(line.quantity || 1)}"></td><td><input type="number" min="0" step="0.01" data-pm-material="unit_cost" value="${esc(line.unit_cost || 0)}"></td><td class="num" data-pm-material-amount>${money(Number(line.quantity || 0) * Number(line.unit_cost || 0))}</td><td><button type="button" class="rowbtn danger" data-remove-pm-material>Remove</button></td></tr>`;
 }
 
@@ -29387,7 +29391,7 @@ function openPropertyMaintenanceWorkOrderModal(row, properties, requests) {
   if (!materialLines.length) materialLines.push({ sku: "", product_name: "", quantity: 1, unit_cost: 0 });
   $("modalBody").innerHTML = `<div class="notice"><strong>Monitoring only.</strong> This follows the repair work-order workflow, but entered labor and costs do not create accounting or payroll entries.</div><div class="form-grid property-maintenance-form"><div class="section-title">Work order and property</div><div class="field"><label>Work order # *</label><input id="pmWoNo" value="${esc(row?.work_order_no || propertyMaintenanceNo("PMWO"))}"></div><div class="field"><label>Opened date</label><input type="date" id="pmWoOpened" value="${esc(row?.opened_date || today())}"></div><div class="field"><label>Property *</label><select id="pmWoProperty">${propertySelectOptions(properties, row?.property_id)}</select></div><div class="field"><label>Request</label><select id="pmWoRequest"><option value="">Direct work order</option>${requests.map((r) => `<option value="${esc(r.id)}" ${r.id === row?.request_id ? "selected" : ""}>${esc(r.request_no)} | ${esc(r.issue_description)}</option>`).join("")}</select></div><div class="field"><label>Scheduled</label><input type="date" id="pmWoScheduled" value="${esc(row?.scheduled_date)}"></div><div class="field"><label>Completed</label><input type="date" id="pmWoCompleted" value="${esc(row?.completed_date)}"></div><div class="field"><label>Category</label><select id="pmWoCategory">${PROPERTY_MAINTENANCE_CATEGORIES.map((x) => `<option ${x === row?.category ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div><div class="field"><label>Priority</label><select id="pmWoPriority">${["Low", "Medium", "High", "Emergency"].map((x) => `<option ${x === (row?.priority || "Medium") ? "selected" : ""}>${x}</option>`).join("")}</select></div><div class="field"><label>Status</label><select id="pmWoStatus">${["Open", "Scheduled", "In Progress", "On Hold", "Completed", "Cancelled"].map((x) => `<option ${x === (row?.status || "Open") ? "selected" : ""}>${x}</option>`).join("")}</select></div><div class="field"><label>Location / area</label><input id="pmWoArea" value="${esc(row?.location_area)}"></div><div class="field"><label>Assigned to</label><input id="pmWoAssigned" value="${esc(row?.assigned_to)}"></div><div class="field"><label>Vendor / contractor</label><input id="pmWoVendor" value="${esc(row?.vendor_name)}"></div><div class="section-title">Work requested</div><div class="field wide"><label>Issue *</label><textarea id="pmWoIssue">${esc(row?.issue_description)}</textarea></div><div class="field wide"><label>Scope of work</label><textarea id="pmWoScope">${esc(row?.scope_of_work)}</textarea></div><div class="section-title">Materials needed</div><div class="field wide property-maintenance-materials"><div class="table-wrap"><table><thead><tr><th>SKU / Product</th><th>Description</th><th>Qty Needed</th><th>Unit Cost</th><th>Amount</th><th></th></tr></thead><tbody id="pmWoMaterialRows">${materialLines.map(propertyMaintenanceMaterialRowHtml).join("")}</tbody></table></div><div class="actions"><button type="button" id="pmAddMaterialRow">Add material row</button><strong>Materials total: <span id="pmMaterialsTotal">$0.00</span></strong></div></div><div class="section-title">Labor and monitoring costs</div><div class="field"><label>Labor hours</label><input type="number" min="0" step="0.01" id="pmWoHours" value="${esc(row?.labor_hours || 0)}"></div><div class="field"><label>Monitoring labor rate</label><input type="number" min="0" step="0.01" id="pmWoRate" value="${esc(row?.labor_rate || 0)}"></div><div class="field"><label>Vendor cost</label><input type="number" min="0" step="0.01" id="pmWoVendorCost" value="${esc(row?.vendor_cost || 0)}"></div><div class="field"><label>Other cost</label><input type="number" min="0" step="0.01" id="pmWoOther" value="${esc(row?.other_cost || 0)}"></div><div class="field wide"><label>Completion notes</label><textarea id="pmWoCompletion">${esc(row?.completion_notes)}</textarea></div></div>`;
   const recalcMaterials = () => { let total = 0; document.querySelectorAll("[data-pm-material-row]").forEach((tr) => { const qty = Number(tr.querySelector('[data-pm-material="quantity"]')?.value || 0); const cost = Number(tr.querySelector('[data-pm-material="unit_cost"]')?.value || 0); total += qty * cost; const amount = tr.querySelector("[data-pm-material-amount]"); if (amount) amount.textContent = money(qty * cost); }); $("pmMaterialsTotal").textContent = money(total); return total; };
-  const bindMaterialRows = () => document.querySelectorAll("[data-pm-material-row]").forEach((tr) => { const lookup = tr.querySelector('[data-pm-material="lookup"]'); const description = tr.querySelector('[data-pm-material="description"]'); const resolve = () => { const product = resolveProductLookup(lookup?.value); if (!product) return; lookup.value = `${product.sku} - ${product.name || ""}`; description.value = product.name || ""; const cost = tr.querySelector('[data-pm-material="unit_cost"]'); if (!Number(cost.value || 0)) cost.value = Number(product.cost || 0).toFixed(2); recalcMaterials(); }; lookup?.addEventListener("change", resolve); lookup?.addEventListener("blur", resolve); tr.querySelectorAll('input[type="number"]').forEach((input) => input.addEventListener("input", recalcMaterials)); tr.querySelector("[data-remove-pm-material]").onclick = () => { tr.remove(); recalcMaterials(); }; });
+  const bindMaterialRows = () => document.querySelectorAll("[data-pm-material-row]").forEach((tr) => { const lookup = tr.querySelector('[data-pm-material="lookup"]'); const description = tr.querySelector('[data-pm-material="description"]'); const resolve = () => { const product = resolveProductLookup(lookup?.value); if (!product) return; lookup.value = product.sku || ""; description.value = product.name || ""; const cost = tr.querySelector('[data-pm-material="unit_cost"]'); if (!Number(cost.value || 0)) cost.value = Number(product.cost || 0).toFixed(2); recalcMaterials(); }; lookup?.addEventListener("change", resolve); lookup?.addEventListener("blur", resolve); tr.querySelectorAll('input[type="number"]').forEach((input) => input.addEventListener("input", recalcMaterials)); tr.querySelector("[data-remove-pm-material]").onclick = () => { tr.remove(); recalcMaterials(); }; });
   bindMaterialRows(); recalcMaterials(); $("pmAddMaterialRow").onclick = () => { $("pmWoMaterialRows").insertAdjacentHTML("beforeend", propertyMaintenanceMaterialRowHtml({}, document.querySelectorAll("[data-pm-material-row]").length)); bindMaterialRows(); recalcMaterials(); };
   $("pmWoRequest").onchange = () => { const req = requests.find((r) => r.id === $("pmWoRequest").value); if (!req) return; $("pmWoProperty").value = req.property_id || ""; $("pmWoCategory").value = req.category; $("pmWoPriority").value = req.priority; $("pmWoArea").value = req.location_area || ""; $("pmWoIssue").value = req.issue_description || ""; };
   $("modalSave").style.display = ""; $("modalSave").textContent = "Save work order"; $("modalSave").onclick = async () => {
@@ -30661,7 +30665,7 @@ async function openEquipmentRepairQuoteModal(row = null, prefill = {}) {
 }
 
 function repairQuotePartRow(line = {}, index = 0) {
-  const lookup = line.lookup || [line.sku, line.product_name].filter(Boolean).join(" | ");
+  const lookup = line.sku || resolveProductLookup(line.lookup)?.sku || line.lookup || "";
   return `<tr data-repair-quote-part-row="${index}">
     <td><input class="suggest-input" list="poProductOptions" data-repair-quote-part="lookup" value="${esc(lookup)}" placeholder="Search SKU or product"></td>
     <td><input data-repair-quote-part="description" value="${esc(line.product_name || line.description || "")}" placeholder="Part description"></td>
@@ -30747,6 +30751,7 @@ function bindRepairQuotePricingControls() {
       }
       const product = resolveProductLookup(lookup.value);
       if (product) {
+        lookup.value = product.sku || "";
         description.value = product.name || "";
         cost.value = Number(product.cost || 0).toFixed(2);
         markup.value = product.markup_percent ?? "";
@@ -42505,7 +42510,7 @@ function addCrossReferenceRow() {
 
 function altSkuRowHtml(sku = "", index = 0) {
   const product = resolveProductLookup(sku);
-  const value = product ? `${product.sku} - ${product.name || ""}` : sku;
+  const value = product?.sku || sku;
   return `<tr><td><input class="suggest-input" data-suggest-source="products" data-alt-sku="${index}" value="${esc(value || "")}" placeholder="Search compatible alternate Part #" autocomplete="off" inputmode="search"></td></tr>`;
 }
 
