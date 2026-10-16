@@ -11394,7 +11394,7 @@ async function openEditCheckRunModal(data, checkRunNo) {
 }
 
 async function openCheckRunModal(data, vendorFilter = "") {
-  const payables = checkRunEligiblePayables(data).filter((row) => !vendorFilter || row.vendor === vendorFilter);
+  const payables = checkRunEligiblePayables(data).filter((row) => !vendorFilter || String(row.vendor || "").trim().toLowerCase() === String(vendorFilter).trim().toLowerCase());
   const number = await nextRefPreview("check", "CHK-", "check_runs", "check_run_no");
   const startingCheckNo = nextAvailableCheckNumber(data.checkRuns || []);
   const accounts = paymentAccountOptions(data.coa || []);
@@ -11518,8 +11518,9 @@ function groupPayablesByVendor(rows) {
   const map = new Map();
   rows.forEach((row) => {
     const vendor = row.vendor || "Unknown Vendor";
-    if (!map.has(vendor)) map.set(vendor, { vendor, rows: [], amount: 0 });
-    const group = map.get(vendor);
+    const vendorKey = String(vendor).trim().toLowerCase();
+    if (!map.has(vendorKey)) map.set(vendorKey, { vendor: String(vendor).trim(), rows: [], amount: 0 });
+    const group = map.get(vendorKey);
     group.rows.push(row);
     group.amount += Number(row.amount || 0);
   });
