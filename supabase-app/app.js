@@ -10175,7 +10175,11 @@ async function ensureTrialBalanceAccounts(entries, rawRows) {
   if (accountRows.length) await upsertManyWithOptionalColumns("chart_of_accounts", accountRows, "account", ["account_code", "report_group"], "Some optional chart fields were skipped because the database needs the latest chart update.");
 }
 
-async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGroupKey = "") {
+function apWorkOrderJobsite(workOrder = {}) {
+  return String(workOrder.jobsite_location || workOrder.jobsite || "").trim();
+}
+
+async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGroupKey = "", readOnly = false) {
   const [assets, outsideFleet, workOrders, assetLocations, locations] = await Promise.all([
     getViewRows("assets").catch(() => []),
     getViewRows("outside_customer_fleet").catch(() => []),
@@ -10232,11 +10236,13 @@ async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGro
       const selected = resolveWorkOrderSuggestLookup(workOrderInput.value, workOrderInput);
       if (!selected) return;
       workOrderInput.value = selected.wo_no || workOrderInput.value;
-      if (jobsiteInput) jobsiteInput.value = selected.jobsite_location || selected.jobsite || selected.actual_location || selected.location || "";
+      const jobsite = apWorkOrderJobsite(selected);
+      if (jobsiteInput && jobsite) jobsiteInput.value = jobsite;
       if (equipmentInput) equipmentInput.value = supportEquipmentText(selected, assets) || [selected.asset_tag, selected.equipment_name || selected.asset_name].filter(Boolean).join(" | ");
     };
     workOrderInput.addEventListener("change", fillWorkOrderSupport);
     workOrderInput.addEventListener("blur", fillWorkOrderSupport);
+    if (!readOnly && !workOrderInput.value.includes(",")) fillWorkOrderSupport();
   }
   if (equipmentInput) equipmentInput.onchange = () => {
     const selected = resolveEquipmentSuggestLookup(equipmentInput.value, equipmentInput);
@@ -10246,7 +10252,7 @@ async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGro
 }
 
 async function openPostedApReadView(data, poNo, invoiceNo = "", receiptGroupKey = "") {
-  await openPostApFromPoModal(data, poNo, invoiceNo, receiptGroupKey);
+  await openPostApFromPoModal(data, poNo, invoiceNo, receiptGroupKey, true);
   $("modalTitle").textContent = `View posted AP — ${poNo}${invoiceNo ? ` / ${invoiceNo}` : ""}`;
   $("modalBody").querySelectorAll("input, select, textarea").forEach((field) => {
     field.disabled = true;
