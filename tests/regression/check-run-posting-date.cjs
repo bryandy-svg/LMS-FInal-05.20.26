@@ -20,6 +20,12 @@ for(const name of ['validateCheckRunNetAmount','productInput','validateCheckRunD
  let end=start;while((end=source.indexOf('\n}',end+1))>=0){try{new vm.Script(source.slice(start,end+2)).runInContext(ctx);break}catch(e){if(!(e instanceof SyntaxError))throw e}}
 }
 (async()=>{
+ let shown=[];ctx.checkRunPayablesTable=rows=>{shown=rows;return '';};
+ const napa=[{po_no:'PO-7077',invoice_no:'920278',vendor:'NAPA AUTO PARTS',amount:142.30},{po_no:'PO-7118',vendor:'Napa Auto Parts',amount:11.90},{vendor:'Other Vendor',amount:99}];
+ await ctx.openCheckRunModal({payables:napa},' Napa Auto Parts ');
+ assert.equal(shown.length,2);assert.equal(shown[0].invoice_no,'920278');
+ const grouped=ctx.groupPayablesByVendor(shown);assert.equal(grouped.length,1);assert.ok(Math.abs(grouped[0].amount-154.20)<0.001);assert.equal(grouped[0].rows.length,2);
+ assert.equal(ctx.groupPayablesByVendor(napa).length,2);
  const payable={po_no:'PO-TEST',vendor:'Vendor',amount:100};
  await ctx.openCheckRunModal({payables:[payable]});
  assert.match(element('modalBody').innerHTML,/Posting date/);

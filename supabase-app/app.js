@@ -2573,8 +2573,12 @@ function customerSuggestOptions(input) {
   return partySuggestOptions(input, partyMasterMeta.customers || []);
 }
 
+function activeVendorMasterRows(rows = []) {
+  return rows.filter(row => !/^inactive$/i.test(String(row.status || "").trim()) && !/(?:^|\n)\s*Inactive as of\b/i.test(String(row.notes || "")));
+}
+
 function vendorSuggestOptions(input) {
-  return partySuggestOptions(input, partyMasterMeta.vendors || []);
+  return partySuggestOptions(input, activeVendorMasterRows(partyMasterMeta.vendors || []));
 }
 
 function equipmentSuggestRows(input) {
@@ -2993,10 +2997,11 @@ function partySuggestRow(value, rows = []) {
 async function requirePartyMasterSelection(table, value, label = "party") {
   const entered = String(value || "").trim();
   if (!entered) return null;
-  const rows = await getAll(table);
+  const savedRows = await getAll(table);
+  const rows = table === "vendors" ? activeVendorMasterRows(savedRows) : savedRows;
   const selected = rows.find((row) => normalizedMasterName(canonicalPartyName(row.name || row.customer || row.vendor || "")) === normalizedMasterName(canonicalPartyName(entered)));
   if (!selected) {
-    alert(`Select ${label} from ${table === "vendors" ? "Vendor" : "Customer"} Master.\n\n“${entered}” is not a saved master record and cannot be used.`);
+    alert(`Select ${label} from ${table === "vendors" ? "Vendor" : "Customer"} Master.\n\n“${entered}” is not an active saved master record and cannot be used.`);
     return null;
   }
   return selected;
@@ -3016,7 +3021,7 @@ function customerSuggestOptionMarkup(value) {
 }
 
 function vendorSuggestOptionMarkup(value) {
-  const vendor = partySuggestRow(value, partyMasterMeta.vendors);
+  const vendor = partySuggestRow(value, activeVendorMasterRows(partyMasterMeta.vendors || []));
   if (!vendor) return `<button type="button" class="suggest-option" data-suggest-value="${esc(value)}">${esc(value)}</button>`;
   const vendorName = canonicalPartyName(vendor.name);
   return `<button type="button" class="suggest-option vendor-suggest-row" data-suggest-value="${esc(vendorName)}">
@@ -11394,7 +11399,7 @@ async function openEditCheckRunModal(data, checkRunNo) {
 }
 
 async function openCheckRunModal(data, vendorFilter = "") {
-  const payables = checkRunEligiblePayables(data).filter((row) => !vendorFilter || row.vendor === vendorFilter);
+  const payables = checkRunEligiblePayables(data).filter((row) => !vendorFilter || String(row.vendor || "").trim().toLowerCase() === String(vendorFilter).trim().toLowerCase());
   const number = await nextRefPreview("check", "CHK-", "check_runs", "check_run_no");
   const startingCheckNo = nextAvailableCheckNumber(data.checkRuns || []);
   const accounts = paymentAccountOptions(data.coa || []);
@@ -11518,8 +11523,9 @@ function groupPayablesByVendor(rows) {
   const map = new Map();
   rows.forEach((row) => {
     const vendor = row.vendor || "Unknown Vendor";
-    if (!map.has(vendor)) map.set(vendor, { vendor, rows: [], amount: 0 });
-    const group = map.get(vendor);
+    const vendorKey = String(vendor).trim().toLowerCase();
+    if (!map.has(vendorKey)) map.set(vendorKey, { vendor: String(vendor).trim(), rows: [], amount: 0 });
+    const group = map.get(vendorKey);
     group.rows.push(row);
     group.amount += Number(row.amount || 0);
   });

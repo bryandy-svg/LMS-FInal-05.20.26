@@ -102,5 +102,6 @@
   "issuance-save-first",
   "work-order-required-fields",
   "inventory-count-selected",
-  "ap-work-order-jobsite"
+  "ap-work-order-jobsite",
+  "vendor-inactive-selection"
 ]
