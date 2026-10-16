@@ -101,5 +101,6 @@
   "open-repair-location-detail",
   "issuance-save-first",
   "work-order-required-fields",
-  "inventory-count-selected"
+  "inventory-count-selected",
+  "ap-work-order-jobsite"
 ]
