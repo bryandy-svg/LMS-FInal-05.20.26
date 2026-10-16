@@ -10242,7 +10242,7 @@ async function openPostApFromPoModal(data, poNo = "", invoiceNo = "", receiptGro
     };
     workOrderInput.addEventListener("change", fillWorkOrderSupport);
     workOrderInput.addEventListener("blur", fillWorkOrderSupport);
-    if (!readOnly) fillWorkOrderSupport();
+    if (!readOnly && !workOrderInput.value.includes(",")) fillWorkOrderSupport();
   }
   if (equipmentInput) equipmentInput.onchange = () => {
     const selected = resolveEquipmentSuggestLookup(equipmentInput.value, equipmentInput);
