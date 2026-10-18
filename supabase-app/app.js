@@ -11086,7 +11086,9 @@ async function renderCheckRunView() {
   const vendorFilter = localStorage.getItem("lms.checkRunVendor") || "";
   const normalizedVendorFilter = vendorFilter.trim().toLowerCase();
   const matchesVendorFilter = (value) => !normalizedVendorFilter || String(value || "").trim().toLowerCase() === normalizedVendorFilter;
-  const payables = checkRunEligiblePayables(data).filter((row) => matchesVendorFilter(row.vendor));
+  const dashboardPayables = checkRunEligiblePayables(data);
+  const dashboardHistory = checkRunHistoryRows(runs);
+  const payables = dashboardPayables.filter((row) => matchesVendorFilter(row.vendor));
   const history = checkRunHistoryRows(runs).map((row) => {
     const originalRef = String(row.check_run_no || row.reference || "");
     const voidRef = `${originalRef}-VOID`;
@@ -11097,12 +11099,12 @@ async function renderCheckRunView() {
     };
   }).filter((row) => matchesVendorFilter(row.vendor));
   currentRows = history;
-  const readyTotal = payables.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const readyTotal = dashboardPayables.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   $("content").innerHTML = `
     <div class="stats">
-      ${stat("Ready to Pay", payables.length, "Matched payables")}
-      ${stat("Open Check Amount", money(readyTotal), "Filtered payable amount")}
-      ${stat("Last Check Run", history[0]?.check_run_no || "None", history[0]?.payment_date || "No payments posted")}
+      ${stat("Ready to Pay", dashboardPayables.length, "Matched payables")}
+      ${stat("Open Check Amount", money(readyTotal), "All eligible payables")}
+      ${stat("Last Check Run", dashboardHistory[0]?.check_run_no || "None", dashboardHistory[0]?.payment_date || "No payments posted")}
       ${stat("Runs Posted", runs.filter((r) => /posted|printed|cleared/i.test(r.status || "")).length, "Payment batches")}
     </div>
     <section class="panel">
@@ -21627,7 +21629,8 @@ async function renderEquipmentRentalBidsView() {
   await loadEquipmentRentalMeta({ useCache: true });
   const [bids, bidLines] = await Promise.all([getViewRows("equipment_rental_bids"), getViewRows("equipment_rental_bid_lines").catch(() => [])]);
   currentRows = bids.map((bid) => ({ ...bid, lines: bidLines.filter((line) => line.bid_no === bid.bid_no).sort((a, b) => a.line_no - b.line_no) })).sort((a, b) => String(b.bid_date || "").localeCompare(String(a.bid_date || "")));
-  $("content").innerHTML = `<div class="stats">${statCard("Open Bids", currentRows.filter((r) => /draft|sent/i.test(r.status)).length, "Draft or sent")}${statCard("Accepted", currentRows.filter((r) => /accepted|converted/i.test(r.status)).length, "Won bids")}${statCard("Quoted Value", money(currentRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)), "All bids")}</div><section class="panel"><div class="panel-head"><div class="panel-title"><strong>Rental Bids / Quotations</strong><span>Each bid can contain multiple plants, equipment, tools, containers, toilets, facilities, materials, or accessories.</span></div><div class="actions"><button id="rentalBidCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newRentalBidBtn">New bid</button></div></div><div class="table-wrap"><table><thead><tr><th>Bid</th><th>Date</th><th>Valid Until</th><th>Customer</th><th>Category</th><th>Rentable Items</th><th>Total</th><th>Status</th><th>Rental</th><th></th></tr></thead><tbody>${currentRows.length ? currentRows.map((row) => `<tr><td>${esc(row.bid_no)}</td><td>${esc(formatDisplayDate(row.bid_date))}</td><td>${esc(formatDisplayDate(row.valid_until))}</td><td>${esc(row.customer)}</td><td>${esc(row.rental_category || (row.lines?.length > 1 ? "Mixed" : row.lines?.[0]?.category || rentalRateItemType(row)))}</td><td>${esc(row.lines?.length ? `${row.lines.length} item(s): ${row.lines.map((line) => line.item_ref).join(", ")}` : `${rentalRateItemRef(row)} - ${rentalRateItemName(row)}`)}</td><td>${money(row.amount)}</td><td>${badge(row.status)}</td><td>${esc(row.rental_no || "")}</td><td><div class="rowactions"><button class="rowbtn" data-rental-bid-pdf="${esc(row.bid_no)}">PDF</button><button class="rowbtn" data-rental-bid-edit="${esc(row.bid_no)}">Edit</button>${!/converted|rejected/i.test(row.status) ? `<button class="rowbtn primary" data-rental-bid-convert="${esc(row.bid_no)}">Convert to Rental</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="10" class="empty">No rental bids yet.</td></tr>`}</tbody></table></div></section>`;
+  const dashboardRows = await loadModuleDashboardRows('equipment_rental_bids', 'bid_date');
+  $("content").innerHTML = `<div class="stats">${statCard("Open Bids", dashboardRows.filter((r) => /draft|sent/i.test(r.status)).length, "Draft or sent")}${statCard("Accepted", dashboardRows.filter((r) => /accepted|converted/i.test(r.status)).length, "Won bids")}${statCard("Quoted Value", money(dashboardRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)), "All bids")}</div><section class="panel"><div class="panel-head"><div class="panel-title"><strong>Rental Bids / Quotations</strong><span>Each bid can contain multiple plants, equipment, tools, containers, toilets, facilities, materials, or accessories.</span></div><div class="actions"><button id="rentalBidCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newRentalBidBtn">New bid</button></div></div><div class="table-wrap"><table><thead><tr><th>Bid</th><th>Date</th><th>Valid Until</th><th>Customer</th><th>Category</th><th>Rentable Items</th><th>Total</th><th>Status</th><th>Rental</th><th></th></tr></thead><tbody>${currentRows.length ? currentRows.map((row) => `<tr><td>${esc(row.bid_no)}</td><td>${esc(formatDisplayDate(row.bid_date))}</td><td>${esc(formatDisplayDate(row.valid_until))}</td><td>${esc(row.customer)}</td><td>${esc(row.rental_category || (row.lines?.length > 1 ? "Mixed" : row.lines?.[0]?.category || rentalRateItemType(row)))}</td><td>${esc(row.lines?.length ? `${row.lines.length} item(s): ${row.lines.map((line) => line.item_ref).join(", ")}` : `${rentalRateItemRef(row)} - ${rentalRateItemName(row)}`)}</td><td>${money(row.amount)}</td><td>${badge(row.status)}</td><td>${esc(row.rental_no || "")}</td><td><div class="rowactions"><button class="rowbtn" data-rental-bid-pdf="${esc(row.bid_no)}">PDF</button><button class="rowbtn" data-rental-bid-edit="${esc(row.bid_no)}">Edit</button>${!/converted|rejected/i.test(row.status) ? `<button class="rowbtn primary" data-rental-bid-convert="${esc(row.bid_no)}">Convert to Rental</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="10" class="empty">No rental bids yet.</td></tr>`}</tbody></table></div></section>`;
   $("newRentalBidBtn").onclick = () => openEquipmentRentalBidModal();
   $("rentalBidCsvBtn").onclick = () => downloadCsv([["Bid", "Date", "Valid Until", "Customer", "Type", "Item Ref", "Rentable Item", "Start", "End", "Rate Type", "With Operator", "Operator", "Rate", "Billing Units", "Total", "Deposit", "Status", "Rental"], ...currentRows.map((r) => [r.bid_no, r.bid_date, r.valid_until, r.customer, rentalRateItemType(r), rentalRateItemRef(r), rentalRateItemName(r), r.start_date, r.end_date, r.rate_type, r.with_operator ? "Yes" : "No", r.operator_name, r.rate, r.billing_units, r.amount, r.deposit, r.status, r.rental_no])], "rental-bids.csv");
   document.querySelectorAll("[data-rental-bid-edit]").forEach((button) => button.onclick = () => openEquipmentRentalBidModal(currentRows.find((row) => row.bid_no === button.dataset.rentalBidEdit)));
@@ -21815,13 +21818,14 @@ async function renderRentalsView() {
   productMeta.products = products;
   productMeta.equipmentRentalRates = rentalRates;
   currentRows = rentals.sort((a, b) => String(b.start_date || "").localeCompare(String(a.start_date || "")));
+  const dashboardRows = await loadModuleDashboardRows('rentals', 'start_date');
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="rentalSearch" placeholder="Search rentals by rental number, customer, item, date, status"></div>
     <div class="stats">
-      ${statCard("Rental Records", currentRows.length, "All rental activity")}
-      ${statCard("Currently Out", currentRows.filter((r) => /out|reserved/i.test(r.status || "")).length, "Open or reserved")}
-      ${statCard("Rental Revenue", money(currentRows.reduce((s, r) => s + rentalTotal(r), 0)), "All logged rentals")}
-      ${statCard("Deposits", money(currentRows.reduce((s, r) => s + Number(r.deposit || 0), 0)), "Deposit exposure")}
+      ${statCard("Rental Records", dashboardRows.length, "All rental activity")}
+      ${statCard("Currently Out", dashboardRows.filter((r) => /out|reserved/i.test(r.status || "")).length, "Open or reserved")}
+      ${statCard("Rental Revenue", money(dashboardRows.reduce((s, r) => s + rentalTotal(r), 0)), "All logged rentals")}
+      ${statCard("Deposits", money(dashboardRows.reduce((s, r) => s + Number(r.deposit || 0), 0)), "Deposit exposure")}
     </div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Rentals</strong><span>Check out assets or inventory items, track returns, deposits, and rental income</span></div><div class="actions"><button id="rentalCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newRentalBtn">New rental</button></div></div>
@@ -22109,6 +22113,33 @@ async function repairDataAfterRecordChange(reference) {
     [...others.flatMap((row) => row._stockMovements || []), ...movements],
     merge(productMeta.repairPurchaseOrders || [], poContext.orders), merge(productMeta.repairPurchaseLines || [], poContext.lines),
   ];
+}
+
+function moduleDashboardRows(rows, dateField, range = {}) {
+  return rows.filter(row => !dateField || ((!range.from || row[dateField] >= range.from) && (!range.to || row[dateField] <= range.to)));
+}
+
+async function loadModuleDashboardRows(table, dateField = '', range = moduleListScope || {}) {
+  const rows = await getViewData('module-dashboard-' + table, signal => getAll(table, { strict: true, signal }), 25000, 15000);
+  return moduleDashboardRows(rows, dateField, range);
+}
+
+async function loadInvoiceDashboardRows(range = moduleListScope || {}) {
+  const [invoices, lines, payments] = await Promise.all([
+    loadModuleDashboardRows('invoices', 'invoice_date', range),
+    loadModuleDashboardRows('invoice_lines'),
+    loadModuleDashboardRows('customer_payments'),
+  ]);
+  const linesByInvoice = new Map();
+  const paidByInvoice = new Map();
+  for (const line of lines) {
+    if (!linesByInvoice.has(line.invoice_id)) linesByInvoice.set(line.invoice_id, []);
+    linesByInvoice.get(line.invoice_id).push(line);
+  }
+  for (const payment of payments) {
+    if (!/void|reversed/i.test(payment.status || '')) paidByInvoice.set(payment.invoice_no, (paidByInvoice.get(payment.invoice_no) || 0) + Number(payment.amount || 0));
+  }
+  return invoices.map(invoice => ({ ...invoice, _lines: linesByInvoice.get(invoice.id) || [], _paid: paidByInvoice.get(invoice.invoice_no) || 0 }));
 }
 
 function repairDashboardRows(rows, range = {}) {
@@ -26978,13 +27009,14 @@ async function renderInvoicesView() {
     notes: inv.notes || null,
   }, "id", inv.id, ["customer_po", "payment_mode"]));
   if (salesOrderInvoiceBackfills.length) await Promise.allSettled(salesOrderInvoiceBackfills);
+  const dashboardRows = await loadInvoiceDashboardRows();
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="invoiceSearch" placeholder="Search invoices by invoice #, customer, source, status, item"></div>
     <div class="stats">
-      ${statCard("Open Invoices", currentRows.filter((i) => invoiceBalance(i) > 0 && !/void|reversed/i.test(i.status || "")).length, "Receivable documents")}
-      ${statCard("Invoice Total", money(currentRows.reduce((s, i) => s + invoiceTotal(i), 0)), "Gross billings")}
-      ${statCard("Collected", money(currentRows.reduce((s, i) => s + invoicePaid(i), 0)), "Customer payments")}
-      ${statCard("Open Balance", money(currentRows.reduce((s, i) => s + invoiceBalance(i), 0)), "AR remaining")}
+      ${statCard("Open Invoices", dashboardRows.filter((i) => invoiceBalance(i) > 0 && !/void|reversed/i.test(i.status || "")).length, "Receivable documents")}
+      ${statCard("Invoice Total", money(dashboardRows.reduce((s, i) => s + invoiceTotal(i), 0)), "Gross billings")}
+      ${statCard("Collected", money(dashboardRows.reduce((s, i) => s + invoicePaid(i), 0)), "Customer payments")}
+      ${statCard("Open Balance", money(dashboardRows.reduce((s, i) => s + invoiceBalance(i), 0)), "AR remaining")}
     </div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Customer Invoices</strong><span>Parts sales, equipment sales, equipment rental, and work order billing</span></div><div class="actions"><button id="invoiceCsvBtn">Excel</button><button id="emailSelectedInvoicesBtn">Email Selected Invoices</button><button id="combinedInvoicePdfBtn">Combined PDF</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newInvoiceBtn">New invoice</button></div></div>
@@ -29443,7 +29475,8 @@ async function renderPropertyWorkOrdersView() {
   $("viewTitle").textContent = "Property Maintenance Work Orders"; $("viewSub").textContent = "Work-order-style maintenance monitoring with no accounting posting.";
   const [rows, properties, requests] = await Promise.all([getViewRows("property_maintenance_work_orders"), getViewRows("property_maintenance_properties"), getViewRows("property_maintenance_requests")]);
   rows.sort((a, b) => String(b.opened_date).localeCompare(String(a.opened_date))); currentRows = rows;
-  $("content").innerHTML = `<div class="stats">${statCard("Open", rows.filter((r) => !/Completed|Cancelled/i.test(r.status)).length, "Active maintenance")}${statCard("Completed", rows.filter((r) => r.status === "Completed").length, "Completed work")}${statCard("Monitoring Cost", money(rows.reduce((s, r) => s + propertyMaintenanceCost(r), 0)), "Operational estimate only")}</div><section class="panel"><div class="panel-head"><div class="panel-title"><strong>Maintenance Work Orders</strong><span>Schedule, assign, record work and costs, and complete each property task.</span></div><div class="actions"><button id="pmWorkOrderCsv">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newPmWorkOrder">New work order</button></div></div><div class="notice"><strong>Monitoring only:</strong> Labor and costs below are operational metrics; they do not post to payroll, AP, AR, cash, invoices, or the General Ledger.</div><div class="table-wrap"><table><thead><tr><th>Work Order</th><th>Opened</th><th>Property</th><th>Category</th><th>Priority</th><th>Issue / Scope</th><th>Assigned To</th><th>Schedule</th><th>Labor Hrs</th><th>Monitoring Cost</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td><strong>${esc(r.work_order_no)}</strong><br><small>${esc(r.request_no)}</small></td><td>${esc(formatDisplayDate(r.opened_date))}</td><td>${esc(r.property_name)}<br><small>${esc(r.location_area)}</small></td><td>${esc(r.category)}</td><td>${badge(r.priority)}</td><td>${esc(r.issue_description)}<br><small>${esc(r.scope_of_work)}</small></td><td>${esc(r.assigned_to)}<br><small>${esc(r.vendor_name)}</small></td><td>${esc(formatDisplayDate(r.scheduled_date))}</td><td>${esc(Number(r.labor_hours || 0).toFixed(2))}</td><td>${money(propertyMaintenanceCost(r))}</td><td>${badge(r.status)}</td><td><button data-pm-workorder-edit="${esc(r.id)}">View / Edit</button></td></tr>`).join("") : `<tr><td colspan="12" class="empty">No property maintenance work orders yet.</td></tr>`}</tbody></table></div></section>`;
+  const dashboardRows = await loadModuleDashboardRows('property_maintenance_work_orders', 'opened_date');
+  $("content").innerHTML = `<div class="stats">${statCard("Open", dashboardRows.filter((r) => !/Completed|Cancelled/i.test(r.status)).length, "Active maintenance")}${statCard("Completed", dashboardRows.filter((r) => r.status === "Completed").length, "Completed work")}${statCard("Monitoring Cost", money(dashboardRows.reduce((s, r) => s + propertyMaintenanceCost(r), 0)), "Operational estimate only")}</div><section class="panel"><div class="panel-head"><div class="panel-title"><strong>Maintenance Work Orders</strong><span>Schedule, assign, record work and costs, and complete each property task.</span></div><div class="actions"><button id="pmWorkOrderCsv">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newPmWorkOrder">New work order</button></div></div><div class="notice"><strong>Monitoring only:</strong> Labor and costs below are operational metrics; they do not post to payroll, AP, AR, cash, invoices, or the General Ledger.</div><div class="table-wrap"><table><thead><tr><th>Work Order</th><th>Opened</th><th>Property</th><th>Category</th><th>Priority</th><th>Issue / Scope</th><th>Assigned To</th><th>Schedule</th><th>Labor Hrs</th><th>Monitoring Cost</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td><strong>${esc(r.work_order_no)}</strong><br><small>${esc(r.request_no)}</small></td><td>${esc(formatDisplayDate(r.opened_date))}</td><td>${esc(r.property_name)}<br><small>${esc(r.location_area)}</small></td><td>${esc(r.category)}</td><td>${badge(r.priority)}</td><td>${esc(r.issue_description)}<br><small>${esc(r.scope_of_work)}</small></td><td>${esc(r.assigned_to)}<br><small>${esc(r.vendor_name)}</small></td><td>${esc(formatDisplayDate(r.scheduled_date))}</td><td>${esc(Number(r.labor_hours || 0).toFixed(2))}</td><td>${money(propertyMaintenanceCost(r))}</td><td>${badge(r.status)}</td><td><button data-pm-workorder-edit="${esc(r.id)}">View / Edit</button></td></tr>`).join("") : `<tr><td colspan="12" class="empty">No property maintenance work orders yet.</td></tr>`}</tbody></table></div></section>`;
   $("newPmWorkOrder").onclick = () => openPropertyMaintenanceWorkOrderModal(null, properties, requests);
   document.querySelectorAll("[data-pm-workorder-edit]").forEach((b) => b.onclick = () => openPropertyMaintenanceWorkOrderModal(rows.find((r) => r.id === b.dataset.pmWorkorderEdit), properties, requests));
   $("pmWorkOrderCsv").onclick = () => downloadCsv([["Work Order", "Request", "Property #", "Property", "Opened", "Scheduled", "Completed", "Category", "Priority", "Area", "Issue", "Scope", "Assigned To", "Vendor", "Labor Hours", "Labor Rate", "Labor Cost", "Materials", "Vendor Cost", "Other Cost", "Total Monitoring Cost", "Status", "Completion Notes"], ...rows.map((r) => [r.work_order_no, r.request_no, r.property_no, r.property_name, r.opened_date, r.scheduled_date, r.completed_date, r.category, r.priority, r.location_area, r.issue_description, r.scope_of_work, r.assigned_to, r.vendor_name, r.labor_hours, r.labor_rate, Number(r.labor_hours || 0) * Number(r.labor_rate || 0), r.material_cost, r.vendor_cost, r.other_cost, propertyMaintenanceCost(r), r.status, r.completion_notes])], "property-maintenance-work-orders.csv");
@@ -30235,14 +30268,15 @@ async function renderAssetsView() {
   productMeta.locations = locations.map((l) => l.name).filter(Boolean).sort();
   productMeta.assetTypes = types.map((t) => t.name).filter(Boolean).sort();
   productMeta.workOrders = workOrders;
-  const stats = assetStats(currentRows, workOrders);
+  const [dashboardRows, dashboardWorkOrders] = await Promise.all([loadModuleDashboardRows('assets'), loadModuleDashboardRows('work_orders')]);
+  const stats = assetStats(dashboardRows, dashboardWorkOrders);
   const summaryCollapsed = assetSummaryCollapsed();
   $("content").innerHTML = `
     <section class="panel fleet-summary-panel">
       <div class="panel-head compact-head"><div class="panel-title"><strong>Fleet Snapshot</strong><span>Counts, repair exposure, and repair spend</span></div><div class="actions"><button id="assetSummaryToggle">${summaryCollapsed ? "Show summary" : "Hide summary"}</button></div></div>
       <div id="assetSummaryBody" ${summaryCollapsed ? "hidden" : ""}>
         <div class="stats fleet-stats">
-          ${statCard("Fleet Assets", currentRows.length, `${currentRows.filter((a) => /in service/i.test(a.status || "")).length} in service`)}
+          ${statCard("Fleet Assets", dashboardRows.length, `${dashboardRows.filter((a) => /in service/i.test(a.status || "")).length} in service`)}
           ${statCard("Needs Repair", stats.needsRepair, "Down or flagged assets")}
           ${statCard("Open Repair Jobs", stats.openJobs, "Scheduled or in progress")}
           ${statCard("Repair Spend", money(stats.repairSpend), "All logged work")}
