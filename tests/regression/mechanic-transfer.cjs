@@ -1,0 +1,9 @@
+const assert=require('node:assert/strict'), vm=require('node:vm');
+const {functions}=require('../source.cjs');
+const c=vm.createContext({mechanicIdentityKeys:n=>new Set([n.toLowerCase()]),isReversedLabor:r=>r.reversed,isAdminUser:()=>true,isMechanicManagerUser:()=>false});
+vm.runInContext(functions(['openingMechanicForWorkOrder','currentWorkOrderMechanic','workOrderMechanicHistoryIncludes','workOrderAssignmentNames','workOrderAssignedToMechanic','mechanicIdentityVariants','canTransferWorkOrderMechanic','transferWorkOrderMechanic']),c);
+const wo={id:'one',notes:'Opened by mechanic: Original',assigned_mechanic:'New',_issues:[{assigned_mechanic:'Original',status:'Completed'},{assigned_mechanic:'New',status:'Open'},{assigned_mechanic:'Helper',status:'Open'}],_labor:[{mechanic:'Original'}]};
+assert.equal(c.openingMechanicForWorkOrder(wo),'Original');assert.equal(c.currentWorkOrderMechanic(wo),'New');assert.equal(c.workOrderMechanicHistoryIncludes(wo,'Original'),true);assert.equal(c.workOrderAssignedToMechanic(wo,'Original'),false);assert.equal(c.workOrderAssignedToMechanic(wo,'New'),true);assert.equal(c.workOrderAssignedToMechanic(wo,'Helper'),true);
+assert.equal(c.workOrderAssignedToMechanic({notes:'Opened by mechanic: Original'},'Original'),true);
+c.supabase={rpc:async(name,args)=>{assert.equal(name,'transfer_work_order_mechanic');assert.equal(args.p_wo_id,'one');return {data:{work_order:{assigned_mechanic:args.p_mechanic,notes:wo.notes},issues:[]}}}};
+(async()=>{await c.transferWorkOrderMechanic(wo,'Next');assert.equal(wo.assigned_mechanic,'Next');assert.equal(c.openingMechanicForWorkOrder(wo),'Original');c.supabase.rpc=async()=>({error:new Error('denied')});await assert.rejects(c.transferWorkOrderMechanic(wo,'Other'),/denied/);assert.equal(wo.assigned_mechanic,'Next');console.log('PASS mechanic transfer assignment and historical separation');})().catch(e=>{console.error(e);process.exitCode=1});
