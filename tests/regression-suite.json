@@ -103,5 +103,7 @@
   "work-order-required-fields",
   "inventory-count-selected",
   "ap-work-order-jobsite",
-  "vendor-inactive-selection"
+  "vendor-inactive-selection",
+  "repair-dashboard-date-only",
+  "module-dashboard-date-only"
 ]
