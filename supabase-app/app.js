@@ -22111,6 +22111,15 @@ async function repairDataAfterRecordChange(reference) {
   ];
 }
 
+function repairDashboardRows(rows, range = {}) {
+  return rows.filter(wo => (!range.from || wo.wo_date >= range.from) && (!range.to || wo.wo_date <= range.to));
+}
+
+async function loadRepairDashboardRows(range = {}) {
+  const rows = await getViewData('repair-dashboard-work-orders', signal => getAll('work_orders', { strict: true, signal, columns: 'id,wo_date,status,invoice_no' }), 25000, 15000);
+  return repairDashboardRows(rows, range);
+}
+
 async function renderRepairsView(refreshWo = null) {
   currentCfg = tableMap.repairs;
   $("viewTitle").textContent = "Repairs";
@@ -22176,15 +22185,16 @@ async function renderRepairsView(refreshWo = null) {
     }));
   }
   if (isMechanicUser()) return renderMechanicRepairPortal();
+  const dashboardRows = await loadRepairDashboardRows(moduleListScope || {});
   const openRows = repairRowsByTab("open");
   $("content").innerHTML = `
     <div class="stats">
-      ${statCard("Open WO", openRows.length, "Still active")}
-      ${statCard("Parts Issues", repairRowsByTab("partsissues").length, "Work complete; parts pending")}
-      ${statCard("Ready to Close", repairRowsByTab("ready").length, "Mechanic flagged")}
-      ${statCard("Closed Not Invoiced", repairRowsByTab("closed").length, "Ready for billing")}
-      ${statCard("Invoiced WO", repairRowsByTab("invoiced").length, "Locked unless reversed")}
-      ${statCard("Voided WO", repairRowsByTab("void").length, "Kept for audit trail")}
+      ${statCard("Open WO", repairRowsByTab("open", dashboardRows).length, "Still active")}
+      ${statCard("Parts Issues", repairRowsByTab("partsissues", dashboardRows).length, "Work complete; parts pending")}
+      ${statCard("Ready to Close", repairRowsByTab("ready", dashboardRows).length, "Mechanic flagged")}
+      ${statCard("Closed Not Invoiced", repairRowsByTab("closed", dashboardRows).length, "Ready for billing")}
+      ${statCard("Invoiced WO", repairRowsByTab("invoiced", dashboardRows).length, "Locked unless reversed")}
+      ${statCard("Voided WO", repairRowsByTab("void", dashboardRows).length, "Kept for audit trail")}
     </div>
     <div class="toolbar"><input class="searchbox" id="repairSearch" placeholder="Search all columns: WO, equipment, serial, plate, people, dates, amounts, parts or issues"></div>
     <section class="panel">
@@ -22216,14 +22226,14 @@ async function renderInventoryPartsIssuesView() {
   if (partsIssuesTab) partsIssuesTab.click();
 }
 
-function repairRowsByTab(tab) {
-  if (tab === "all") return [...currentRows];
-  if (tab === "void") return currentRows.filter((wo) => /void|cancel/i.test(wo.status || ""));
-  if (tab === "invoiced") return currentRows.filter((wo) => wo.invoice_no || /invoiced/i.test(wo.status || ""));
-  if (tab === "partsissues") return currentRows.filter((wo) => !wo.invoice_no && /parked for parts issuance/i.test(wo.status || ""));
-  if (tab === "ready") return currentRows.filter((wo) => !wo.invoice_no && /ready to close/i.test(wo.status || ""));
-  if (tab === "closed") return currentRows.filter((wo) => !wo.invoice_no && !/void|cancel/i.test(wo.status || "") && /closed|complete/i.test(wo.status || ""));
-  return currentRows.filter(isRepairHistoryOpenWorkOrder);
+function repairRowsByTab(tab, rows = currentRows) {
+  if (tab === "all") return [...rows];
+  if (tab === "void") return rows.filter((wo) => /void|cancel/i.test(wo.status || ""));
+  if (tab === "invoiced") return rows.filter((wo) => wo.invoice_no || /invoiced/i.test(wo.status || ""));
+  if (tab === "partsissues") return rows.filter((wo) => !wo.invoice_no && /parked for parts issuance/i.test(wo.status || ""));
+  if (tab === "ready") return rows.filter((wo) => !wo.invoice_no && /ready to close/i.test(wo.status || ""));
+  if (tab === "closed") return rows.filter((wo) => !wo.invoice_no && !/void|cancel/i.test(wo.status || "") && /closed|complete/i.test(wo.status || ""));
+  return rows.filter(isRepairHistoryOpenWorkOrder);
 }
 
 function workOrderMatchesSearch(wo, query) {
