@@ -5864,7 +5864,32 @@ function renderFilteredAging() {
   updateAgingActionButtons();
 }
 
+function visibleAgingChecks(table) {
+  return [...table.querySelectorAll('[data-aging-select-invoice], [data-aging-select-po]')].filter(box => !box.disabled && !box.closest('tr').hidden && box.closest('tr').style.display !== 'none');
+}
+
+function syncAgingSelectAll(table) {
+  const all = table?.querySelector('[data-aging-select-all]');
+  if (!all) return;
+  const boxes = visibleAgingChecks(table), checked = boxes.filter(box => box.checked).length;
+  all.checked = boxes.length > 0 && checked === boxes.length;
+  all.indeterminate = checked > 0 && checked < boxes.length;
+  all.disabled = boxes.length === 0;
+}
+
+function bindAgingSelectAll(root) {
+  const table = root?.querySelector('table'), all = table?.querySelector('[data-aging-select-all]');
+  if (!all) return;
+  all.onchange = () => {
+    visibleAgingChecks(table).forEach(box => { box.checked = all.checked; });
+    syncAgingSelectAll(table);
+  };
+  table.querySelectorAll('[data-aging-select-invoice], [data-aging-select-po]').forEach(box => box.onchange = () => syncAgingSelectAll(table));
+  syncAgingSelectAll(table);
+}
+
 function bindAgingTableControls() {
+  bindAgingSelectAll($("agingTableHost"));
   document.querySelectorAll("#agingTableHost .column-filter").forEach((input) => input.oninput = (event) => {
     applyColumnFilters(event);
     syncAgingTableTotals(input.closest("table"));
@@ -6429,7 +6454,7 @@ function agingTableHtml(rows, mode) {
     const value = rows.reduce((sum, row) => sum + Number(row[field] || 0), 0);
     return `<strong>${field === "count" ? esc(value) : money(value)}</strong>`;
   };
-  return `<div class="table-wrap aging-table-wrap"><table><thead><tr>${cfg.labels.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${cfg.labels.map((h, i) => /^(select|actions)$/i.test(h) ? "<th></th>" : `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((row) => `<tr>${cfg.heads.map((h) => `<td data-aging-field="${esc(h)}" ${numericFields.has(h) ? `data-aging-value="${esc(Number(row[h] || 0))}"` : ""}>${agingCell(h, row, mode)}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${cfg.heads.length}" class="empty">No open aging balance for that as-of date.</td></tr>`}</tbody><tfoot><tr class="aging-grand-total">${cfg.heads.map((field) => `<td data-aging-total-field="${esc(field)}">${totalCell(field)}</td>`).join("")}</tr></tfoot></table></div>`;
+  return `<div class="table-wrap aging-table-wrap"><table><thead><tr>${cfg.labels.map((h) => `<th>${h === "Select" ? '<label class="select-all-header"><input type="checkbox" data-aging-select-all aria-label="Select all visible aging rows"><span>Select all</span></label>' : esc(h)}</th>`).join("")}</tr><tr>${cfg.labels.map((h, i) => /^(select|actions)$/i.test(h) ? "<th></th>" : `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((row) => `<tr>${cfg.heads.map((h) => `<td data-aging-field="${esc(h)}" ${numericFields.has(h) ? `data-aging-value="${esc(Number(row[h] || 0))}"` : ""}>${agingCell(h, row, mode)}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${cfg.heads.length}" class="empty">No open aging balance for that as-of date.</td></tr>`}</tbody><tfoot><tr class="aging-grand-total">${cfg.heads.map((field) => `<td data-aging-total-field="${esc(field)}">${totalCell(field)}</td>`).join("")}</tr></tfoot></table></div>`;
 }
 
 function syncAgingTableTotals(table) {
@@ -43808,6 +43833,7 @@ function applyProductColumnSort(event) {
     : event?.target;
   const table = input?.closest?.("table");
   if (!table) return;
+  syncAgingSelectAll(table);
   const activeSort = [...table.querySelectorAll(".column-sort")].find((select) => select.value);
   if (!activeSort) return renderFilteredProducts();
   table.querySelectorAll(".column-sort").forEach((select) => {
