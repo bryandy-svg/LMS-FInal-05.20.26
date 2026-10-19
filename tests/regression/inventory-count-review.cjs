@@ -1,0 +1,6 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+const c=vm.createContext({inventoryCountSessionItems:{A:{selected:true,counted_qty:'2',bin_shelf:'B2'},B:{selected:true,counted_qty:''},C:{selected:false,counted_qty:9}},inventoryCountSessionRows:[{sku:'B',name:'Blank count',qty:7,bin_shelf:'B1'}],money:v=>'$'+Number(v).toFixed(2),esc:v=>String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')});
+vm.runInContext(functions(['inventoryCountAdjustmentReviewHtml']),c);
+const html=c.inventoryCountAdjustmentReviewHtml([{product:{sku:'A',name:'<part>',qty:5,cost:3,warehouse:'Shop',bin_shelf:'A1'},countedQty:2,unitCost:3,variance:-3,binOnly:false}],'2026-10-20','Approved <count>');
+assert.match(html,/2 selected · 1 with count\/bin entries · 1 skipped/);assert.match(html,/Skipped — enter counted quantity or a new bin/);assert.match(html,/Quantity correction; Bin transfer/);assert.match(html,/\$-9.00/);assert.match(html,/&lt;part&gt;/);assert.match(html,/A1/);assert.match(html,/B2/);assert.doesNotMatch(html,/<td>C<\/td>/);assert.match(html,/Finalize adjustment/);
+console.log('Inventory review includes selected blank rows, bin destinations, quantity/value changes, and escaped details.');

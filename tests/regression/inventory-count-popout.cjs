@@ -21,6 +21,7 @@ assert.match(sync,/focus\(\{ preventScroll: true \}\)/);
 const save=functions(['saveInventoryCountSheet']);
 assert.match(save,/if \(inventoryCountSaving\) return/);
 assert.match(save,/finally \{\s*inventoryCountSaving = false/);
-assert.match(save,/dialogWindow.confirm/);
+assert.match(save,/await reviewInventoryCountAdjustment/);
+assert.match(functions(['reviewInventoryCountAdjustment']),/inventoryCountDialogWindow\(\).document/);
 console.log('Inventory count draft and pop-out checks passed');
 
