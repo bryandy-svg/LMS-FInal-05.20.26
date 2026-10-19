@@ -22840,7 +22840,16 @@ function mechanicIdentityVariants(value = "") {
   return [...new Set([raw, local, compact(raw), compact(local)].filter(Boolean))];
 }
 
+function currentWorkOrderMechanic(wo) {
+  return String(wo?.assigned_mechanic || '').trim() || (openingMechanicForWorkOrder(wo) === 'Not recorded' ? '' : openingMechanicForWorkOrder(wo));
+}
+
+function canTransferWorkOrderMechanic() {
+  return isAdminUser() || isMechanicManagerUser();
+}
+
 function workOrderAssignmentNames(wo) {
+  if (String(wo?.assigned_mechanic || '').trim()) return [wo.assigned_mechanic, ...(wo._issues || []).filter(row => !/closed|complete|void|cancel/i.test(row.status || '')).map(row => row.assigned_mechanic)].filter(Boolean);
   return [
     wo?.opening_mechanic,
     openingMechanicForWorkOrder(wo) === "Not recorded" ? "" : openingMechanicForWorkOrder(wo),
@@ -22852,6 +22861,12 @@ function workOrderAssignmentNames(wo) {
 function workOrderAssignedToMechanic(wo, mechanic = currentMechanicName()) {
   const keys = mechanicIdentityKeys(mechanic);
   return workOrderAssignmentNames(wo).some((name) => mechanicIdentityVariants(name).some((variant) => keys.has(variant)));
+}
+
+function workOrderMechanicHistoryIncludes(wo, mechanic = currentMechanicName()) {
+  const keys = mechanicIdentityKeys(mechanic);
+  const names = [openingMechanicForWorkOrder(wo), ...workOrderAssignmentNames(wo), ...(wo?._issues || []).map(row => row.assigned_mechanic), ...(wo?._labor || []).filter(row => !isReversedLabor(row)).map(row => row.mechanic)];
+  return names.some(name => mechanicIdentityVariants(name).some(variant => keys.has(variant)));
 }
 
 function workOrderHasAssignment(wo) {
@@ -22887,7 +22902,7 @@ function mechanicPortalRows(tab = "open") {
   if (tab === "assigned") return openRows.filter((wo) => manager ? workOrderHasAssignment(wo) : workOrderAssignedToMechanic(wo, mechanic));
   if (tab === "working") return openRows.filter((wo) => workOrderHasActiveLabor(wo, manager ? "" : mechanic));
   if (tab === "closed") return currentRows.filter((wo) => mechanicWorkOrderClosedForPortal(wo)
-    && (manager || workOrderAssignedToMechanic(wo, mechanic)));
+    && (manager || workOrderMechanicHistoryIncludes(wo, mechanic)));
   return openRows;
 }
 
@@ -23006,7 +23021,8 @@ function mechanicWorkOrderCard(wo, mechanic, active, tab = "open", manager = fal
       ${badge(wo.status || "Open")}
     </summary>
     <div class="mechanic-card-body">
-      ${manager && !closedView ? `<div class="mechanic-request"><strong>${workOrderHasAssignment(wo) ? "Assigned mechanic / transfer work order" : "Assign work order"}</strong><div class="mechanic-request-row"><select data-mech-manager-select="${esc(wo.wo_no)}"><option value="">Select mechanic</option>${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}" ${String(name).toLowerCase() === String(wo.opening_mechanic || "").toLowerCase() ? "selected" : ""}>${esc(name)}</option>`).join("")}</select><button type="button" data-mech-manager-assign="${esc(wo.wo_no)}">${workOrderHasAssignment(wo) ? "Transfer" : "Assign"}</button></div><small>Current assignment: ${esc(wo.opening_mechanic || workOrderAssignmentNames(wo)[0] || "Unassigned")}</small></div>` : ""}
+      ${!manager ? `<small>Assigned mechanic: ${esc(currentWorkOrderMechanic(wo) || "Unassigned")}</small>` : ""}
+      ${manager && !closedView ? `<div class="mechanic-request"><strong>${workOrderHasAssignment(wo) ? "Assigned mechanic / transfer work order" : "Assign work order"}</strong><div class="mechanic-request-row"><select data-mech-manager-select="${esc(wo.wo_no)}"><option value="">Select mechanic</option>${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}" ${String(name).toLowerCase() === String(currentWorkOrderMechanic(wo)).toLowerCase() ? "selected" : ""}>${esc(name)}</option>`).join("")}</select><button type="button" data-mech-manager-assign="${esc(wo.wo_no)}">${workOrderHasAssignment(wo) ? "Transfer" : "Assign"}</button></div><small>Current assignment: ${esc(currentWorkOrderMechanic(wo) || "Unassigned")}</small></div>` : ""}
       <div class="mechanic-lines">
         ${issues.map((i) => `<div><b>${esc(i.issue || "General work order")}</b><small>${esc(i.status || "Open")}${i.work_notes ? ` - ${esc(i.work_notes)}` : ""}</small></div>`).join("")}
       </div>
@@ -23056,31 +23072,55 @@ function mechanicWorkOrderCard(wo, mechanic, active, tab = "open", manager = fal
   </details>`;
 }
 
+async function transferWorkOrderMechanic(wo, selected) {
+  if (!canTransferWorkOrderMechanic()) throw new Error('Administrator or Mechanic Manager access is required.');
+  if (!selected) throw new Error('Select a mechanic.');
+  const { data, error } = await supabase.rpc('transfer_work_order_mechanic', { p_wo_id: wo.id, p_mechanic: selected });
+  if (error) throw error;
+  Object.assign(wo, data.work_order, { _issues: data.issues || [] });
+  return wo;
+}
+
 async function mechanicManagerAssignWorkOrder(woNo) {
-  if (!isMechanicManagerUser()) return alert("Mechanic Manager access is required.");
-  const wo = currentRows.find((row) => row.wo_no === woNo);
-  const selected = document.querySelector(`[data-mech-manager-select="${CSS.escape(woNo)}"]`)?.value || "";
-  if (!wo || !selected) return alert("Select the mechanic who will be assigned to this work order.");
-  const previous = wo.opening_mechanic || workOrderAssignmentNames(wo)[0] || "Unassigned";
-  if (!confirm(`${previous === "Unassigned" ? "Assign" : "Transfer"} ${wo.wo_no} to ${selected}?`)) return;
+  const wo = currentRows.find(row => row.wo_no === woNo);
+  const selected = document.querySelector(`[data-mech-manager-select="${CSS.escape(woNo)}"]`)?.value || '';
+  if (!wo || !selected) return alert('Select the mechanic who will be assigned to this work order.');
+  if (!confirm(`Transfer ${wo.wo_no} to ${selected}?`)) return;
   try {
-    const { error } = await supabase.from("work_orders").update({ opening_mechanic: selected }).eq("id", wo.id);
-    if (error) throw error;
-    const previousKey = String(wo.opening_mechanic || "").trim().toLowerCase();
-    const openIssues = (wo._issues || []).filter((issue) => {
-      if (/closed|complete|void|cancel/i.test(issue.status || "")) return false;
-      const assignedKey = String(issue.assigned_mechanic || "").trim().toLowerCase();
-      return !assignedKey || (previousKey && assignedKey === previousKey);
-    });
-    if (openIssues.length) {
-      const { error: issueError } = await supabase.from("work_order_issues").update({ assigned_mechanic: selected }).in("id", openIssues.map((issue) => issue.id));
-      if (issueError) throw issueError;
-    }
-    alert(`${wo.wo_no} is now assigned to ${selected}.`);
+    await transferWorkOrderMechanic(wo, selected);
     await renderRepairsView(wo);
-  } catch (error) {
-    alert(error.message || error);
-  }
+    alert(`${wo.wo_no} is now assigned to ${selected}.`);
+  } catch (error) { alert(error.message || error); }
+}
+
+function workOrderMechanicTransferFields(wo, readOnly) {
+  return `<div class="field"><label>Assigned mechanic</label><input id="woAssignedMechanic" value="${esc(currentWorkOrderMechanic(wo) || 'Unassigned')}" readonly>
+  ${!readOnly && canTransferWorkOrderMechanic() && !/closed|complete|invoiced|void|cancel/i.test(wo.status || '') ? `<select id="woTransferMechanic" aria-label="Transfer to mechanic"><option value="">Select mechanic</option>${(productMeta.mechanics || []).map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select><button type="button" id="woTransferMechanicBtn">Transfer mechanic</button><small>Transfer saves immediately. Opening mechanic and recorded labor stay unchanged.</small>` : ''}</div>`;
+}
+
+function bindWorkOrderMechanicTransfer(wo) {
+  const button = $('woTransferMechanicBtn');
+  if (!button) return;
+  button.onclick = async () => {
+    const selected = $('woTransferMechanic')?.value;
+    if (!selected) return alert('Select the mechanic to transfer to.');
+    if (!confirm(`Transfer ${wo.wo_no} to ${selected}? This saves the assignment immediately.`)) return;
+    button.disabled = true;
+    try {
+      const previousNotes = wo.notes || '';
+      await transferWorkOrderMechanic(wo, selected);
+      $('woAssignedMechanic').value = currentWorkOrderMechanic(wo);
+      const notes = document.querySelector('[data-product-field="notes"]');
+      if (notes) notes.value = notes.value === previousNotes ? wo.notes : notes.value + '\n' + wo.notes.slice(previousNotes.length).trim();
+      document.querySelectorAll('#adminIssueBody tr').forEach(row => {
+        const issue = wo._issues.find(issue => issue.id === row.dataset.issueId);
+        const input = row.querySelector('[data-admin-issue="assigned_mechanic"]');
+        if (issue && input) input.value = issue.assigned_mechanic || 'Unassigned';
+      });
+      alert(`${wo.wo_no} is now assigned to ${selected}.`);
+    } catch (error) { alert(error.message || error); }
+    finally { button.disabled = false; }
+  };
 }
 
 function partRequestPhotoButton(src, title = "Part request photo") {
@@ -24130,6 +24170,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
       ${productInput("Requested by *", "requested_by", wo.requested_by || "")}
       ${productInput("Requestor email", "requestor_email", wo.requestor_email || "", "email")}
       <div class="field"><label>Opening mechanic</label><input value="${esc(openingMechanicForWorkOrder(wo))}" readonly><small>Mechanic recorded when this work order was opened.</small></div>
+      ${workOrderMechanicTransferFields(wo, auditReadOnly)}
       ${productSelect("Manager override", "manager_override", ["No", "Yes"], wo.manager_override ? "Yes" : "No")}
       ${productInput("Override by", "override_by", wo.override_by || "")}
       <div class="field"><label>Asset tag</label><input id="editWorkOrderAssetTag" data-product-field="asset_tag" value="${esc(wo.asset_tag || "")}" readonly aria-readonly="true">${auditReadOnly ? "" : `<div class="actions"><button type="button" class="rowbtn" id="transferWorkOrderAssetBtn">Transfer to different equipment</button></div>`}<small>The equipment is changed only through the controlled transfer action.</small></div>
@@ -24253,6 +24294,7 @@ async function openWorkOrderEditModal(wo, options = {}) {
   });
   bindWorkOrderLocationControls();
   if (!auditReadOnly) bindWorkOrderEquipmentTransfer(wo);
+  if (!auditReadOnly) bindWorkOrderMechanicTransfer(wo);
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => quickCreateCustomerInOpenModal());
   if (auditReadOnly) applyAuditReadOnlyModal();
 }

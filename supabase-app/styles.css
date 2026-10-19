@@ -3635,3 +3635,21 @@ body.trucking-requestor-mode #fullTourBtn {
 .check-run-payables-scroll thead { position: sticky; top: 0; z-index: 2; background: #edf2f5; }
 .check-run-payables-scroll thead th { position: static; background: #edf2f5; }
 .modalbox.maximized-modal > .modalbody { min-width: 0; min-height: 0; overscroll-behavior: contain; }
+
+/* Mechanic phones and tablets: contain details and keep controls within the viewport. */
+@media (max-width: 1024px) {
+  body.mechanic-mode .main, body.mechanic-mode .content,
+  .mechanic-portal, .mechanic-card-list, .mechanic-card, .mechanic-card-body,
+  .mechanic-card-head > *, .mechanic-hero > *, .mechanic-request { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .mechanic-portal { width: 100%; overflow-wrap: anywhere; }
+  body.mechanic-mode .mechanic-tabs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); overflow: visible; }
+  body.mechanic-mode .mechanic-tabs .tabbtn { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .mechanic-portal input, .mechanic-portal select, .mechanic-portal textarea { min-width: 0; max-width: 100%; box-sizing: border-box; font-size: 16px; }
+  .mechanic-portal button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; min-height: 44px; }
+  .mechanic-portal .table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }
+  .mechanic-request-row { grid-template-columns: minmax(0, 1fr); }
+  body.mechanic-mode .modalbox { width: 100%; max-width: 100%; max-height: 100dvh; margin: 0; }
+  body.mechanic-mode .modalbody { min-width: 0; overflow: auto; }
+  body.mechanic-mode .form-grid { grid-template-columns: minmax(0, 1fr); }
+  body.mechanic-mode .modalfoot { flex-wrap: wrap; }
+}
