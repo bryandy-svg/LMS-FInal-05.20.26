@@ -28077,7 +28077,7 @@ async function openWorkOrderTextReport(woNo) {
 
 async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = null, invoice = null, customer = null } = {}) {
   const initiallyFinal = /closed|complete/i.test((currentRows || []).find((row) => row.wo_no === woNo)?.status || "");
-  const loadingWindow = returnHtml ? null : (targetWindow || openInAppDocumentWindow(`${initiallyFinal ? "Work Order" : "Pro Forma Invoice"} ${woNo}`));
+  const loadingWindow = returnHtml ? null : (targetWindow || openInAppDocumentWindow(`${invoice || initiallyFinal ? "Work Order Invoice" : "Pro Forma Invoice"} ${woNo}`));
   if (!returnHtml && !loadingWindow) {
     alert("Allow popups to prepare the refreshed Pro Forma Invoice PDF.");
     return null;
@@ -28164,7 +28164,7 @@ async function printWorkOrderDraft(woNo, { returnHtml = false, targetWindow = nu
   const isInvoice = Boolean(invoice);
   const html = printableDocumentHtml({
     invoiceSignatureRecord: invoice,
-    title: isInvoice ? "Customer Invoice" : isFinalWorkOrder ? "Work Order" : "Pro Forma Invoice",
+    title: isInvoice || isFinalWorkOrder ? "Work Order Invoice" : "Pro Forma Invoice",
     number: invoice?.invoice_no || wo.wo_no,
     date: isInvoice ? invoice.invoice_date : wo.wo_date,
     partyLabel: "Customer",
