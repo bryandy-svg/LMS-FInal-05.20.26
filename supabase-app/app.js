@@ -14353,6 +14353,44 @@ function saveInventoryCountDraft() {
   if (persistInventoryCountDraft()) inventoryCountDialogWindow().alert("Inventory count draft saved on this device. You can close the window and continue later.");
 }
 
+function inventoryCountAdjustmentReviewHtml(counted, countDate, reason) {
+  const selected = Object.entries(inventoryCountSessionItems).filter(([, item]) => item?.selected === true);
+  const skipped = selected.length - counted.length;
+  const total = counted.reduce((sum, row) => sum + row.variance * row.unitCost, 0);
+  const rows = selected.map(([sku, item]) => {
+    const row = counted.find(entry => entry.product.sku === sku);
+    const product = row?.product || inventoryCountSessionRows.find(entry => entry.sku === sku) || {};
+    const destination = item.bin_shelf || product.bin_shelf || '';
+    const actions = [];
+    if (!row) actions.push('Skipped — enter counted quantity or a new bin');
+    else {
+      if (Math.abs(row.variance) > 0.000001) actions.push('Quantity correction');
+      if (destination !== String(product.bin_shelf || '')) actions.push('Bin transfer');
+      if (!row.binOnly && Number(product.cost || 0) <= 0 && row.unitCost > 0) actions.push('Set missing cost');
+      if (!actions.length) actions.push('No change');
+    }
+    return '<tr>' + [sku, product.name || '', product.warehouse || '', product.bin_shelf || '—', destination || '—', Number(product.qty || 0), row ? row.countedQty : '—', row ? Number(row.variance.toFixed(4)) : '—', row ? money(row.unitCost) : '—', row ? money(row.variance * row.unitCost) : '—', actions.join('; ')].map(value => '<td>' + esc(value) + '</td>').join('') + '</tr>';
+  }).join('');
+  return '<h2 id="countReviewTitle">Review selected inventory adjustments</h2><p><strong>' + selected.length + ' selected · ' + counted.length + ' with count/bin entries · ' + skipped + ' skipped</strong></p><p>Date: ' + esc(countDate) + '<br>Reason: ' + esc(reason) + '</p><p>Skipped and unchecked parts remain in your draft. No changes are posted until you finalize.</p><div style="overflow:auto;max-height:55vh"><table class="line-table" style="min-width:1100px"><thead><tr>' + ['Part #','Product','Warehouse','Current bin #','New bin #','System qty','Counted qty','Qty change','Unit cost','Value change','Action'].map(label => '<th>' + label + '</th>').join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div><p><strong>Net value change: ' + money(total) + '</strong></p><p>Bin-only transfers preserve quantity and cost and create no accounting entries.</p><div class="actions" style="justify-content:flex-end"><button type="button" data-count-review-cancel>Back to count sheet</button><button type="button" class="primary" data-count-review-confirm>Finalize adjustment</button></div>';
+}
+
+function reviewInventoryCountAdjustment(counted, countDate, reason) {
+  const doc = inventoryCountDialogWindow().document;
+  return new Promise(resolve => {
+    const dialog = doc.createElement('dialog');
+    dialog.setAttribute('aria-labelledby', 'countReviewTitle');
+    dialog.style.cssText = 'width:min(1400px,94vw);max-height:94vh;overflow:auto;border:1px solid #ccd5df;border-radius:12px;padding:24px;box-sizing:border-box;color:#243444;background:white;';
+    dialog.innerHTML = inventoryCountAdjustmentReviewHtml(counted, countDate, reason);
+    const finish = result => { dialog.close(); dialog.remove(); resolve(result); };
+    dialog.querySelector('[data-count-review-cancel]').onclick = () => finish(false);
+    dialog.querySelector('[data-count-review-confirm]').onclick = () => finish(true);
+    dialog.oncancel = event => { event.preventDefault(); finish(false); };
+    doc.body.appendChild(dialog);
+    dialog.showModal();
+    dialog.querySelector('[data-count-review-cancel]').focus();
+  });
+}
+
 async function saveInventoryCountSheet() {
   if (inventoryCountSaving) return;
   if (!persistInventoryCountDraft()) return;
@@ -14377,13 +14415,15 @@ async function saveInventoryCountSheet() {
   const corrections = counted.filter((row) => Math.abs(row.variance) > 0.000001);
   const costUpdates = counted.filter((row) => !row.binOnly && Number(row.product.cost || 0) <= 0 && row.unitCost > 0);
   const binMoves = counted.filter((row) => inventoryCountSessionItems[row.product.sku]?.bin_shelf && inventoryCountSessionItems[row.product.sku].bin_shelf !== String(row.product.bin_shelf || ""));
-  const totalVariance = corrections.reduce((sum, row) => sum + row.variance, 0);
-  const valueVariance = corrections.reduce((sum, row) => sum + row.variance * row.unitCost, 0);
   if (!corrections.length && !costUpdates.length && !binMoves.length) {
     dialogWindow.alert(`${counted.length} product${counted.length === 1 ? " was" : "s were"} counted with no variance. No correction was posted.`);
     return;
   }
-  if (!dialogWindow.confirm(`Apply ${counted.length} selected part(s)? Unchecked parts will remain in your draft.\n\nQuantity corrections: ${corrections.length}\nBin transfers: ${binMoves.length}\nMissing costs to update: ${costUpdates.length}\nNet quantity variance: ${Number(totalVariance.toFixed(4))}\nNet value variance: ${money(valueVariance)}\n\nBin-only transfers preserve quantity and cost and create no accounting entries.`)) return;
+  inventoryCountSaving = true;
+  let approved;
+  try { approved = await reviewInventoryCountAdjustment(counted, countDate, reason); }
+  finally { inventoryCountSaving = false; }
+  if (!approved) return;
   inventoryCountSaving = true;
   const batch = Date.now().toString();
   try {
