@@ -14974,12 +14974,13 @@ async function loadPurchaseIssuanceRecipients() {
   productMeta.issuanceEmployees = employees.map((row) => row.name).filter(Boolean);
 }
 
-async function quickCreateIssuanceEmployee() {
+async function quickCreateIssuanceEmployee(selectId = "purchaseShopEmployee") {
+  if (typeof selectId !== "string") selectId = "purchaseShopEmployee";
   const proposed = prompt("New employee name");
   if (proposed === null) return;
   const name = proposed.trim().replace(/\s+/g, " ");
   if (!name || name.length > 120) return alert("Enter an employee name between 1 and 120 characters.");
-  const select = $("purchaseShopEmployee");
+  const select = $(selectId);
   try {
     let savedName = (productMeta.issuanceEmployees || []).find((value) => value.toLowerCase() === name.toLowerCase());
     if (!savedName) {
@@ -28685,7 +28686,7 @@ async function renderSuppliesIssuanceView() {
     </div>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><strong>Supplies Issuance</strong><span id="supplyIssueCount"></span></div><div class="actions"><button id="suppliesCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newSupplyIssueBtn">New issue</button></div></div>
-      <div class="notice">Choose General Shop for shared consumables or Mechanic Issuance for items assigned directly to a mechanic. One issuance may contain multiple parts. Choose a work order only when the supplies should also become part of that work order's history and cost.</div>
+      <div class="notice">Choose General Shop for shared consumables, Mechanic Issuance for a mechanic, or Employee Issuance for an employee. One issuance may contain multiple parts. Choose a work order only when the supplies should also become part of that work order's history and cost.</div>
       <div class="toolbar" id="supplyReportControls" ${suppliesIssuanceTab === "report" ? "" : "hidden"}>
         <label class="field"><span>From date</span><input type="date" id="supplyReportFrom"></label>
         <label class="field"><span>To date</span><input type="date" id="supplyReportTo"></label>
@@ -28975,9 +28976,26 @@ function openSupplyIssueReadOnly(reference) {
   $("modal").style.display = "flex";
 }
 
+async function loadSupplyIssueDialogData() {
+  const [sequence, recipients] = await Promise.all([
+    supabase.from('app_sequences').select('prefix,next_number').eq('key', 'stock').maybeSingle(),
+    getViewData('supply-issuance-recipients', async () => {
+      const [mechanics, employees] = await Promise.all([
+        getAll('mechanics', { strict: true, columns: 'name,status' }),
+        getAll('issuance_employees', { strict: true, columns: 'name' }),
+      ]);
+      return { mechanics, employees };
+    }, 25000, 15000),
+  ]);
+  if (sequence.error) throw sequence.error;
+  if (!sequence.data) throw new Error('Stock issuance numbering is unavailable. Refresh or ask an administrator to configure the stock sequence.');
+  productMeta.mechanics = recipients.mechanics.filter(row => !/inactive|disabled|terminated/i.test(row.status || '')).map(row => row.name).filter(Boolean);
+  productMeta.issuanceEmployees = recipients.employees.map(row => row.name).filter(Boolean);
+  return String(sequence.data.prefix || 'SM-') + sequence.data.next_number;
+}
+
 async function openSupplyIssueModal() {
-  productMeta.products = await getAll("products");
-  const reference = await nextRefPreview("stock", "SM-", "stock_movements", "reference_no");
+  const reference = await loadSupplyIssueDialogData();
   $("modalTitle").textContent = `New supplies issue ${reference}`;
   $("modalBody").innerHTML = `
     <div class="form-grid">
@@ -28986,14 +29004,17 @@ async function openSupplyIssueModal() {
       <div class="field wide"><label>Charge / issue to</label><div class="supply-mode-picker">
         <label><input type="radio" name="supplyChargeMode" value="general_shop" checked><span><b>General Shop</b><small>Shared shop supplies and consumables</small></span></label>
         <label><input type="radio" name="supplyChargeMode" value="mechanic"><span><b>Mechanic Issuance</b><small>Assign the supplies directly to a mechanic</small></span></label>
+        <label><input type="radio" name="supplyChargeMode" value="employee"><span><b>Employee Issuance</b><small>Assign the supplies directly to an employee</small></span></label>
       </div></div>
       <div class="field" id="supplyMechanicField" hidden><label>Charge / Issue To</label><select data-product-field="issued_to"><option value="">Select recipient</option><option value="Parts Department">Parts Department</option>${(productMeta.mechanics || []).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("")}</select></div>
+      <div class="field" id="supplyEmployeeField" hidden><label>Employee</label><select id="supplyEmployee"><option value="">Select employee</option>${issuanceRecipientOptions(productMeta.issuanceEmployees)}</select><button type="button" id="newSupplyEmployeeBtn">New employee</button></div>
       <div class="field"><label>Work order (optional)</label><input class="suggest-input" data-suggest-source="work_orders" data-product-field="wo_lookup" placeholder="Type WO, asset, customer, or status" autocomplete="off"><small>Results appear only after you start typing.</small></div>
       ${productInput("WO issue / use", "issue", "Supplies issuance")}
       <div class="field wide"><label>Parts / supplies</label><div class="table-wrap supply-lines-wrap"><table class="line-table supply-line-table"><thead><tr><th>SKU / Product</th><th>Product Name</th><th>Qty</th><th>Unit Cost</th><th>Warehouse / Bin</th><th></th></tr></thead><tbody id="supplyLineRows">${supplyIssueLineRow(0)}</tbody></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addSupplyLineBtn">Add more parts</button>${createPartButtonMarkup()}</div>${productOptionsDatalist()}</div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes"></textarea></div>
     </div>
-    <p class="notice"><strong>Accounting when saved:</strong> Debit Job Supplies and Credit Parts Inventory for the total issued cost. The mechanic and optional work order remain attached as tracking details. Reversing posts the exact opposite entry and returns every quantity to inventory.</p>`;
+    <p class="notice"><strong>Accounting when saved:</strong> Debit Job Supplies and Credit Parts Inventory for the total issued cost. The recipient and optional work order remain attached as tracking details. Reversing posts the exact opposite entry and returns every quantity to inventory.</p>`;
+  $("newSupplyEmployeeBtn").onclick = () => quickCreateIssuanceEmployee('supplyEmployee');
   document.querySelectorAll('input[name="supplyChargeMode"]').forEach((input) => input.onchange = syncSupplyChargeModeFields);
   $("addSupplyLineBtn").onclick = () => {
     const host = $("supplyLineRows");
@@ -29019,6 +29040,10 @@ function supplyIssueLineRow(index) {
 
 function syncSupplyChargeModeFields() {
   const mode = document.querySelector('input[name="supplyChargeMode"]:checked')?.value || "general_shop";
+  const employeeField = $('supplyEmployeeField');
+  const employeeSelect = $('supplyEmployee');
+  if (employeeField) employeeField.hidden = mode !== 'employee';
+  if (employeeSelect) { employeeSelect.disabled = mode !== 'employee'; if (mode !== 'employee') employeeSelect.value = ''; }
   const mechanicField = $("supplyMechanicField");
   const mechanicSelect = mechanicField?.querySelector('[data-product-field="issued_to"]');
   if (mechanicField) mechanicField.hidden = mode !== "mechanic";
@@ -29081,7 +29106,8 @@ async function saveSupplyIssueModal() {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
   record.charge_mode = document.querySelector('input[name="supplyChargeMode"]:checked')?.value || "general_shop";
-  record.issued_to = record.charge_mode === "mechanic" ? record.issued_to : "General Shop";
+  record.issued_to = record.charge_mode === 'employee' ? $('supplyEmployee')?.value : record.charge_mode === 'mechanic' ? record.issued_to : 'General Shop';
+  if (record.charge_mode === 'employee' && !(productMeta.issuanceEmployees || []).includes(record.issued_to)) return alert('Choose a registered employee receiving this issuance.');
   const workOrder = resolveWorkOrderLookup(record.wo_lookup);
   const lines = [...document.querySelectorAll("[data-supply-line]")].map((row) => {
     const values = {};
@@ -29172,7 +29198,7 @@ async function saveSupplyIssueModal() {
             total_fifo_cost: deductedQty * deductedCost,
             document_no: workOrder?.wo_no || record.reference_no,
             entered_by: profile?.full_name || profile?.username || "Owner",
-            reason: deduction.is_component ? `Automatically issued with mother part ${deduction.mother_sku} | ${record.reference_no}` : `Supply issue ${record.reference_no} | ${record.charge_mode === "mechanic" ? `Mechanic: ${record.issued_to}` : "General Shop"}${record.notes ? ` | ${record.notes}` : ""}`,
+            reason: deduction.is_component ? `Automatically issued with mother part ${deduction.mother_sku} | ${record.reference_no}` : `Supply issue ${record.reference_no} | ${record.charge_mode === "mechanic" ? `Mechanic: ${record.issued_to}` : record.charge_mode === "employee" ? `Employee: ${record.issued_to}` : "General Shop"}${record.notes ? ` | ${record.notes}` : ""}`,
           }, ["from_bin_shelf"], "Supply issue saved. Run the multi-location SQL update so bin/shelf details can be stored.");
           savedLines.push({ ...line, qty: deductedQty, unit_cost: deductedCost, product: deductedProduct, warehouse: deductedWarehouse, bin_shelf: deductedBin, movement_reference: deductedReference, work_order_part: deduction.is_component ? null : workOrderPart, mother_sku: deduction.mother_sku, is_mother_component: Boolean(deduction.is_component) });
         }
