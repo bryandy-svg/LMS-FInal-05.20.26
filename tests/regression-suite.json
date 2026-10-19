@@ -106,5 +106,6 @@
   "vendor-inactive-selection",
   "repair-dashboard-date-only",
   "module-dashboard-date-only",
-  "mechanic-transfer"
+  "mechanic-transfer",
+  "aging-select-all"
 ]
