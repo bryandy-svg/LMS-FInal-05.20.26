@@ -150,7 +150,7 @@
     "tests/regression/session-retention.cjs": "9e82aa042fd94ac8f769cc58259412f573a48c212603ac3e57f73f8259e781c7",
     "tests/regression/sidebar-flyout.cjs": "c7ec44a949c7371d6ad71cae504353185b2f81c76c582efc4be61e10145cda09",
     "tests/regression/startup-order.cjs": "a0e27156f491ac697ae186a1955b8ac35e8eaa1f5ec7323d6e7f1cd7a8e1ada4",
-    "tests/regression/ticket-multiselect.cjs": "4958f1c2bfc51a3819ccbb562e7937bf7891feaeb33d7b2093dfcd4b2ce081ca",
+    "tests/regression/ticket-multiselect.cjs": "7aade3f7beca0d6616e2c788bd4893df996d0aca05e540b878ed10638132cb59",
     "tests/regression/transaction-available-stock.cjs": "b18f1eecdd990df1ffc5c4c1976d8c2f938688869318244162e6c3b288dcaa4e",
     "tests/regression/trucking-debris-units.cjs": "aee67c7a63fe0d945cc23b4f9c70aa76dd49fb23a342dc9e6d6cb0c9ea23a946",
     "tests/regression/trucking-jobsite-subtotals.cjs": "103b0fd451e394ddcb5c5f1e4e1de7dbe757126c9cf22ccfbe5007ce8842e950",
