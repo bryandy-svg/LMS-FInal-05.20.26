@@ -6,7 +6,7 @@ const wrap={};let visible=0;
 const tbody={querySelectorAll:()=>rows};
 const table={querySelector:s=>s==='tbody'?tbody:null,querySelectorAll:s=>s==='.column-filter'?filters:[],closest:()=>wrap};
 const context=vm.createContext({document:{},selectedExcelFilterValues:i=>i.selected,excelFilterValue:v=>v,updateTableState:()=>{},updateExcelFilterButtonStates:()=>{},rememberTransientTableState:()=>{},syncTruckingTicketSelectAll:()=>{visible=rows.filter(r=>!r.hidden).length;}});
-vm.runInContext(functions(['applyColumnFilters']),context);
+vm.runInContext(functions(['applyColumnFilters','syncAgingSelectAll','visibleAgingChecks']),context);
 const apply=()=>context.applyColumnFilters({target:{closest:()=>table}});
 apply();assert.deepEqual(rows.map(r=>r.hidden),[false,false,true,true]);assert.equal(visible,2);
 filters.forEach(f=>f.selected=[]);apply();assert.equal(visible,4);assert.ok(rows.every(r=>!r.hidden));

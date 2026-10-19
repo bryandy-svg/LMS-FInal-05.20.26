@@ -43833,7 +43833,6 @@ function applyProductColumnSort(event) {
     : event?.target;
   const table = input?.closest?.("table");
   if (!table) return;
-  syncAgingSelectAll(table);
   const activeSort = [...table.querySelectorAll(".column-sort")].find((select) => select.value);
   if (!activeSort) return renderFilteredProducts();
   table.querySelectorAll(".column-sort").forEach((select) => {
@@ -43871,6 +43870,7 @@ function applyColumnFilters(event) {
     tbody.querySelectorAll("tr").forEach(row => { row.hidden = row.style.display === "none"; });
     syncTruckingTicketSelectAll(table.closest(".tablewrap"));
   }
+  syncAgingSelectAll(table);
   const activeSort = [...table.querySelectorAll(".column-sort")].find((select) => select.value);
   if (!activeSort) {
     updateTableState(table.closest(".table-wrap"));
