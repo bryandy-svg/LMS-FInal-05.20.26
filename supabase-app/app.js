@@ -28107,8 +28107,8 @@ async function loadWorkOrderDraftDocument(woNo) {
 function workOrderWhatsAppText(wo = {}) {
   const text = value => String(value || "").trim();
   const labor = (wo._labor || []).filter(row => !isReversedLabor(row));
-  const startingMechanic = openingMechanicForWorkOrder(wo);
-  const techs = startingMechanic && startingMechanic !== "Not recorded" ? [startingMechanic] : [];
+  const assignedMechanic = currentWorkOrderMechanic(wo);
+  const techs = assignedMechanic ? [assignedMechanic] : [];
   const issues = [...new Set([...(wo._issues || []).map(row => text(row.issue)), text(wo.description)].filter(Boolean))];
   const lines = [text(wo.wo_no), "PO # " + (text(wo.customer_po) || "—"), "Requested by: " + (text(wo.requested_by) || "—"), "Jobsite: " + (text(wo.jobsite_location) || "—"), "Actual Location of equipment: " + (text(wo.actual_location) || "—"), "Tech: " + (techs.join(", ") || "—"), "Issue: " + (issues.join("; ") || text(wo.description) || "—"), "", "Work Done"];
   const asset = wo._draftAsset || {};
