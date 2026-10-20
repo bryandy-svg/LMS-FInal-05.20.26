@@ -35020,6 +35020,11 @@ async function updateFinalizedEquipmentMoveAsset(move, finalizedAt = new Date().
 
 async function renderTruckingTicketsView() {
   if (!moduleListScope && currentView === 'truckingtickets' && moduleListSpec(currentView)) return loadView(currentView);
+  const previousTicketWrap = $('truckingTicketHost')?.querySelector('.tablewrap');
+  const ticketViews = new Map();
+  if (previousTicketWrap) ticketViews.set(truckingTicketBillingTab, collectCurrentTableView(previousTicketWrap));
+  let renderedTicketTab = truckingTicketBillingTab;
+  const previousTicketSearch = $('truckingTicketSearch')?.value || '';
   $("viewTitle").textContent = "Tickets";
   $("viewSub").textContent = "Finalized and customer-accepted trucking tickets with both signatures.";
   truckingDashboardMonth ||= truckingToday().slice(0, 7);
@@ -35050,7 +35055,11 @@ async function renderTruckingTicketsView() {
       <div class="panel-head"><div class="panel-title"><strong id="truckingTicketDetailTitle">Finalized Tickets</strong><span>${esc(currentRows.length)} accepted ticket${currentRows.length === 1 ? "" : "s"}.</span></div></div>
       <div id="truckingTicketHost"></div>
     </section>`;
+  $('truckingTicketSearch').value = previousTicketSearch;
   const render = () => {
+    const existingWrap = $('truckingTicketHost')?.querySelector('.tablewrap');
+    if (existingWrap) ticketViews.set(renderedTicketTab, collectCurrentTableView(existingWrap));
+    renderedTicketTab = truckingTicketBillingTab;
     const tabRows = currentRows.filter((row) => {
       const status = String(row.billing_status || "Unbilled").toLowerCase();
       if (truckingTicketBillingTab === "all") return true;
@@ -35132,6 +35141,12 @@ async function renderTruckingTicketsView() {
         syncTruckingTicketSelectAll(ticketTableWrap);
       };
     });
+    const retainedView = ticketViews.get(truckingTicketBillingTab);
+    if (retainedView && ticketTableWrap) {
+      enhanceColumnFilters();
+      enhanceTables();
+      restoreTableViewState(ticketTableWrap, retainedView);
+    }
     syncTruckingTicketSelectAll(ticketTableWrap);
     const combineButton = $("combineSelectedTicketsBtn");
     if (combineButton) combineButton.style.display = showUnbilledControls && !isTruckingDriverUser() ? "" : "none";

@@ -109,5 +109,6 @@
   "mechanic-transfer",
   "aging-select-all",
   "supply-issue-dialog",
-  "inventory-count-review"
+  "inventory-count-review",
+  "ticket-filter-retention"
 ]
