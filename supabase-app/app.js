@@ -46168,12 +46168,11 @@ function buildDailyCashPosition(gl, bankRows, bank, from, to, beginningBalance) 
 }
 
 function dailyCashPositionHtml(report) {
-  const labels={collections:'Collections',receipts:'Other receipts / reversals',checks:'New checks issued',deductions:'Other cash deductions'};
   return '<h2>Daily Cash Position</h2><p>'+esc(report.bank)+' | '+esc(formatDisplayDate(report.from))+' to '+esc(formatDisplayDate(report.to))+'</p><p>Posted cash activity. Beginning balances already include previously issued checks. Clearing a previously posted check does not deduct cash again. Bank-only transactions must be posted to the ledger to appear here.</p>'
     + report.days.map(day=>'<section style="break-inside:avoid;margin:20px 0"><h3>'+esc(formatDisplayDate(day.date))+'</h3><table style="width:100%;border-collapse:collapse"><tbody>'+[
       ['Beginning cash balance — net of prior outstanding checks',day.beginning],['Add: Collections',day.collections],['Add: Other cash receipts / reversals',day.receipts],['Less: New checks issued (cleared or outstanding)',-day.checks],['Less: Other cash deductions',-day.deductions],['Ending available cash',day.ending]
-    ].map(([label,value])=>'<tr><td style="padding:6px;border-bottom:1px solid #ddd">'+label+'</td><td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">'+money(value)+'</td></tr>').join('')+'</tbody></table><details><summary>Supporting transactions ('+day.items.length+')</summary><table style="width:100%"><thead><tr><th>Reference</th><th>Description</th><th>Activity</th><th>Amount</th></tr></thead><tbody>'+day.items.map(row=>'<tr><td>'+esc(row.reference)+'</td><td>'+esc(row.description)+'</td><td>'+labels[row.category]+'</td><td style="text-align:right">'+money(row.amount)+'</td></tr>').join('')+'</tbody></table></details></section>').join('')
-    + '<h3>Prior outstanding checks — already deducted, reference only</h3><table style="width:100%"><thead><tr><th>Date</th><th>Check / reference</th><th>Payee</th><th>Amount</th></tr></thead><tbody>'+report.outstanding.map(row=>'<tr><td>'+esc(formatDisplayDate(row.date))+'</td><td>'+esc(row.displayNum || row.num)+'</td><td>'+esc(row.vendor)+'</td><td style="text-align:right">'+money(Math.abs(row.amount))+'</td></tr>').join('')+'<tr style="break-inside:avoid"><th colspan="3">Total prior outstanding checks</th><th style="text-align:right">'+money(report.outstandingTotal)+'</th></tr></tbody></table>'+(report.outstanding.length?'':'<p>No prior outstanding checks recorded.</p>');
+    ].map(([label,value])=>'<tr><td style="padding:6px;border-bottom:1px solid #ddd">'+label+'</td><td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">'+money(value)+'</td></tr>').join('')+'</tbody></table><details><summary>Supporting transactions ('+day.items.length+')</summary><table style="width:100%"><thead><tr><th>Description</th><th>Amount</th></tr></thead><tbody>'+day.items.map(row=>'<tr><td>'+esc(row.description)+'</td><td style="text-align:right">'+money(row.amount)+'</td></tr>').join('')+'</tbody></table></details></section>').join('')
+    + '<h3>Outstanding checks — already deducted in the beginning cash balance</h3><table style="width:100%"><thead><tr><th>Payee / Description</th><th>Amount</th></tr></thead><tbody>'+report.outstanding.map(row=>'<tr><td>'+esc(row.vendor || row.description || '')+'</td><td style="text-align:right">'+money(Math.abs(row.amount))+'</td></tr>').join('')+'<tr style="break-inside:avoid"><th>Total outstanding checks</th><th style="text-align:right">'+money(report.outstandingTotal)+'</th></tr></tbody></table>'+(report.outstanding.length?'':'<p>No outstanding checks recorded.</p>');
 }
 
 function openDailyCashPosition(gl, bankRows, beginningBalances, banks, selectedBank) {
@@ -46248,17 +46247,16 @@ async function openRepairPoFiles(assetId) {
 }
 
 function dailyCashPositionText(report) {
-  const labels={collections:'Collection',receipts:'Other receipt / reversal',checks:'New check',deductions:'Other deduction'};
   const lines=['*Daily Cash Position*',report.bank,formatDisplayDate(report.from)+' to '+formatDisplayDate(report.to),''];
   for(const day of report.days) {
     lines.push('*'+formatDisplayDate(day.date)+'*','Beginning cash (net of prior outstanding checks): '+money(day.beginning),'Add: Collections: '+money(day.collections),'Add: Other receipts / reversals: '+money(day.receipts),'Less: New checks issued: '+money(day.checks),'Less: Other cash deductions: '+money(day.deductions),'*Ending available cash: '+money(day.ending)+'*','','Supporting transactions:');
     if(!day.items.length)lines.push('None.');
-    for(const row of day.items)lines.push([row.reference,row.description,labels[row.category],money(row.amount)].filter(Boolean).join(' | '));
+    for(const row of day.items)lines.push([row.description,money(row.amount)].filter(Boolean).join(' | '));
     lines.push('');
   }
-  lines.push('*Prior outstanding checks — already deducted, reference only*');
+  lines.push('*Outstanding checks — already deducted in the beginning cash balance*');
   if(!report.outstanding.length)lines.push('None.');
-  for(const row of report.outstanding)lines.push([formatDisplayDate(row.date),row.displayNum || row.num,row.vendor,money(Math.abs(row.amount))].filter(Boolean).join(' | '));
-  lines.push('*Total prior outstanding checks: '+money(report.outstandingTotal)+'*','','Posted cash activity only. Prior outstanding checks are not deducted again.');
+  for(const row of report.outstanding)lines.push([row.vendor || row.description,money(Math.abs(row.amount))].filter(Boolean).join(' | '));
+  lines.push('*Total outstanding checks: '+money(report.outstandingTotal)+'*','','Posted cash activity only. Prior outstanding checks are not deducted again.');
   return lines.join('\n');
 }
