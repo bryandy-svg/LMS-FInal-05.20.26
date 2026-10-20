@@ -46181,7 +46181,7 @@ function openDailyCashPosition(gl, bankRows, beginningBalances, banks, selectedB
   if (!cashBanks.length) return alert('No cash or bank accounts available.');
   let report;
   $('modalTitle').textContent='Daily Cash Position';
-  $('modalBody').innerHTML='<div class="form-grid"><div class="field"><label>Cash / bank account</label><select id="cashPositionBank">'+cashBanks.map(bank=>'<option '+(bank===selectedBank?'selected':'')+'>'+esc(bank)+'</option>').join('')+'</select></div><div class="field"><label>From</label><input id="cashPositionFrom" type="date" value="'+today()+'"></div><div class="field"><label>To</label><input id="cashPositionTo" type="date" value="'+today()+'"></div></div><div class="toolbar"><button id="cashPositionApply">Apply Report</button><button id="cashPositionPrint">PDF / Print</button><button id="cashPositionExcel">Excel</button></div><div id="cashPositionReport"></div>';
+  $('modalBody').innerHTML='<div class="form-grid"><div class="field"><label>Cash / bank account</label><select id="cashPositionBank">'+cashBanks.map(bank=>'<option '+(bank===selectedBank?'selected':'')+'>'+esc(bank)+'</option>').join('')+'</select></div><div class="field"><label>From</label><input id="cashPositionFrom" type="date" value="'+today()+'"></div><div class="field"><label>To</label><input id="cashPositionTo" type="date" value="'+today()+'"></div></div><div class="toolbar"><button id="cashPositionApply">Apply Report</button><button id="cashPositionPrint">PDF / Print</button><button id="cashPositionExcel">Excel</button><button id="cashPositionWhatsApp">Copy for WhatsApp</button></div><div id="cashPositionCopyStatus" role="status"></div><div id="cashPositionReport"></div>';
   const render=()=>{
     try {
       const bank=$('cashPositionBank').value,from=$('cashPositionFrom').value,to=$('cashPositionTo').value;
@@ -46190,8 +46190,14 @@ function openDailyCashPosition(gl, bankRows, beginningBalances, banks, selectedB
       $('cashPositionReport').innerHTML=dailyCashPositionHtml(report);
     } catch(error) {report=null;$('cashPositionReport').textContent=error.message;}
   };
-  $('cashPositionApply').onclick=render;
-  for(const id of ['cashPositionBank','cashPositionFrom','cashPositionTo']) $(id).onchange=()=>{report=null;$('cashPositionReport').textContent='Click Apply Report to update the selected dates and account.';};
+  $('cashPositionWhatsApp').onclick=async()=>{
+    if(!report)return alert('Apply the report first.');
+    const text=dailyCashPositionText(report),status=$('cashPositionCopyStatus');
+    try {await navigator.clipboard.writeText(text);status.textContent='Copied — paste into WhatsApp.';}
+    catch {status.innerHTML='<p>Select and copy the report below, then paste into WhatsApp.</p><textarea readonly aria-label="Cash position text for WhatsApp" style="width:100%;min-height:260px"></textarea>';const field=status.querySelector('textarea');field.value=text;field.focus();field.select();}
+  };
+  $('cashPositionApply').onclick=()=>{$('cashPositionCopyStatus').textContent='';render();};
+  for(const id of ['cashPositionBank','cashPositionFrom','cashPositionTo']) $(id).onchange=()=>{report=null;$('cashPositionCopyStatus').textContent='';$('cashPositionReport').textContent='Click Apply Report to update the selected dates and account.';};
   $('cashPositionPrint').onclick=()=>{
     if(!report)return alert('Apply the report first.');
     const win=openInAppDocumentWindow('Daily Cash Position');if(!win)return;
@@ -46239,4 +46245,20 @@ async function openRepairPoFiles(assetId) {
     dialog.querySelectorAll('[data-open-repair-po]').forEach(button=>button.onclick=async()=>{try{const {data:file,error}=await supabase.from('repair_request_po_files').select('*').eq('id',button.dataset.openRepairPo).single();if(error)throw error;dialog.close();openInlinePoAttachment(file);}catch(error){alert(error.message);}});
     dialog.showModal();
   } catch(error) {alert('Could not load PO files. '+error.message);}
+}
+
+function dailyCashPositionText(report) {
+  const labels={collections:'Collection',receipts:'Other receipt / reversal',checks:'New check',deductions:'Other deduction'};
+  const lines=['*Daily Cash Position*',report.bank,formatDisplayDate(report.from)+' to '+formatDisplayDate(report.to),''];
+  for(const day of report.days) {
+    lines.push('*'+formatDisplayDate(day.date)+'*','Beginning cash (net of prior outstanding checks): '+money(day.beginning),'Add: Collections: '+money(day.collections),'Add: Other receipts / reversals: '+money(day.receipts),'Less: New checks issued: '+money(day.checks),'Less: Other cash deductions: '+money(day.deductions),'*Ending available cash: '+money(day.ending)+'*','','Supporting transactions:');
+    if(!day.items.length)lines.push('None.');
+    for(const row of day.items)lines.push([row.reference,row.description,labels[row.category],money(row.amount)].filter(Boolean).join(' | '));
+    lines.push('');
+  }
+  lines.push('*Prior outstanding checks — already deducted, reference only*');
+  if(!report.outstanding.length)lines.push('None.');
+  for(const row of report.outstanding)lines.push([formatDisplayDate(row.date),row.displayNum || row.num,row.vendor,money(Math.abs(row.amount))].filter(Boolean).join(' | '));
+  lines.push('*Total prior outstanding checks: '+money(report.outstandingTotal)+'*','','Posted cash activity only. Prior outstanding checks are not deducted again.');
+  return lines.join('\n');
 }
