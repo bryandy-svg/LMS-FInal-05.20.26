@@ -30621,6 +30621,7 @@ function openEquipmentRepairRequestModal() {
       <div class="field"><label>Requested by *</label><input data-repair-request-field="requested_by" value="" placeholder="Name of the person making this request" required></div>
       <div class="field"><label>Email *</label><input type="email" data-repair-request-field="email" value="" placeholder="Email of the person making this request" required></div>
       <div class="field"><label>PO # *</label><input data-repair-request-field="po_no" placeholder="Customer or internal PO number" required></div>
+      ${repairPoUploadHtml()}
       <div class="field"><label>Priority</label><select data-repair-request-field="priority"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
       <div class="field"><label>Operator</label><input data-repair-request-field="operator" placeholder="Operator using the equipment"></div>
       <div class="field"><label>Equipment location</label><input data-repair-request-field="location" placeholder="Defaults to current Fleet location"></div>
@@ -30638,6 +30639,7 @@ function openEquipmentRepairRequestModal() {
     }
   });
   $("modalSave").textContent = "Submit repair request";
+  bindRepairPoUpload();
   $("modalSave").onclick = saveEquipmentRepairRequestModal;
   $("modalCancel").textContent = "Cancel";
   $("modal").style.display = "flex";
@@ -30668,8 +30670,12 @@ async function saveEquipmentRepairRequestModal() {
     last_update_date: localToday(),
     notes: [asset.notes || "", requestNote].filter(Boolean).join("\n"),
   };
-  const { error } = await supabase.from("assets").update(record).eq("id", asset.id);
-  if (error) throw error;
+  const poFile = document.querySelector("[data-repair-po-upload]")?.files?.[0];
+  if (poFile) await saveRepairRequestWithPo(asset.id, record, poFile);
+  else {
+    const { error } = await supabase.from("assets").update(record).eq("id", asset.id);
+    if (error) throw error;
+  }
   closeModal(true);
   alert("Equipment repair request submitted successfully.");
   await renderEquipmentRepairRequestMobile();
@@ -40838,7 +40844,7 @@ function appendDatedNote(existing, note) {
 }
 
 function equipmentRepairQueueTable(rows) {
-  const heads = ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Status", "Issue / Request", "Assigned WO", ""];
+  const heads = ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "PO File", "Status", "Issue / Request", "Assigned WO", ""];
   return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map((asset) => `<tr>
     <td>${esc(asset.asset_tag || "")}</td>
     <td>${esc(asset.name || "")}</td>
@@ -40848,6 +40854,7 @@ function equipmentRepairQueueTable(rows) {
     <td>${esc(asset.requested_by || "")}</td>
     <td>${esc(asset.approved_by || "")}</td>
     <td>${esc(asset.repair_po_no || "")}</td>
+    <td><button type="button" class="rowbtn" data-repair-po-view="${esc(asset.id)}">View PO files</button></td>
     <td>${badge(asset.status || "")}</td>
     <td>${esc(asset._openWo?.description || repairRequestText(asset) || "")}</td>
     <td>${asset._openWo ? badge(asset._openWo.wo_no || "") : ""}</td>
@@ -40870,6 +40877,7 @@ function renderFilteredEquipmentRepairQueue() {
 }
 
 function bindEquipmentRepairQueue() {
+  document.querySelectorAll("[data-repair-po-view]").forEach(button => button.onclick = () => openRepairPoFiles(button.dataset.repairPoView));
   document.querySelectorAll("[data-create-wo-asset]").forEach((b) => b.onclick = () => openNewWorkOrderModal({ assetTag: b.dataset.createWoAsset, description: repairRequestText(currentRows.find((a) => a.asset_tag === b.dataset.createWoAsset)) }));
   document.querySelectorAll("[data-asset-operational]").forEach((b) => b.onclick = () => markAssetOperational(b.dataset.assetOperational));
   document.querySelectorAll("[data-open-wo]").forEach((b) => b.onclick = () => {
@@ -41777,6 +41785,7 @@ function openAssetLocationModal(asset, options = {}) {
       ${productInput("Requested by", "requested_by", asset.requested_by || "")}
       ${productInput("Approved by", "approved_by", asset.approved_by || "")}
       ${productInput("PO # for repair request", "repair_po_no", asset.repair_po_no || "")}
+      ${repairPoUploadHtml()}
       <div class="field"><label>GPS stamp from phone</label><input data-product-field="gps_location" value="${esc(asset.gps_location || "")}" readonly placeholder="Capturing GPS..."></div>
       <div class="field"><label>Phone timestamp</label><input value="${esc(scannedAt.toLocaleString())}" readonly><input type="hidden" data-product-field="scanned_date" value="${esc(scannedAt.toISOString())}"><input type="hidden" data-product-field="last_update_date" value="${esc(localToday())}"></div>
       <div class="field wide"><label>Update equipment photo</label>${asset.photo_url ? `<img class="thumb large" src="${esc(asset.photo_url)}" alt="Current asset photo">` : ""}<input type="file" accept="image/*" data-asset-scan-photo="photo_url"><small>Optional. Choose a photo only if you want to replace or add the equipment photo.</small></div>
@@ -41784,6 +41793,7 @@ function openAssetLocationModal(asset, options = {}) {
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes">${esc(asset.notes || "")}</textarea></div>
     </div>
     <p class="notice" id="gpsCaptureNotice">Phone timestamp captured. Capturing GPS from this phone when browser location permission is allowed.</p>`;
+  bindRepairPoUpload();
   $("modalSave").onclick = saveAssetLocationModal;
   $("modalSave").textContent = "Submit scan";
   $("modalCancel").textContent = options.publicScan ? "Close" : "Cancel";
@@ -41852,7 +41862,9 @@ async function saveAssetLocationModal() {
   }
   try {
     if (file) record.photo_url = await uploadAssetPhoto(asset.asset_tag, file);
-    await updateOneWithOptionalColumns("assets", record, "id", asset.id, ["repair_po_no", "gps_location", "requested_by", "approved_by", "qr_scanned_at"], "Scan saved. Run the verified QR scan SQL update so Needs QR can change automatically after a real QR scan.");
+    const poFile = /repair/i.test(action) ? document.querySelector("[data-repair-po-upload]")?.files?.[0] : null;
+    if (poFile) await saveRepairRequestWithPo(asset.id, record, poFile);
+    else await updateOneWithOptionalColumns("assets", record, "id", asset.id, ["repair_po_no", "gps_location", "requested_by", "approved_by", "qr_scanned_at"], "Scan saved. Run the verified QR scan SQL update so Needs QR can change automatically after a real QR scan.");
     closeModal();
     if (document.body.classList.contains("public-scan")) {
       showPublicScanSuccess(asset, action);
@@ -46201,4 +46213,30 @@ function cashPositionPartyDescription(row, ledger = []) {
   const reference = name(row.reference);
   const names = reference ? [...new Set(ledger.filter(other => name(other.reference) === reference && other.posting_date === row.posting_date).map(other => name(other.customer) || name(other.vendor)).filter(Boolean))] : [];
   return names.join(', ') || name(row.description);
+}
+
+function repairPoUploadHtml() {
+  return '<div class="field wide"><label>Repair PO attachment</label><button type="button" class="rowbtn" id="repairPoUploadButton">Upload PO</button><input hidden type="file" data-repair-po-upload accept="application/pdf,image/jpeg,image/png,image/webp"><small id="repairPoUploadName">Optional PDF or photo. Saved when you submit the repair request. PDF maximum 6 MB.</small></div>';
+}
+function bindRepairPoUpload() {
+  const input=document.querySelector('[data-repair-po-upload]');
+  $('repairPoUploadButton').onclick=()=>input.click();
+  input.onchange=()=>{$('repairPoUploadName').textContent=input.files?.[0]?.name || 'No PO file selected.';};
+}
+async function saveRepairRequestWithPo(assetId, record, file) {
+  if (!['application/pdf','image/jpeg','image/png','image/webp'].includes(file.type)) throw new Error('Choose a PDF, JPG, PNG, or WebP PO file.');
+  const po=await prepareEquipmentRequestPoAttachment(file);
+  const {error}=await supabase.rpc('submit_repair_request_with_po',{p_asset_id:assetId,p_changes:record,p_po:po});
+  if(error)throw new Error('Repair request and PO were not saved. '+error.message);
+}
+async function openRepairPoFiles(assetId) {
+  try {
+    const {data,error}=await supabase.from('repair_request_po_files').select('id,po_no,po_attachment_name,created_at').eq('asset_id',assetId).order('created_at',{ascending:false});
+    if(error)throw error;
+    const dialog=document.createElement('dialog');dialog.style.cssText='max-width:90vw;width:600px;border:1px solid #ccd6df;border-radius:12px;padding:24px';
+    dialog.innerHTML='<h2>Repair PO files</h2>'+((data || []).map(row=>'<p><button type="button" data-open-repair-po="'+esc(row.id)+'">'+esc(row.po_attachment_name)+'</button><br>PO # '+esc(row.po_no)+' · '+esc(formatDisplayDate(String(row.created_at).slice(0,10)))+'</p>').join('') || '<p>No uploaded PO files for this equipment.</p>')+'<button type="button" data-close-repair-po>Close</button>';
+    document.body.appendChild(dialog);dialog.onclose=()=>dialog.remove();dialog.querySelector('[data-close-repair-po]').onclick=()=>dialog.close();
+    dialog.querySelectorAll('[data-open-repair-po]').forEach(button=>button.onclick=async()=>{try{const {data:file,error}=await supabase.from('repair_request_po_files').select('*').eq('id',button.dataset.openRepairPo).single();if(error)throw error;dialog.close();openInlinePoAttachment(file);}catch(error){alert(error.message);}});
+    dialog.showModal();
+  } catch(error) {alert('Could not load PO files. '+error.message);}
 }
