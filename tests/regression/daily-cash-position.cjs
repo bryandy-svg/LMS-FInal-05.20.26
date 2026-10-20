@@ -16,3 +16,6 @@ assert.equal(c.cashPositionPartyDescription({customer:' ',vendor:' ',description
 assert.equal(c.cashPositionPartyDescription({reference:'PAY-1',posting_date:'2026-10-20',description:'Batch'},[{reference:'PAY-1',posting_date:'2026-10-20',customer:'Customer A'}]),'Customer A');
 assert.equal(c.cashPositionPartyDescription({description:'Transfer'},[{customer:'Unrelated'}]),'Transfer');
 const htmlContext={...c,esc:v=>String(v),money:v=>Number(v).toFixed(2),formatDisplayDate:v=>v};vm.createContext(htmlContext);vm.runInContext(functions(['dailyCashPositionHtml']),htmlContext);assert.match(htmlContext.dailyCashPositionHtml(report),/Total prior outstanding checks<\/th><th[^>]*>100.00/);
+
+assert.doesNotMatch(htmlContext.dailyCashPositionHtml(report),/<tfoot/i, "Outstanding total must not repeat as a printed table footer");
+assert.equal((htmlContext.dailyCashPositionHtml(report).match(/Total prior outstanding checks/g)||[]).length,1);
