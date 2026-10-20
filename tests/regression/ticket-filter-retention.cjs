@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {functions}=require('../source.cjs');
+const filters=[{dataset:{col:'3'},value:'Mark',selected:['Mark','Jonathan']}],sorts=[{dataset:{col:'3'},value:'asc'}];let applied=0;
+const wrap={querySelectorAll:s=>s==='.column-filter'?filters:sorts,querySelector:()=>({}),classList:{contains:()=>true,toggle:()=>{}}};
+const c=vm.createContext({document:{body:{classList:{contains:()=>false}}},selectedExcelFilterValues:i=>i.selected,setSelectedExcelFilterValues:(i,v)=>i.selected=v,tableFilterRows:()=>[],applyColumnFilters:()=>applied++,updateTableState:()=>{}});
+vm.runInContext(functions(['collectCurrentTableView','restoreTableViewState']),c);
+const state=c.collectCurrentTableView(wrap);filters[0].value='';filters[0].selected=[];sorts[0].value='';c.restoreTableViewState(wrap,state);
+assert.equal(filters[0].value,'Mark');assert.deepEqual(Array.from(filters[0].selected),['Mark','Jonathan']);assert.equal(sorts[0].value,'asc');assert.equal(applied,1);
+const render=functions(['renderTruckingTicketsView']);assert(render.indexOf('collectCurrentTableView(previousTicketWrap)')<render.indexOf('$("content").innerHTML'));assert(render.includes('ticketViews.set(renderedTicketTab, collectCurrentTableView(existingWrap))'));assert(render.includes('ticketViews.get(truckingTicketBillingTab)'));assert(render.includes('restoreTableViewState(ticketTableWrap, retainedView)'));assert.match(render,/value = previousTicketSearch/);
+console.log('Ticket refresh retains text, multi-select, sorting and search; tab states remain separate.');
