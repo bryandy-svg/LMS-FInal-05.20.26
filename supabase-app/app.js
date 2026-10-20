@@ -12178,11 +12178,13 @@ async function renderBankReconciliationView({background = false} = {}) {
         <button id="bankAutoMatchBtn">Auto-match exact</button>
         <button id="bankCsvBtn">Excel</button>
         <button id="bankRecPdfBtn">PDF / Print</button>
+        <button id="dailyCashPositionBtn">Daily Cash Position</button>
       </div>
       <p class="notice no-print">Transactions are shown for the selected account. Final-printed check payments appear under the payment account used by the Check Run, normally <strong>FHB Checking</strong>.</p>
       <div id="bankRecHost">${bankStatementHtml(statement, selectedBank, periodFrom, periodTo, accountKind)}</div>
       ${bankMatchWorkbenchHtml(matchRows)}
     </section>`;
+  $("dailyCashPositionBtn").onclick = () => openDailyCashPosition(normalizedGl, bankRows, beginningBalances, banks, selectedBank);
   $("bankRecBank").onchange = (e) => { if (!banks.includes(e.target.value)) return; localStorage.setItem("lms.bankRecBank", e.target.value); renderBankReconciliationView(); };
   const applyReconciliationDate = (input, storageKey) => {
     const parsed = parsePastedDate(input.value);
@@ -46120,3 +46122,74 @@ function uniqueNamedRows(rows) {
     if (root && root.contains(event.target)) syncEquipmentRequestRows(root);
   }, true);
 })();
+
+function buildDailyCashPosition(gl, bankRows, bank, from, to, beginningBalance) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) throw new Error("Choose a valid From and To date.");
+  const first = new Date(from + 'T00:00:00Z'), last = new Date(to + 'T00:00:00Z');
+  if (!Number.isFinite(+first) || !Number.isFinite(+last) || first.toISOString().slice(0,10) !== from || last.toISOString().slice(0,10) !== to) throw new Error("Choose valid dates.");
+  if ((last-first)/86400000 > 366) throw new Error("Choose no more than 367 days at a time.");
+  const cents = value => Math.round(Number(value || 0)*100);
+  const openingRow = row => /beginning balance|trial balance/i.test([row.source,row.description,row.reference].join(' '));
+  const rows = gl.filter(row => String(row.account || '').trim().toLowerCase() === bank.trim().toLowerCase() && row.posting_date);
+  const before = row => row.posting_date < from || (row.posting_date === from && openingRow(row));
+  let balance = cents(beginningBalance) + rows.filter(before).reduce((sum,row)=>sum+cents(row.debit)-cents(row.credit),0);
+  const priorDate = new Date(+first-86400000).toISOString().slice(0,10);
+  const prior = buildBankStatement(gl,bankRows,bank,'',priorDate,0,null,true);
+  const isCheck = row => /check run|check payment|check #|cheque/i.test([row.source,row.description,row.reference].join(' '));
+  const outstanding = prior.outstandingChecks.filter(row => isCheck({source:row.ledgerSource,description:row.description,reference:row.num}));
+  const days = [];
+  for (let date = new Date(first); date <= last; date.setUTCDate(date.getUTCDate()+1)) {
+    const day = date.toISOString().slice(0,10), items = rows.filter(row=>row.posting_date===day && !before(row));
+    const entry = {date:day,beginning:balance/100,collections:0,receipts:0,checks:0,deductions:0,items:[]};
+    for (const row of items) {
+      const amount = cents(row.debit)-cents(row.credit);
+      if (!amount) continue;
+      const category = amount > 0 ? (/customer payment|collection|accounts receivable|invoice receipt|sales receipt/i.test([row.source,row.description].join(' ')) ? 'collections' : 'receipts') : (isCheck(row) ? 'checks' : 'deductions');
+      entry[category] += Math.abs(amount);
+      entry.items.push({reference:bankBookDisplayReference(row),description:row.description || row.customer || row.vendor || '',category,amount:amount/100});
+      balance += amount;
+    }
+    for (const key of ['collections','receipts','checks','deductions']) entry[key] /= 100;
+    entry.ending=balance/100;days.push(entry);
+  }
+  return {bank,from,to,days,outstanding};
+}
+
+function dailyCashPositionHtml(report) {
+  const labels={collections:'Collections',receipts:'Other receipts / reversals',checks:'New checks issued',deductions:'Other cash deductions'};
+  return '<h2>Daily Cash Position</h2><p>'+esc(report.bank)+' | '+esc(formatDisplayDate(report.from))+' to '+esc(formatDisplayDate(report.to))+'</p><p>Posted cash activity. Beginning balances already include previously issued checks. Clearing a previously posted check does not deduct cash again. Bank-only transactions must be posted to the ledger to appear here.</p>'
+    + report.days.map(day=>'<section style="break-inside:avoid;margin:20px 0"><h3>'+esc(formatDisplayDate(day.date))+'</h3><table style="width:100%;border-collapse:collapse"><tbody>'+[
+      ['Beginning cash balance — net of prior outstanding checks',day.beginning],['Add: Collections',day.collections],['Add: Other cash receipts / reversals',day.receipts],['Less: New checks issued (cleared or outstanding)',-day.checks],['Less: Other cash deductions',-day.deductions],['Ending available cash',day.ending]
+    ].map(([label,value])=>'<tr><td style="padding:6px;border-bottom:1px solid #ddd">'+label+'</td><td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">'+money(value)+'</td></tr>').join('')+'</tbody></table><details><summary>Supporting transactions ('+day.items.length+')</summary><table style="width:100%"><thead><tr><th>Reference</th><th>Description</th><th>Activity</th><th>Amount</th></tr></thead><tbody>'+day.items.map(row=>'<tr><td>'+esc(row.reference)+'</td><td>'+esc(row.description)+'</td><td>'+labels[row.category]+'</td><td style="text-align:right">'+money(row.amount)+'</td></tr>').join('')+'</tbody></table></details></section>').join('')
+    + '<h3>Prior outstanding checks — already deducted, reference only</h3><table style="width:100%"><thead><tr><th>Date</th><th>Check / reference</th><th>Payee</th><th>Amount</th></tr></thead><tbody>'+report.outstanding.map(row=>'<tr><td>'+esc(formatDisplayDate(row.date))+'</td><td>'+esc(row.displayNum || row.num)+'</td><td>'+esc(row.vendor)+'</td><td style="text-align:right">'+money(Math.abs(row.amount))+'</td></tr>').join('')+'</tbody></table>'+(report.outstanding.length?'':'<p>No prior outstanding checks recorded.</p>');
+}
+
+function openDailyCashPosition(gl, bankRows, beginningBalances, banks, selectedBank) {
+  const cashBanks=banks.filter(bank=>reconciliationAccountKind(bank)==='Bank Statement');
+  if (!cashBanks.length) return alert('No cash or bank accounts available.');
+  let report;
+  $('modalTitle').textContent='Daily Cash Position';
+  $('modalBody').innerHTML='<div class="form-grid"><div class="field"><label>Cash / bank account</label><select id="cashPositionBank">'+cashBanks.map(bank=>'<option '+(bank===selectedBank?'selected':'')+'>'+esc(bank)+'</option>').join('')+'</select></div><div class="field"><label>From</label><input id="cashPositionFrom" type="date" value="'+today()+'"></div><div class="field"><label>To</label><input id="cashPositionTo" type="date" value="'+today()+'"></div></div><div class="toolbar"><button id="cashPositionApply">Apply Report</button><button id="cashPositionPrint">PDF / Print</button><button id="cashPositionExcel">Excel</button></div><div id="cashPositionReport"></div>';
+  const render=()=>{
+    try {
+      const bank=$('cashPositionBank').value,from=$('cashPositionFrom').value,to=$('cashPositionTo').value;
+      const beginning=getBankBeginningBalance(bank,from,beginningBalances);
+      report=buildDailyCashPosition(gl,bankRows,bank,from,to,beginning.amount);
+      $('cashPositionReport').innerHTML=dailyCashPositionHtml(report);
+    } catch(error) {report=null;$('cashPositionReport').textContent=error.message;}
+  };
+  $('cashPositionApply').onclick=render;
+  for(const id of ['cashPositionBank','cashPositionFrom','cashPositionTo']) $(id).onchange=()=>{report=null;$('cashPositionReport').textContent='Click Apply Report to update the selected dates and account.';};
+  $('cashPositionPrint').onclick=()=>{
+    if(!report)return alert('Apply the report first.');
+    const win=openInAppDocumentWindow('Daily Cash Position');if(!win)return;
+    win.document.write('<html><head><title>Daily Cash Position</title><style>@page{size:Letter portrait;margin:12mm}body{font:12px Arial;color:#111}th,td{padding:5px;text-align:left;overflow-wrap:anywhere}table{table-layout:fixed}h3{margin-bottom:8px}</style></head><body>'+dailyCashPositionHtml(report)+'</body></html>');
+    win.document.close();win.document.querySelectorAll('details').forEach(el=>el.open=true);win.print();
+  };
+  $('cashPositionExcel').onclick=()=>{
+    if(!report)return alert('Apply the report first.');
+    const blob=new Blob(['\ufeff'+dailyCashPositionHtml(report)],{type:'application/vnd.ms-excel;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='daily-cash-position-'+report.from+'-'+report.to+'.xls';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  $('modalSave').textContent='Close';$('modalSave').onclick=closeModal;$('modal').style.display='flex';render();
+}
