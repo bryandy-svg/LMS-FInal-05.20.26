@@ -46146,13 +46146,13 @@ function buildDailyCashPosition(gl, bankRows, bank, from, to, beginningBalance) 
       if (!amount) continue;
       const category = amount > 0 ? (/customer payment|collection|accounts receivable|invoice receipt|sales receipt/i.test([row.source,row.description].join(' ')) ? 'collections' : 'receipts') : (isCheck(row) ? 'checks' : 'deductions');
       entry[category] += Math.abs(amount);
-      entry.items.push({reference:bankBookDisplayReference(row),description:row.description || row.customer || row.vendor || '',category,amount:amount/100});
+      entry.items.push({reference:bankBookDisplayReference(row),description:cashPositionPartyDescription(row, gl),category,amount:amount/100});
       balance += amount;
     }
     for (const key of ['collections','receipts','checks','deductions']) entry[key] /= 100;
     entry.ending=balance/100;days.push(entry);
   }
-  return {bank,from,to,days,outstanding};
+  return {bank,from,to,days,outstanding,outstandingTotal:outstanding.reduce((sum,row)=>sum+cents(Math.abs(row.amount)),0)/100};
 }
 
 function dailyCashPositionHtml(report) {
@@ -46161,7 +46161,7 @@ function dailyCashPositionHtml(report) {
     + report.days.map(day=>'<section style="break-inside:avoid;margin:20px 0"><h3>'+esc(formatDisplayDate(day.date))+'</h3><table style="width:100%;border-collapse:collapse"><tbody>'+[
       ['Beginning cash balance — net of prior outstanding checks',day.beginning],['Add: Collections',day.collections],['Add: Other cash receipts / reversals',day.receipts],['Less: New checks issued (cleared or outstanding)',-day.checks],['Less: Other cash deductions',-day.deductions],['Ending available cash',day.ending]
     ].map(([label,value])=>'<tr><td style="padding:6px;border-bottom:1px solid #ddd">'+label+'</td><td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">'+money(value)+'</td></tr>').join('')+'</tbody></table><details><summary>Supporting transactions ('+day.items.length+')</summary><table style="width:100%"><thead><tr><th>Reference</th><th>Description</th><th>Activity</th><th>Amount</th></tr></thead><tbody>'+day.items.map(row=>'<tr><td>'+esc(row.reference)+'</td><td>'+esc(row.description)+'</td><td>'+labels[row.category]+'</td><td style="text-align:right">'+money(row.amount)+'</td></tr>').join('')+'</tbody></table></details></section>').join('')
-    + '<h3>Prior outstanding checks — already deducted, reference only</h3><table style="width:100%"><thead><tr><th>Date</th><th>Check / reference</th><th>Payee</th><th>Amount</th></tr></thead><tbody>'+report.outstanding.map(row=>'<tr><td>'+esc(formatDisplayDate(row.date))+'</td><td>'+esc(row.displayNum || row.num)+'</td><td>'+esc(row.vendor)+'</td><td style="text-align:right">'+money(Math.abs(row.amount))+'</td></tr>').join('')+'</tbody></table>'+(report.outstanding.length?'':'<p>No prior outstanding checks recorded.</p>');
+    + '<h3>Prior outstanding checks — already deducted, reference only</h3><table style="width:100%"><thead><tr><th>Date</th><th>Check / reference</th><th>Payee</th><th>Amount</th></tr></thead><tbody>'+report.outstanding.map(row=>'<tr><td>'+esc(formatDisplayDate(row.date))+'</td><td>'+esc(row.displayNum || row.num)+'</td><td>'+esc(row.vendor)+'</td><td style="text-align:right">'+money(Math.abs(row.amount))+'</td></tr>').join('')+'</tbody><tfoot><tr><th colspan="3">Total prior outstanding checks</th><th style="text-align:right">'+money(report.outstandingTotal)+'</th></tr></tfoot></table>'+(report.outstanding.length?'':'<p>No prior outstanding checks recorded.</p>');
 }
 
 function openDailyCashPosition(gl, bankRows, beginningBalances, banks, selectedBank) {
@@ -46192,4 +46192,13 @@ function openDailyCashPosition(gl, bankRows, beginningBalances, banks, selectedB
     a.href=url;a.download='daily-cash-position-'+report.from+'-'+report.to+'.xls';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
   $('modalSave').textContent='Close';$('modalSave').onclick=closeModal;$('modal').style.display='flex';render();
+}
+
+function cashPositionPartyDescription(row, ledger = []) {
+  const name = value => String(value || '').trim();
+  const direct = name(row.customer) || name(row.vendor);
+  if (direct) return direct;
+  const reference = name(row.reference);
+  const names = reference ? [...new Set(ledger.filter(other => name(other.reference) === reference && other.posting_date === row.posting_date).map(other => name(other.customer) || name(other.vendor)).filter(Boolean))] : [];
+  return names.join(', ') || name(row.description);
 }
