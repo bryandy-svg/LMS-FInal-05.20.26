@@ -110,5 +110,6 @@
   "aging-select-all",
   "supply-issue-dialog",
   "inventory-count-review",
-  "ticket-filter-retention"
+  "ticket-filter-retention",
+  "ticket-save-scoped"
 ]

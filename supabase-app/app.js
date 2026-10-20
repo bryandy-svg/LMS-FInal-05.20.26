@@ -37496,6 +37496,25 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
   recalculate();
 }
 
+async function loadTicketSaveChecks(values) {
+  const literal = value => String(value || '').trim().replace(/[\\%_]/g, char => '\\' + char);
+  const duplicateRequest = supabase.from('trucking_moves').select('*').ilike('ticket_no', literal(values.ticket_no)).limit(2);
+  const overlapRequest = async () => {
+    if (!values.start_time || !values.end_time || !values.driver_name || !values.move_date) return [];
+    const rows = [];
+    for (let offset = 0; ; offset += 500) {
+      const result = await supabase.from('trucking_moves').select('id,ticket_no,move_date,driver_name,start_time,end_time,status')
+        .eq('move_date', truckingCalendarDate(values.move_date)).ilike('driver_name', literal(values.driver_name)).order('id').range(offset, offset + 499);
+      if (result.error) throw result.error;
+      rows.push(...(result.data || []));
+      if ((result.data || []).length < 500) return rows;
+    }
+  };
+  const [duplicates, overlaps] = await Promise.all([duplicateRequest, overlapRequest()]);
+  if (duplicates.error) throw duplicates.error;
+  return [...(duplicates.data || []), ...overlaps];
+}
+
 async function saveManualFinalTruckingTicket() {
   const values = Object.fromEntries([...modalBody.querySelectorAll("[name]")].map((el) => [el.name, el.value]));
   const timeError = truckingTimeOrderError(values.start_time, values.end_time);
@@ -37509,7 +37528,7 @@ async function saveManualFinalTruckingTicket() {
   if (!hasStart && !(Number(values.worked_hours) > 0)) return alert("Enter Time In and Time Out, or enter Actual Hours for a ticket without times.");
   const materialError = truckingTicketMaterialError(values);
   if (materialError) return alert(materialError);
-  const existing = await getAll("trucking_moves").catch(() => []);
+  const existing = await loadTicketSaveChecks(values);
   if (await openExistingDuplicateTruckingTicket(existing, values.ticket_no)) return;
   if (hasStart && hasEnd) {
     const conflict = truckingTimeOverlapConflict(existing, values, editingFinalTruckingTicket);
@@ -37562,7 +37581,7 @@ async function saveManualTruckingTicketDraft() {
   if (!ticketNo) return alert("A Ticket Number is required to save the draft.");
   const selectedEquipment = truckingFindAsset(values.equipment_label);
   if (isTruckingContainerEquipment(selectedEquipment, values.equipment_label)) return alert("Containers can be moved, but cannot be selected as Service / Equipment Used. Choose the truck or operating equipment that will perform the move.");
-  const existing = await getAll("trucking_moves").catch(() => []);
+  const existing = await loadTicketSaveChecks(values);
   if (await openExistingDuplicateTruckingTicket(existing, ticketNo)) return;
   if (values.start_time && values.end_time) {
     const conflict = truckingTimeOverlapConflict(existing, values, editingFinalTruckingTicket);
