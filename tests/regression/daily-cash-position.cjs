@@ -19,3 +19,7 @@ const htmlContext={...c,esc:v=>String(v),money:v=>Number(v).toFixed(2),formatDis
 
 assert.doesNotMatch(htmlContext.dailyCashPositionHtml(report),/<tfoot/i, "Outstanding total must not repeat as a printed table footer");
 assert.equal((htmlContext.dailyCashPositionHtml(report).match(/Total prior outstanding checks/g)||[]).length,1);
+
+vm.runInContext(functions(['dailyCashPositionText']),htmlContext);
+const copied=htmlContext.dailyCashPositionText(report);
+assert.match(copied,/Daily Cash Position/);assert.match(copied,/Beginning cash .*900.00/);assert.match(copied,/Ending available cash: 1040.00/);assert.equal((copied.match(/Total prior outstanding checks:/g)||[]).length,1);assert.match(copied,/already deducted/);assert.match(copied,/2026-10-22/);
