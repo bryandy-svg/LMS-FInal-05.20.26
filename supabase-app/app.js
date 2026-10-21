@@ -11327,7 +11327,7 @@ function checkRunHistoryTable(rows) {
   return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map((r) => {
     const editable = !/printed|cleared|void/i.test(r.status || "");
     const missingReversal = /void/i.test(r.status || "") && r._hasOriginalLedger && !r._hasVoidLedger;
-    return `<tr><td>${esc(r.check_run_no)}</td><td>${esc(formatDisplayDate(r.payment_date))}</td><td>${esc(formatDisplayDate(r.posting_date || r.payment_date))}</td><td>${esc(r.payment_account)}</td><td>${esc(r.check_no || "")}</td><td>${esc(r.vendor)}</td><td>${esc(r.invoice_no || "")}</td><td>${money(r.amount)}</td><td>${esc(checkRunOptionalDisplay(r.wo_no))}</td><td>${esc(r.po_no || r.reference || "")}</td><td>${esc(checkRunOptionalDisplay(r.jobsite))}</td><td>${esc(checkRunOptionalDisplay(r.equipment))}</td><td>${esc(checkRunOptionalDisplay(r.parts_description))}</td><td>${badge(r.status)}${missingReversal ? '<br><span class="badge bad">Missing reversal</span>' : ""}</td><td><div class="rowactions">${editable ? `<button class="rowbtn" data-check-edit="${esc(r.check_run_no)}">Edit</button><button class="rowbtn" data-check-add="${esc(r.check_run_no)}">Add Payables</button>` : ""}<button class="rowbtn" data-check-draft="${esc(r.check_run_no)}">Draft Print</button><button class="rowbtn" data-check-print="${esc(r.check_run_no)}">Final Print</button>${!/void/i.test(r.status || "") ? `<button class="rowbtn danger" data-check-void="${esc(r.check_run_no)}">Void</button>` : missingReversal ? `<button class="rowbtn danger" data-check-post-missing-reversal="${esc(r.check_run_no)}">Post Missing Reversal</button>` : ""}</div></td></tr>`;
+    return `<tr><td>${esc(r.check_run_no)}</td><td>${esc(formatDisplayDate(r.payment_date))}</td><td>${esc(formatDisplayDate(r.posting_date || r.payment_date))}</td><td>${esc(r.payment_account)}</td><td>${esc(r.check_no || "")}</td><td>${esc(r.vendor)}</td><td>${esc(r.invoice_no || "")}</td><td>${money(r.amount)}</td><td>${esc(checkRunOptionalDisplay(r.wo_no))}</td><td>${esc(r.po_no || r.reference || "")}</td><td>${esc(checkRunOptionalDisplay(r.jobsite))}</td><td>${esc(checkRunOptionalDisplay(r.equipment))}</td><td>${esc(checkRunOptionalDisplay(r.parts_description))}</td><td>${badge(r.status)}${missingReversal ? '<br><span class="badge bad">Missing reversal</span>' : ""}</td><td><div class="rowactions">${editable ? `<button class="rowbtn" data-check-edit="${esc(r.check_run_no)}">Edit</button><button class="rowbtn" data-check-add="${esc(r.check_run_no)}">Add Payables</button>` : ""}<button class="rowbtn" data-check-draft="${esc(r.check_run_no)}">Draft Print</button><button class="rowbtn" data-check-print="${esc(r.check_run_no)}">Final Print</button>${!/void/i.test(r.status || "") ? `<button class="rowbtn danger" data-check-void="${esc(r.check_run_no)}">Void check only</button><button class="rowbtn danger" data-check-full-void="${esc(r.check_run_no)}">Void + Reverse Original Journal</button>` : missingReversal ? `<button class="rowbtn danger" data-check-post-missing-reversal="${esc(r.check_run_no)}">Post Missing Reversal</button>` : ""}</div></td></tr>`;
   }).join("") : `<tr><td colspan="${heads.length}" class="empty">No check runs yet.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -11338,6 +11338,7 @@ function bindCheckRunRows(data = {}) {
   document.querySelectorAll("[data-check-print]").forEach((btn) => btn.onclick = () => printCheckRun(btn.dataset.checkPrint));
   document.querySelectorAll("[data-check-post]").forEach((btn) => btn.onclick = () => postCheckRun(btn.dataset.checkPost));
   document.querySelectorAll("[data-check-void]").forEach((btn) => btn.onclick = () => voidCheckRun(btn.dataset.checkVoid));
+  document.querySelectorAll("[data-check-full-void]").forEach(btn=>btn.onclick=()=>reviewFullCheckReversal(btn.dataset.checkFullVoid));
   document.querySelectorAll("[data-check-post-missing-reversal]").forEach((btn) => btn.onclick = () => postMissingCheckRunReversal(btn.dataset.checkPostMissingReversal));
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
   bindCheckRunPayableSelectAll();
@@ -46259,4 +46260,21 @@ function dailyCashPositionText(report) {
   for(const row of report.outstanding)lines.push([row.vendor || row.description,money(Math.abs(row.amount))].filter(Boolean).join(' | '));
   lines.push('*Total outstanding checks: '+money(report.outstandingTotal)+'*','','Posted cash activity only. Prior outstanding checks are not deducted again.');
   return lines.join('\n');
+}
+
+function fullCheckReversalHtml(review) {
+  return '<h2>Void Check + Reverse Original Journal</h2><p>Check '+esc(review.check || review.run)+' | '+esc(review.vendor)+' | '+money(review.amount)+'</p><p>Reversal date: '+esc(formatDisplayDate(review.date))+'</p><p>Reason: '+esc(review.reason)+'</p><p>This cancels the payment and the original payable journal(s). These payables will not return to the check-run list. Original entries remain in the audit history.</p><h3>Reversal entries to post</h3><div style="overflow:auto;max-height:45vh"><table><thead><tr><th>Original reference</th><th>Account</th><th>Debit</th><th>Credit</th></tr></thead><tbody>'+review.entries.map(row=>'<tr><td>'+esc(row.reference)+'</td><td>'+esc(row.account)+'</td><td>'+money(row.debit)+'</td><td>'+money(row.credit)+'</td></tr>').join('')+'</tbody></table></div><p role="status" data-reversal-status></p><button type="button" data-reversal-cancel>Cancel</button> <button type="button" class="danger" data-reversal-confirm>Confirm full reversal</button>';
+}
+async function reviewFullCheckReversal(checkRunNo) {
+  try {
+    await loadAccountingCloseDate(true);
+    const details=promptCheckVoidDetails('check '+checkRunNo+' and original journal');if(!details)return;
+    const args={p_run_no:checkRunNo,p_date:details.voidDate,p_reason:details.reason,p_snapshot:null};
+    const {data,error}=await supabase.rpc('review_or_reverse_check_journals',args);if(error)throw error;
+    const dialog=document.createElement('dialog');dialog.style.cssText='width:850px;max-width:92vw;max-height:90vh;overflow:auto;border:1px solid #ccd6df;border-radius:12px;padding:24px';dialog.innerHTML=fullCheckReversalHtml(data);document.body.appendChild(dialog);dialog.onclose=()=>dialog.remove();
+    const cancel=dialog.querySelector('[data-reversal-cancel]'),confirm=dialog.querySelector('[data-reversal-confirm]');let busy=false;
+    cancel.onclick=()=>dialog.close();dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    confirm.onclick=async()=>{if(busy)return;busy=true;cancel.disabled=true;confirm.disabled=true;dialog.querySelector('[data-reversal-status]').textContent='Posting full reversal…';try{const result=await supabase.rpc('review_or_reverse_check_journals',{...args,p_snapshot:data.snapshot});if(result.error)throw result.error;if(!result.data?.completed)throw new Error('Reversal was not confirmed.');dialog.close();alert('Check payment and original journal reversed. The cancelled payable will not return for payment.');await renderCheckRunView();}catch(error){dialog.querySelector('[data-reversal-status]').textContent=error.message || String(error);confirm.textContent='Close and review again';confirm.onclick=()=>dialog.close();confirm.disabled=false;cancel.disabled=false;busy=false;}};
+    dialog.showModal();
+  } catch(error) {alert(error.message || String(error));}
 }

@@ -113,5 +113,6 @@
   "ticket-filter-retention",
   "ticket-save-scoped",
   "daily-cash-position",
-  "repair-po-upload"
+  "repair-po-upload",
+  "check-full-reversal"
 ]
