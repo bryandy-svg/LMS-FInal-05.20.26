@@ -19651,7 +19651,7 @@ async function openSalesOrderModal(order = null, options = {}) {
   const lines = (order?._lines?.length ? order._lines : prefill.lines?.length ? prefill.lines : [{ sku: "", product_name: "", qty: 1, price: 0 }]).map(line => {
     const customer = order?.customer || prefill.customer || "";
     const product = (productMeta.products || []).find(item => item.id === line.product_id || item.sku === line.sku);
-    return !readOnly && !Number(line.invoiced_qty || 0) && !order?.pricing_rate_id && customerPricingValue(customer, "parts_markup_percent") !== null && product
+    return !order && !readOnly && !Number(line.invoiced_qty || 0) && !order?.pricing_rate_id && customerPricingValue(customer, "parts_markup_percent") !== null && product
       ? { ...line, price: customerPartsSellingPrice(product, customer) } : line;
   });
   const sourcePoNo = order?.source_po_no || options.sourcePo?.po_no || "";
@@ -19821,7 +19821,7 @@ function customerPricingValue(customerName, field) {
 }
 
 function currentPricingCustomer() {
-  return document.querySelector('[data-product-field="bill_to_customer"]')?.value || document.querySelector('[data-product-field="customer"]')?.value || editing?.bill_to_customer || editing?.customer || "";
+  return document.querySelector("#clockPartBody")?.dataset?.pricingCustomer || document.querySelector('[data-product-field="bill_to_customer"]')?.value || document.querySelector('[data-product-field="customer"]')?.value || editing?.bill_to_customer || editing?.customer || "";
 }
 
 function customerPartsSellingPrice(product, customerName, cost = salesInventoryUnitCost(product)) {
@@ -23269,9 +23269,9 @@ async function mechanicQuickRequestParts(woNo) {
       product_name: product?.name || descriptionText || "Photo request - parts team to identify",
       qty_needed: qty,
       accepted_qty: 0,
-      unit_cost: Number(product?.cost || 0),
-      markup_percent: product?.markup_percent ?? null,
-      selling_price: workOrderPartSellingPrice({}, product || {}),
+      unit_cost: product ? salesInventoryUnitCost(product) : 0,
+      markup_percent: customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent"),
+      selling_price: product ? customerPartsSellingPrice(product, wo.bill_to_customer || wo.customer) : null,
       status,
       availability,
       notes: `Requested by ${mechanic}${product ? "" : " - parts team to assign SKU"}`,
@@ -23351,7 +23351,7 @@ async function mechanicQuickClockIn(woNo) {
       issue,
       clock_in: new Date().toISOString(),
       clock_out: null,
-      hourly_rate: currentMechanicRate(mechanic),
+      hourly_rate: customerMechanicRate(wo.bill_to_customer || wo.customer, mechanic, currentMechanicRate(mechanic)),
       work_done: "",
       entry_mode: "Clock",
     }, ["entry_mode"], "Clock-in was saved, but run the labor entry-mode SQL update for the correct report format.");
@@ -23477,9 +23477,9 @@ async function saveClockOutPartsRequests(wo, mechanic, defaultIssue) {
       product_name: product?.name || row.description || row.lookup,
       qty_needed: row.qty,
       accepted_qty: 0,
-      unit_cost: Number(product?.cost || 0),
-      markup_percent: product?.markup_percent ?? null,
-      selling_price: workOrderPartSellingPrice({}, product || {}),
+      unit_cost: product ? salesInventoryUnitCost(product) : 0,
+      markup_percent: customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent"),
+      selling_price: product ? customerPartsSellingPrice(product, wo.bill_to_customer || wo.customer) : null,
       status: product ? (shortage > 0 ? "Shortage" : "Reserved") : "Requested",
       availability: product ? (shortage > 0 ? `Short ${shortage}` : "OK") : "Needs part number",
       notes: `Entered after clock-out by ${mechanic} on ${new Date().toLocaleString()}`,
@@ -25330,7 +25330,7 @@ function openMechanicTimeModal(wo) {
       ${productSelect("Mechanic", "mechanic", productMeta.mechanics || [], firstMechanic)}
       ${productSelect("Additional mechanic / helper", "helper_mechanic", ["None", ...(productMeta.mechanics || [])], "None")}
       ${productSelect("Issue worked on", "issue", issueOptions, issueOptions[0] || "General work order")}
-      ${productInput("Hourly rate", "hourly_rate", currentMechanicRate(firstMechanic), "number")}
+      ${productInput("Hourly rate", "hourly_rate", customerMechanicRate(wo.bill_to_customer || wo.customer, firstMechanic, currentMechanicRate(firstMechanic)), "number")}
       ${productInput("Manual clock-out time", "manual_clock_out", "", "datetime-local")}
       <div class="field wide"><label>Work note</label><textarea data-product-field="work_done" placeholder="What was done, findings, or next step"></textarea></div>
     </div>
@@ -25361,8 +25361,10 @@ function openMechanicTimeModal(wo) {
   $("modal").style.display = "flex";
   const mechanicInput = document.querySelector('[data-product-field="mechanic"]');
   const rateInput = document.querySelector('[data-product-field="hourly_rate"]');
+  rateInput.oninput = () => { rateInput.dataset.manualRate = "true"; };
+  $("clockPartBody").dataset.pricingCustomer = wo.bill_to_customer || wo.customer || "";
   mechanicInput.oninput = () => {
-    rateInput.value = currentMechanicRate(mechanicInput.value);
+    if (rateInput.dataset.manualRate !== "true") rateInput.value = customerMechanicRate(wo.bill_to_customer || wo.customer, mechanicInput.value, currentMechanicRate(mechanicInput.value));
     $("mechanicClockStatus").innerHTML = mechanicClockStatusHtml(mechanicInput.value, wo);
   };
   $("clockInNowBtn").onclick = () => clockInMechanic(wo);
@@ -25547,11 +25549,11 @@ function refreshMechanicPartLookup(input) {
   set("available", qty > 0 ? "Available" : "Out of stock");
   set("alternatives", inStockAlternativesText(product));
   const costInput = tr?.querySelector('[data-clock-part="unit_cost"]');
-  if (costInput && !costInput.value) costInput.value = Number(product.cost || 0);
+  if (costInput && !costInput.value) costInput.value = salesInventoryUnitCost(product);
   const markupInput = tr?.querySelector('[data-clock-part="markup_percent"]');
   const sellingInput = tr?.querySelector('[data-clock-part="selling_price"]');
-  if (markupInput) markupInput.value = product.markup_percent ?? "";
-  if (sellingInput) sellingInput.value = product.selling_price ?? product.cost ?? 0;
+  if (markupInput && markupInput.value === "") markupInput.value = customerPricingValue(currentPricingCustomer(), "parts_markup_percent") ?? "";
+  if (sellingInput && sellingInput.value === "") sellingInput.value = customerPartsSellingPrice(product, currentPricingCustomer(), costInput?.value ?? product.cost);
 }
 
 function repairPartsMiniTable(wo) {
@@ -26136,7 +26138,7 @@ function refreshAdminPartEditLookup(input, replacePricing = true) {
   const lookupCost = workOrderPartLookupCost(product, tr.dataset.sourcePo || "");
   if (Number(tr.dataset.originalAccepted || 0) <= 0) set("unit_cost", lookupCost, !replacePricing);
   const customerMarkup = customerPricingValue(currentPricingCustomer(), "parts_markup_percent");
-  set("markup_percent", customerMarkup ?? product.markup_percent ?? "", true);
+  set("markup_percent", customerMarkup ?? "", true);
   const displayedCost = tr.querySelector('[data-admin-part="unit_cost"]')?.value;
   const displayedMarkup = tr.querySelector('[data-admin-part="markup_percent"]')?.value;
   if (!editing?.invoice_no && !/invoiced|void|cancel/i.test(editing?.status || "")) {
@@ -26354,9 +26356,9 @@ function addAdminLaborEditRow(wo, helper = false) {
     clock_in: defaultClockIn,
     clock_out: "",
     break_minutes: 0,
-    hourly_rate: 0,
+    hourly_rate: "",
     work_done: helper ? "Helper hours only" : "",
-  }, rowKey, helper));
+  }, rowKey, helper, wo.bill_to_customer || wo.customer || ""));
   bindAdminLaborDeleteButtons();
   bindAdminLaborRowControls();
   host.firstElementChild?.querySelector('[data-labor-field="mechanic"]')?.focus();
@@ -26410,13 +26412,13 @@ function bindAdminLaborRowControls() {
     if (breakMinutes) breakMinutes.oninput = calculateHours;
     if (hours) hours.oninput = calculateClockOut;
     if (overtime) overtime.oninput = updateCharge;
-    if (rate) rate.oninput = updateCharge;
+    if (rate) rate.oninput = () => { rate.dataset.manualRate = "true"; updateCharge(); };
     if (mechanic) mechanic.onchange = mechanic.oninput = () => {
       const registered = resolveRegisteredMechanic(mechanic.value);
       if (registered && rate) {
         const baseRate = Number(currentMechanicRate(registered) || 0);
         rate.dataset.baseHourlyRate = String(baseRate);
-        if (rate.value === "") rate.value = Number(customerMechanicRate(currentPricingCustomer(), registered, baseRate)).toFixed(2);
+        if (rate.value === "" || (!row.dataset.laborExistingId && rate.dataset.manualRate !== "true")) rate.value = Number(customerMechanicRate(currentPricingCustomer(), registered, baseRate)).toFixed(2);
       }
       updateCharge();
     };
@@ -26666,7 +26668,8 @@ function formatDateTime(value) {
 async function clockInMechanic(wo) {
   const mechanic = document.querySelector('[data-product-field="mechanic"]')?.value || "";
   const issue = document.querySelector('[data-product-field="issue"]')?.value || "General work order";
-  const hourlyRate = Number(document.querySelector('[data-product-field="hourly_rate"]')?.value || currentMechanicRate(mechanic));
+  const enteredRate = document.querySelector('[data-product-field="hourly_rate"]')?.value;
+  const hourlyRate = enteredRate != null && enteredRate !== "" ? Number(enteredRate) : customerMechanicRate(wo.bill_to_customer || wo.customer, mechanic, currentMechanicRate(mechanic));
   if (!mechanic) {
     alert("Choose a mechanic first.");
     return;
@@ -26800,7 +26803,7 @@ async function inviteHelperMechanic(wo) {
       issue,
       clock_in: new Date().toISOString(),
       clock_out: null,
-      hourly_rate: currentMechanicRate(helper),
+      hourly_rate: customerMechanicRate(wo.bill_to_customer || wo.customer, helper, currentMechanicRate(helper)),
       work_done: `Added by ${primary} as helper for hours only`,
       entry_mode: "Clock",
     }, ["entry_mode"], "Helper clock-in was saved, but run the labor entry-mode SQL update for the correct report format.");
@@ -26876,8 +26879,8 @@ async function saveMechanicRequestedParts(wo, mechanic, activeIssue) {
         product_name: product.name,
         qty_needed: qty,
         unit_cost: Number(get("unit_cost") || product.cost || 0),
-        markup_percent: get("markup_percent") === "" ? (product.markup_percent ?? null) : Number(get("markup_percent")),
-        selling_price: enteredWorkOrderPartPrice(get("selling_price"), get("unit_cost") || product.cost, get("markup_percent"), product.selling_price ?? product.cost),
+        markup_percent: get("markup_percent") === "" ? customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent") : Number(get("markup_percent")),
+        selling_price: enteredWorkOrderPartPrice(get("selling_price"), get("unit_cost") || product.cost, get("markup_percent") === "" ? customerPricingValue(wo.bill_to_customer || wo.customer, "parts_markup_percent") : get("markup_percent"), product.selling_price ?? product.cost),
         availability: shortage > 0 ? `Short ${shortage}` : "OK",
         status: shortage > 0 ? "Shortage" : "Reserved",
         accepted_qty: 0,

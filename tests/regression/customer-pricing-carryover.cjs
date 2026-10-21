@@ -16,3 +16,22 @@ assert.equal(c.workOrderPartSellingPrice({unit_cost:100,markup_percent:20},produ
 assert.equal(c.enteredWorkOrderPartPrice("123",100,40),123);assert.equal(c.enteredWorkOrderPartPrice("0",100,40),0);assert.equal(c.enteredWorkOrderPartPrice("",100,40),140);
 assert.equal(c.workOrderLaborRate({hourly_rate:200,mechanic:"Tech"},"LMS"),200);assert.equal(c.workOrderLaborRate({hourly_rate:0},"LMS"),0);assert.equal(c.workOrderLaborRate({hourly_rate:"",mechanic:"Tech"},"LMS"),50);
 c.laborCharge=l=>l.hours*l.hourly_rate;assert.equal(c.repairLaborTotal({bill_to_customer:"LMS",_labor:[{hours:4,hourly_rate:200}]}),800);
+
+const cells={unit_cost:{value:''},markup_percent:{value:''},selling_price:{value:''}};
+const partInput={value:'P1',closest:()=>({querySelector:selector=>{const m=selector.match(/data-clock-part="([^"]+)"/);return m?cells[m[1]]:null;}})};
+c.resolveProductLookup=()=>product;c.refreshPartBinCell=()=>{};c.inStockAlternativesText=()=>'';
+vm.runInContext(functions(['refreshMechanicPartLookup']),c);
+c.refreshMechanicPartLookup(partInput);
+assert.equal(cells.markup_percent.value,40);assert.equal(cells.selling_price.value,140);
+cells.selling_price.value='123';cells.markup_percent.value='23';
+c.refreshMechanicPartLookup(partInput);
+assert.equal(cells.selling_price.value,'123');assert.equal(cells.markup_percent.value,'23');
+cells.selling_price.value='';cells.markup_percent.value='';customer.parts_markup_percent=null;product.markup_percent=99;
+c.refreshMechanicPartLookup(partInput);
+assert.equal(cells.selling_price.value,175,'No customer markup uses saved product selling price, not product markup');
+assert.equal(cells.markup_percent.value,'');
+customer.parts_markup_percent=40;
+const writes=[];
+Object.assign(c,{currentRows:[{wo_no:'W1',id:'wo1',bill_to_customer:'LMS'}],currentMechanicName:()=>'Tech',activeLaborForMechanic:()=>null,CSS:{escape:x=>x},confirm:()=>true,alert:x=>{throw Error(x);},currentMechanicRate:()=>35,insertOneWithOptionalColumns:async(t,row)=>writes.push(row),supabase:{from:()=>({update:()=>({eq:async()=>{}})})},renderRepairsView:async()=>{}});
+vm.runInContext(functions(['mechanicQuickClockIn']),c);
+(async()=>{await c.mechanicQuickClockIn('W1');assert.equal(writes[0].hourly_rate,50,'Quick clock-in saves the customer starting rate');customer.mechanic_hourly_rate=null;await c.mechanicQuickClockIn('W1');assert.equal(writes[1].hourly_rate,35);})().catch(error=>{console.error(error);process.exitCode=1;});
