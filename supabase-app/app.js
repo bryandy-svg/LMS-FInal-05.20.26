@@ -33546,6 +33546,39 @@ function truckingCustomerSelectOptions(selected = "") {
     .join("");
 }
 
+
+function truckingServiceGuidance(service) {
+  const descriptions = {
+    "equipment move": "Move machinery or equipment between locations. Add each equipment item to be transported.",
+    "container/trailer move": "Move a container or trailer. Choose the move option, size, and reference number.",
+    "dump truck": "Haul loose material such as soil, sand, or gravel. Enter the material, number of loads, and cubic yards per load.",
+    "end dump": "Haul loose bulk material using an end-dump trailer. Enter the material and load quantities; confirm site access with dispatch.",
+    "flatbed": "Transport materials or cargo on a flatbed. Describe the load, weight, dimensions, and loading needs.",
+    "high deck trailer": "Transport materials on a high-deck trailer. Enter the material, weight, and dimensions.",
+    "highbed/chameleon": "Request the highbed/chameleon transport option. Enter the material, weight, and dimensions so dispatch can confirm suitability.",
+    "flatrack/chameleon": "Request the flatrack/chameleon transport option. Enter the material, weight, and dimensions so dispatch can confirm suitability.",
+    "operate": "Request equipment operation work. Describe the equipment, task, location, and time needed.",
+    "pump service": "Request pumping work. Describe what needs pumping, the location, and estimated quantity.",
+    "roll off service": "Request roll-off bin service. Choose the bin size and debris type; state whether you need delivery, pickup, or exchange.",
+    "training": "Request training. Describe the training topic, equipment involved, and preferred schedule.",
+    "waste water pump services": "Request wastewater pumping or removal. Choose the available unit or tank capacity and describe the site requirements.",
+    "water service": "Request water delivery or water-related site service. Describe the use, location, and quantity needed."
+  };
+  const key = String(service || "").trim().toLowerCase();
+  if (!key) return "Choose a service below, or open the service guide to compare the options.";
+  if (key === "__new__") return "Enter the new service name and describe the work required.";
+  return descriptions[key] || "Describe the work, load, and site requirements. Confirm the service with dispatch if unsure.";
+}
+
+function truckingServiceGuideHtml(selected) {
+  const options = truckingServiceSelectOptions(selected);
+  const names = [...options.matchAll(/value="([^"]*)"/g)].map(match => match[1]);
+  return '<small id="truckServiceHelp" role="status">' + esc(truckingServiceGuidance(selected)) + '</small>'
+    + '<details style="margin-top:8px"><summary>Which service should I choose?</summary><dl style="margin:8px 0;overflow-wrap:anywhere">'
+    + names.map(name => '<dt style="margin-top:10px;font-weight:700">' + name + '</dt><dd style="margin:4px 0">' + esc(truckingServiceGuidance(name)) + '</dd>').join('')
+    + '</dl></details>';
+}
+
 function truckingServiceSelectOptions(selected = "") {
   const standard = ["Equipment Move", "Container/Trailer Move", "High Deck Trailer", "Highbed/Chameleon", "Flatrack/Chameleon", "Dump Truck", "End Dump", "Water Service", "Waste Water Pump Services", "Roll Off Service", "Pump Service"];
   const configurableParents = (productMeta.truckingRates || [])
@@ -34224,7 +34257,7 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
       </fieldset>
       <label>Origin (optional)<input class="suggest-input" name="origin" list="truckJobsiteOptions" value="${esc(existing?.origin || "")}" placeholder="Search available jobsites" autocomplete="off"></label>
       <label>Destination (optional)<input class="suggest-input" name="destination" list="truckJobsiteOptions" value="${esc(existing?.destination || "")}" placeholder="Search available jobsites" autocomplete="off"></label>
-      <label>Service needed<select name="service_choice" required><option value="">Select service</option>${truckingServiceSelectOptions(selectedService)}${isAdminUser() ? `<option value="__new__">+ Create new service</option>` : ""}</select></label>
+      <div><label>Service needed<select name="service_choice" aria-describedby="truckServiceHelp" required><option value="">Select service</option>${truckingServiceSelectOptions(selectedService)}${isAdminUser() ? `<option value="__new__">+ Create new service</option>` : ""}</select></label>${truckingServiceGuideHtml(selectedService)}</div>
       <label id="truckServiceSubcategoryField" hidden>Move type / option<select name="service_subcategory"></select><small>Choices come from the Rate Sheet pattern.</small></label>
       <label id="truckServiceSizeField" hidden><span>Size / capacity</span><select name="service_size"></select></label>
       <label id="truckServiceReferenceField" hidden><span>Reference number</span><input name="service_reference" value="${esc(existing?.service_reference || "")}"></label>
@@ -34317,6 +34350,7 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
   modalBody.querySelector('[name="number_of_loads"]').oninput = updateDumpTotal;
   modalBody.querySelector('[name="cy_per_load"]').oninput = updateDumpTotal;
   serviceChoice.onchange = () => {
+    $("truckServiceHelp").textContent = truckingServiceGuidance(serviceChoice.value);
     const newField = $("newTruckServiceField");
     if (newField) newField.hidden = serviceChoice.value !== "__new__";
     updateTruckingPatternFields(modalBody, serviceChoice.value === "__new__" ? "" : serviceChoice.value, { subcategory: "", size: "" });
