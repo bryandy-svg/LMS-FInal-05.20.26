@@ -120,5 +120,6 @@
   "dispatch-save-button",
   "trucking-schedule-report",
   "scheduled-driver-sync",
-  "assigned-driver-loading"
+  "assigned-driver-loading",
+  "schedule-report-button"
 ]
