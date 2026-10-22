@@ -118,5 +118,6 @@
   "pending-trucking-report",
   "dispatch-helper-containers",
   "dispatch-save-button",
-  "trucking-schedule-report"
+  "trucking-schedule-report",
+  "scheduled-driver-sync"
 ]

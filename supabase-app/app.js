@@ -34261,6 +34261,24 @@ async function readMoveRequestRows(table, requestNo, signal) {
   return result.data || [];
 }
 
+async function truckingRequestTickets(requestNo) {
+  const {data,error}=await supabase.from('trucking_moves').select('*').eq('request_no',requestNo);
+  if(error) throw error;
+  return (data || []).filter(row=>! /^(cancelled|canceled|void|voided|reversed)$/i.test(String(row.status || '')));
+}
+
+async function openScheduledRequestTickets(requestNo, tickets) {
+  const editable=tickets.filter(row=>! /^(completed|finalized)$/i.test(String(row.status || '')));
+  if(!editable.length) return alert('These assignments are completed. Use Finalized Tickets to review them.');
+  tickets=editable;
+  if(tickets.length===1) return openTruckingMoveForm(tickets[0].ticket_no);
+  modalTitle.textContent='Scheduled assignments for '+requestNo;
+  modalSave.style.display='none';
+  modalBody.innerHTML='<p>This request has assigned tickets. Choose the assignment to update the details seen by its driver.</p>'+tickets.map(row=>'<p><button type="button" data-edit-linked-ticket="'+esc(row.ticket_no)+'">'+esc(row.ticket_no)+' — '+esc(row.driver_name || 'Unassigned')+'</button> '+esc(row.equipment_label || '')+'</p>').join('');
+  modalBody.querySelectorAll('[data-edit-linked-ticket]').forEach(button=>button.onclick=()=>openTruckingMoveForm(button.dataset.editLinkedTicket));
+  $('modal').style.display='flex';
+}
+
 async function openTruckingRequestForm(requestNo = "", copyMode = false) {
   modalTitle.textContent = "Opening move request " + requestNo;
   modalBody.innerHTML = '<div class="empty" role="status">Loading this move request...</div>';
@@ -34283,6 +34301,11 @@ async function openTruckingRequestForm(requestNo = "", copyMode = false) {
 }
 
 async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal) {
+  if(requestNo && !copyMode && !usesTruckingRequestMobileView()) {
+    const tickets=await truckingRequestTickets(requestNo);
+    if(signal.aborted || modalBody.firstElementChild!==loadingNode || $('modal').style.display==='none') return;
+    if(tickets.length) return openScheduledRequestTickets(requestNo,tickets);
+  }
   await loadTruckingLookups({formOnly:true,requestNo});
   const liveRequests = requestNo && !copyMode ? await readMoveRequestRows("trucking_requests", requestNo, signal) : await getAll("trucking_requests");
   const existing = requestNo ? liveRequests.find((row) => String(row.request_no || "").trim() === String(requestNo || "").trim()) : null;
@@ -34502,6 +34525,10 @@ function setTruckingRequestOutsideEquipment(row, enabled) {
 }
 
 async function saveTruckingRequest(previousNo = "") {
+  if(previousNo) {
+    const tickets=await truckingRequestTickets(previousNo);
+    if(tickets.length) return alert('This request has assigned tickets. Edit the linked assignment from Scheduled so the driver receives the change. The original request has not been overwritten.');
+  }
   const values = Object.fromEntries([...modalBody.querySelectorAll("[name]")]
     .filter((el) => !el.name.startsWith("line_") && (!["radio", "checkbox"].includes(el.type) || el.checked))
     .map((el) => [el.name, el.value]));
@@ -34916,8 +34943,8 @@ function bindAssignedDriverActions(host) {
 
 async function openAssignedDriverTask(ticketNo) {
   const normalizedTicketNo = String(ticketNo || "").trim();
-  const row = (currentRows || []).find((move) => String(move.ticket_no || "").trim() === normalizedTicketNo)
-    || (await getAll("trucking_moves").catch(() => [])).find((move) => String(move.ticket_no || "").trim() === normalizedTicketNo);
+  const row = await readTruckingTicket(normalizedTicketNo);
+  if(row && /^(finalized|completed|cancelled|canceled|void|voided)$/i.test(String(row.status || ''))) return alert('This assignment is no longer open. Refresh your assigned tasks.');
   if (!row) return alert("Assigned task not found.");
   if (isTruckingDriverUser() && !truckingMoveBelongsToCurrentDriver(row)) return alert("This task is assigned to another driver.");
   modalTitle.textContent = `Complete assigned task ${ticketNo}`;
@@ -35058,6 +35085,16 @@ function assignedStandbyFitsClockTime(operational, startTime, endTime) {
   return true;
 }
 
+async function assignedDriverSnapshotIsCurrent(row) {
+  const fresh=await readTruckingTicket(row.ticket_no);
+  const fields=['status','driver_email','helper_driver_email','service','equipment_label','asset_tag','requested_equipment_label','origin','destination','move_description','rate','rate_type','amount','discount_percent'];
+  if(!fresh || fields.some(key=>String(fresh[key] ?? '')!==String(row[key] ?? ''))) {
+    alert('Dispatch has changed this assignment. Reopen the task to load the latest details before saving.');
+    return false;
+  }
+  return true;
+}
+
 async function saveAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const operational = assignedDriverOperationalUpdate();
   if (!operational.move_date) return alert("Ticket date is required.");
@@ -35074,6 +35111,7 @@ async function saveAssignedDriverTask(row, driverCanvas, customerCanvas) {
   if (timeError) return alert(timeError);
   if (requiresTruckingDebris(row) && !operational.debris_type) return alert("Type of Debris is required for this service.");
   if (!assignedStandbyFitsClockTime(operational, update.start_time, update.end_time)) return;
+  if(!await assignedDriverSnapshotIsCurrent(row)) return;
   if (update.start_time && update.end_time) {
     const moves = await getAll("trucking_moves").catch(() => []);
     const conflict = truckingTimeOverlapConflict(moves, { ...update, move_date: operational.move_date, driver_name: row.driver_name }, row);
@@ -35109,6 +35147,7 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   if (!assignedStandbyFitsClockTime(operational, startTime, endTime)) return;
   const materialError = truckingTicketMaterialError({ ...row, ...operational });
   if (materialError) return alert(materialError);
+  if(!await assignedDriverSnapshotIsCurrent(row)) return;
   const existingMoves = await getAll("trucking_moves").catch(() => []);
   const conflict = truckingTimeOverlapConflict(existingMoves, { move_date: operational.move_date, driver_name: row.driver_name, start_time: startTime, end_time: endTime }, row);
   if (conflict) return alert(truckingOverlapMessage(conflict));
@@ -38937,6 +38976,7 @@ async function openTruckingMoveForm(ticketNo = "") {
     ? await readTruckingTicket(normalizedTicketNo)
     : null;
   if (normalizedTicketNo && !existing) throw new Error(`Ticket ${normalizedTicketNo} could not be loaded.`);
+  if(existing) productMeta.truckingMoves=(productMeta.truckingMoves || []).filter(row=>row.ticket_no!==existing.ticket_no).concat(existing);
   let requestedEquipment = existing?.requested_equipment_label || "";
   if (!requestedEquipment && existing?.request_no) {
     const requestLines = await readMoveRequestRows("trucking_request_lines", existing.request_no);
@@ -39084,6 +39124,7 @@ async function saveTruckingMove() {
   const asset = truckingFindAsset(payload.equipment_label);
   if (isTruckingContainerEquipment(asset, payload.equipment_label)) return alert("Containers can be moved, but cannot be selected as Equipment Used. Choose the truck or operating equipment that performed the move.");
   if (asset.label) payload.equipment_label = asset.label;
+  if(asset.asset_tag && asset.asset_tag!==existingMove?.asset_tag) payload.truck_license=asset.plate || '';
   payload.asset_source = payload.asset_source || asset.source || "";
   payload.asset_tag = payload.asset_tag || asset.asset_tag || "";
   const rate = (productMeta.truckingRates || []).find((item) => item.service === payload.service);
@@ -39102,7 +39143,7 @@ async function saveTruckingMove() {
   const { data: savedMove, error } = await supabase.from("trucking_moves").upsert(payload, { onConflict: "ticket_no" }).select().single();
   if (error) return alert(error.message || "Could not save trucking ticket.");
   const visibleMove = savedMove || { ...existingMove, ...payload };
-  currentRows = (currentRows || [])
+  if(currentView !== "truckingrequests") currentRows = (currentRows || [])
     .filter((row) => String(row.ticket_no || "").trim() !== String(payload.ticket_no || "").trim())
     .concat(visibleMove)
     .sort((a, b) => String(b.move_date || "").localeCompare(String(a.move_date || "")) || String(b.ticket_no || "").localeCompare(String(a.ticket_no || "")));
@@ -39111,7 +39152,8 @@ async function saveTruckingMove() {
     .concat(visibleMove);
   closeModal();
   productMeta.truckingLoaded = false;
-  if (String(existingMove?.status || "").toLowerCase() === "finalized") await renderTruckingTicketsView();
+  if(currentView === "truckingrequests") renderFilteredTruckingRequests();
+  else if (String(existingMove?.status || "").toLowerCase() === "finalized") await renderTruckingTicketsView();
   else {
     truckingSchedulerTab = truckingSchedulerStatusTab(visibleMove);
     document.querySelectorAll("[data-trucking-scheduler-tab]").forEach((button) => button.classList.toggle("active", button.dataset.truckingSchedulerTab === truckingSchedulerTab));
