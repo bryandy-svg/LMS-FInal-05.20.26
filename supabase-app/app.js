@@ -34744,7 +34744,18 @@ function truckingScheduleText(rows, date, assets = []) {
 }
 
 async function openTruckingScheduleReport() {
-  await loadTruckingLookups({useCache:true});
+  modalTitle.textContent='Trucking Schedule Report';
+  modalBody.innerHTML='<p role="status">Loading schedule details…</p>';
+  modalSave.style.display='none'; $('modalCancel').textContent='Close'; $('modal').style.display='flex';
+  const loadingNode=modalBody.firstElementChild;
+  try { await loadTruckingLookups({useCache:true}); }
+  catch(error) {
+    if(modalBody.firstElementChild!==loadingNode || $('modal').style.display==='none') return;
+    modalBody.innerHTML='<p role="alert">Could not load schedule details. '+esc(error.message || error)+'</p><button type="button" id="retryTruckingSchedule">Retry</button>';
+    $('retryTruckingSchedule').onclick=()=>openTruckingScheduleReport();
+    return;
+  }
+  if(modalBody.firstElementChild!==loadingNode || $('modal').style.display==='none') return;
   const rows = productMeta.truckingMoves || [], assets=productMeta.truckingAssets || [];
   modalTitle.textContent='Trucking Schedule Report';
   modalBody.innerHTML='<div class="toolbar"><label>Schedule date<input type="date" id="truckingScheduleDate" value="'+esc(truckingToday())+'"></label><button type="button" id="truckingScheduleApply">Apply Report</button><button type="button" id="truckingScheduleCopy">Copy for WhatsApp</button><button type="button" id="truckingSchedulePrint">PDF / Print</button></div><p id="truckingScheduleStatus" role="status"></p><div id="truckingSchedulePreview" style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5"></div>';
@@ -39584,6 +39595,7 @@ async function openTruckingRateForm(service = "", copyMode = false) {
 
 if (typeof window !== "undefined") {
   Object.assign(window, {
+    openTruckingScheduleReport,
     openTruckingRequestForm,
     copyTruckingRequest,
     saveTruckingRequest,
