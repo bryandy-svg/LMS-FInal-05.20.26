@@ -39020,12 +39020,13 @@ async function openTruckingMoveForm(ticketNo = "") {
   }
   const loadingNode = normalizedTicketNo ? modalBody.firstElementChild : null;
   try {
-  if (!productMeta.truckingLoaded) await loadTruckingLookups({ useCache: true });
-  const visibleMatch = (currentRows || []).find((row) => String(row.ticket_no || "").trim() === normalizedTicketNo);
+
   const existing = normalizedTicketNo
     ? await readTruckingTicket(normalizedTicketNo)
     : null;
   if (normalizedTicketNo && !existing) throw new Error(`Ticket ${normalizedTicketNo} could not be loaded.`);
+  if (loadingNode && (modalBody.firstElementChild !== loadingNode || $('modal').style.display === 'none')) return;
+  if (!productMeta.truckingLoaded) await loadTruckingLookups({ useCache: true, formOnly: Boolean(existing), ticket: existing, requestNo: existing?.request_no || '' });
   if(existing) productMeta.truckingMoves=(productMeta.truckingMoves || []).filter(row=>row.ticket_no!==existing.ticket_no).concat(existing);
   let requestedEquipment = existing?.requested_equipment_label || "";
   if (!requestedEquipment && existing?.request_no) {
