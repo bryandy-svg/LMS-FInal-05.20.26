@@ -2533,6 +2533,7 @@ async function ensurePartyMasterSuggestRows(force = false) {
     vendors: vendors.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" })),
     loaded: true,
   };
+  productMeta.customerRows = partyMasterMeta.customers;
   return partyMasterMeta;
 }
 
@@ -19028,6 +19029,7 @@ function openQuotationProfitReport() {
 async function saveQuotationModal() {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
+  if (!validateSavedCustomer(record)) return;
   record.freight_amount = Number(record.freight_amount || 0);
   if (!Number.isFinite(record.freight_amount) || record.freight_amount < 0) return alert("Freight must be a valid amount of zero or more.");
   if (!record.customer) {
@@ -20402,6 +20404,7 @@ async function quickCreateSalesCustomer(order) {
 async function saveSalesOrderModal({ keepOpen = false } = {}) {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
+  if (!validateSavedCustomer(record)) return;
   // Status and fulfillment stage are workflow outputs, not user-entered fields.
   // Preserve an existing workflow state until the reservation/delivery logic below advances it.
   record.status = editing?.status || "Open";
@@ -24038,6 +24041,18 @@ function addNewWorkOrderIssueRow() {
   body?.insertAdjacentHTML("beforeend", mechanicIssueEditRow({ issue_date: today(), issue: "", status: "Open", assigned_mechanic: "", work_notes: "" }, index));
 }
 
+
+function validateSavedCustomer(record, field = "customer") {
+  const value = String(record[field] || "").trim();
+  const customer = (productMeta.customerRows || []).find(row => String(row.name || "").trim().toLowerCase() === value.toLowerCase() && value);
+  if (!customer) {
+    alert("Select a saved customer from Customer Master. Unlisted names cannot be saved. Use New customer to register a customer first.");
+    return false;
+  }
+  record[field] = String(customer.name).trim();
+  return true;
+}
+
 function validateWorkOrderCustomerJobsite(record) {
   record.bill_to_customer = String(record.bill_to_customer || "").trim();
   record.jobsite_location = String(record.jobsite_location || "").trim();
@@ -24045,7 +24060,7 @@ function validateWorkOrderCustomerJobsite(record) {
     alert("Customer and Jobsite are required. Complete both before saving the work order.");
     return false;
   }
-  return true;
+  return validateSavedCustomer(record, "bill_to_customer");
 }
 
 async function saveNewWorkOrderModal() {
@@ -27630,6 +27645,7 @@ async function saveInvoiceModal() {
   }
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
+  if (!validateSavedCustomer(record)) return;
   record.payment_mode = record.payment_mode || "PO";
   record.created_by = editing ? editing.created_by || null : profile?.full_name || profile?.username || profile?.email || session?.user?.email || "User";
   let linkedSourceSalesOrder = null;
@@ -42811,7 +42827,7 @@ function productSelect(label, field, values, value, quickLabel = "", required = 
   const masterSource = partyMasterSuggestSource(field);
   const pickerAttributes = masterSource ? `data-suggest-source="${masterSource}" inputmode="search"` : `data-suggest-list="${esc(listId)}" inputmode="search"`;
   const datalist = masterSource ? "" : `<datalist id="${esc(listId)}">${unique.map((v) => `<option value="${esc(v)}"></option>`).join("")}</datalist>`;
-  const helper = masterSource ? `<small>Start typing to search ${masterSource === "customers" ? "Customer Master" : "Vendor Master"} by reference, name, email, or phone.</small>` : "";
+  const helper = masterSource ? `<small>Start typing to search ${masterSource === "customers" ? "Customer Master" : "Vendor Master"} by reference, name, email, or phone.${masterSource === "customers" ? " Select a saved customer; unlisted names cannot be saved." : ""}</small>` : "";
   return `<div class="field"><label>${esc(label)}</label><input class="suggest-input" ${required ? 'required aria-required="true"' : ""} ${pickerAttributes} data-product-field="${field}" value="${esc(value || "")}" placeholder="Type to search ${esc(label.toLowerCase())}" autocomplete="off">${datalist}${quickLabel ? `<button class="rowbtn" type="button" data-product-quick="${esc(field)}">${esc(quickLabel)}</button>` : ""}${helper}</div>`;
 }
 
