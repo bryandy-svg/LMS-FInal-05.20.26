@@ -1,0 +1,9 @@
+const assert=require('node:assert/strict'), vm=require('node:vm');const {functions}=require('../source.cjs');const c=vm.createContext({});vm.runInContext(functions(['repairQueueArchived','repairRequestText']),c);
+for(const wo of ['W100085','W100029']) assert.equal(c.repairQueueArchived({notes:'Repair requested 10/1/2026, 1:00:00 PM: Test\n[10/13/2026] '+wo+' voided 10/13/2026. done'}),true);
+assert.equal(c.repairQueueArchived({notes:'W100085 voided 10/13/2026. done\nRepair requested 10/23/2026: New issue'}),false);
+assert.equal(c.repairQueueArchived({notes:'Repair requested test\n[Repair request cancelled] duplicate'}),true);
+assert.equal(c.repairQueueArchived({notes:'Repair requested test'}),false);
+assert.equal(c.repairRequestText({notes:'Repair requested 10/1/2026, 1:00:00 PM: Old | Requestor email: x\n[Repair request edited] Issue: Corrected'}),'Corrected');
+assert.equal(c.repairRequestText({notes:'Repair requested 10/1/2026, 1:00:00 PM: Old | Requestor email: x\nRepair requested 10/23/2026, 2:30:00 PM: New | Requestor email: x'}),'New');
+let writes=0,changed=false,active=false;const ctx=vm.createContext({localToday:()=> '2026-10-23',supabase:{from(table){if(table==='work_orders')return{select:()=>({eq:async()=>({data:active?[{status:'Open'}]:[],error:null})})};const q={update(){writes++;return q},eq(){return q},is(){return q},select:async()=>({data:changed?[]:[{id:1}],error:null})};return q}}});vm.runInContext(functions(['updatePendingRepairRequest']),ctx);
+(async()=>{await ctx.updatePendingRepairRequest({id:1,asset_tag:'A'},{});assert.equal(writes,1);active=true;await assert.rejects(ctx.updatePendingRepairRequest({id:1},{}),/active work order/);assert.equal(writes,1);active=false;changed=true;await assert.rejects(ctx.updatePendingRepairRequest({id:1},{}),/request changed/);console.log('PASS repair request cancellation, new requests, latest issue, active WO and stale update guards');})().catch(e=>{console.error(e);process.exitCode=1});
