@@ -115,5 +115,6 @@
   "daily-cash-position",
   "repair-po-upload",
   "check-full-reversal",
-  "pending-trucking-report"
+  "pending-trucking-report",
+  "dispatch-helper-containers"
 ]

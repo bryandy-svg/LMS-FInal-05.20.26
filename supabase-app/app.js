@@ -243,7 +243,7 @@ async function getPagedViewRows(table, { columns = "*", beforePage, onEntry } = 
 
 const moduleListPreferences = new Map();
 const moduleDateFields = {fuel:'fuel_date',purchasing:'po_date',orders:'order_date',repairs:'wo_date',partsissues:'wo_date',invoices:'invoice_date',quotes:'quote_date',receipts:'gr_date',payments:'payment_date',customerforms:'form_date',rentalbids:'bid_date',rentals:'start_date',truckingrequests:'request_date',truckingtickets:'move_date',truckingticketentry:'move_date',trucking:'move_date',truckingquotes:'quote_date',propertyrequests:'request_date',propertyworkorders:'opened_date',equipmentrepairquotes:'quote_date',equipmentrequests:'request_date'};
-const truckingListColumns = 'id,ticket_no,request_no,request_line_no,move_date,customer,project,jobsite,requested_by,po_no,asset_source,asset_tag,equipment_label,service,rate,rate_type,amount,origin,destination,driver_name,driver_email,start_time,end_time,container_no,seal_no,vessel_voyage,bl_no,truck_license,chassis_no,bin_status,customer_print,driver_print,notes,status,created_at,updated_at,trip_type,material_description,unit_of_measurement,weight_lb,dimensions,materials_loaded,number_of_loads,cy_per_load,total_cy,requested_equipment_label,dispatched_at,driver_signed_at,customer_signed_at,finalized_at,accepted_at,payment_mode,cancellation_reason,cancelled_at,discount_amount,amount_to_bill,billing_status,billed_at,move_description,billing_reference,billing_batch,service_size,tipping_fee,roll_off_tons,tipping_rate,tipping_rate_type,tipping_charge,discount_percent,actual_hours,debris_type,cy_ton,imported_final_ticket,import_batch,import_source,standby_hours,standby_notes';
+const truckingListColumns = 'id,ticket_no,request_no,request_line_no,move_date,customer,project,jobsite,requested_by,po_no,asset_source,asset_tag,equipment_label,service,rate,rate_type,amount,origin,destination,driver_name,driver_email,helper_driver_name,helper_driver_email,start_time,end_time,container_no,seal_no,vessel_voyage,bl_no,truck_license,chassis_no,bin_status,customer_print,driver_print,notes,status,created_at,updated_at,trip_type,material_description,unit_of_measurement,weight_lb,dimensions,materials_loaded,number_of_loads,cy_per_load,total_cy,requested_equipment_label,dispatched_at,driver_signed_at,customer_signed_at,finalized_at,accepted_at,payment_mode,cancellation_reason,cancelled_at,discount_amount,amount_to_bill,billing_status,billed_at,move_description,billing_reference,billing_batch,service_size,tipping_fee,roll_off_tons,tipping_rate,tipping_rate_type,tipping_charge,discount_percent,actual_hours,debris_type,cy_ton,imported_final_ticket,import_batch,import_source,standby_hours,standby_notes';
 function moduleActiveTab(view) {
   return ({repairs:repairListTab,partsissues:repairListTab,truckingtickets:truckingTicketBillingTab,truckingticketentry:truckingTicketEntryTab,truckingrequests:truckingRequestTab,trucking:truckingSchedulerTab,purchasing:purchasingTab,orders:salesOrderTab,quotes:quotationTab,equipmentrepairquotes:equipmentRepairQuoteTab,equipmentrequests:equipmentRequestTab})[view] || '';
 }
@@ -33297,6 +33297,7 @@ function truckingLaborAllocations(rows = [], period = {}) {
     run_hours: truckingWorkedHours(row.start_time, row.end_time) || Math.max(0, Number(row.actual_hours || 0)),
     driver_labor_cost: 0,
     trainee_labor_cost: 0,
+    helper_labor_cost: 0,
     admin_labor_cost: 0,
   }));
   const driverDays = new Map();
@@ -33318,12 +33319,24 @@ function truckingLaborAllocations(rows = [], period = {}) {
     if (Number.isFinite(end)) allDay.last = Number.isFinite(allDay.last) ? Math.max(allDay.last, end) : end;
     allDays.set(ticket.labor_date, allDay);
   }
+  for (const ticket of tickets) {
+    const helper = String(ticket.helper_driver_name || '').trim();
+    if (!helper || helper.toLowerCase() === String(ticket.driver_name || '').trim().toLowerCase()) continue;
+    const key=ticket.labor_date+'|'+helper.toLowerCase();
+    const day=driverDays.get(key) || {date:ticket.labor_date,driver:helper,tickets:[],first:NaN,last:NaN,rate:driverRates.get(helper.toLowerCase()) || 0,helper_only:true};
+    if (!day.tickets.includes(ticket)) day.tickets.push(ticket);
+    const start=truckingTimeMinutes(ticket.start_time); let end=truckingTimeMinutes(ticket.end_time);
+    if (Number.isFinite(start) && Number.isFinite(end) && end<start) end+=1440;
+    if(Number.isFinite(start)) day.first=Number.isFinite(day.first)?Math.min(day.first,start):start;
+    if(Number.isFinite(end)) day.last=Number.isFinite(day.last)?Math.max(day.last,end):end;
+    driverDays.set(key,day);
+  }
   const driversById = new Map((productMeta.truckingDrivers || []).map((driver) => [String(driver.id), driver]));
   const sourceDriverDays = [...driverDays.values()];
   for (const trainee of (productMeta.truckingDrivers || []).filter((driver) => driver.training && driver.training_with_profile_id)) {
     const mentor = driversById.get(String(trainee.training_with_profile_id));
     if (!mentor || String(mentor.id) === String(trainee.id)) continue;
-    sourceDriverDays.filter((day) => String(day.driver).trim().toLowerCase() === String(mentor.name).trim().toLowerCase()).forEach((mentorDay) => {
+    sourceDriverDays.filter((day) => !day.helper_only && String(day.driver).trim().toLowerCase() === String(mentor.name).trim().toLowerCase()).forEach((mentorDay) => {
       const traineeKey = `${mentorDay.date}|${String(trainee.name).trim().toLowerCase()}`;
       if (driverDays.has(traineeKey)) return;
       driverDays.set(traineeKey, {
@@ -33356,7 +33369,7 @@ function truckingLaborAllocations(rows = [], period = {}) {
     const payrollPaid = Math.max(0, Number(payroll?.total_hours || 0));
     const payrollRegular = payroll?.regular_hours == null ? Math.min(8, payrollPaid) : Math.max(0, Number(payroll.regular_hours || 0));
     const payrollOvertime = payroll?.overtime_hours == null ? Math.max(0, payrollPaid - payrollRegular) : Math.max(0, Number(payroll.overtime_hours || 0));
-    const fallbackPaid = Math.max(8, clockShift.paid > 0 ? clockShift.paid : ticketHours);
+    const fallbackPaid = day.helper_only ? ticketHours : Math.max(8, clockShift.paid > 0 ? clockShift.paid : ticketHours);
     const shift = payroll ? {
       span: payrollPaid, lunch: 0, paid: payrollPaid, regular: payrollRegular, overtime: payrollOvertime,
     } : {
@@ -33371,13 +33384,16 @@ function truckingLaborAllocations(rows = [], period = {}) {
     const supportedRatio = shift.paid > 0 ? Math.min(1, ticketHours / shift.paid) : 0;
     const supportedLaborCost = Number((laborCost * supportedRatio).toFixed(2));
     const unsupportedLaborCost = Number((laborCost - supportedLaborCost).toFixed(2));
+    let helperSupported = 0;
+    const helperHours = day.tickets.filter(ticket=>String(ticket.helper_driver_name || "").trim().toLowerCase() === String(day.driver).trim().toLowerCase()).reduce((sum,ticket)=>sum+ticket.run_hours,0);
     day.tickets.forEach((ticket) => {
       const share = ticketHours > 0 ? ticket.run_hours / ticketHours : 1 / day.tickets.length;
       const allocated = Number((supportedLaborCost * share).toFixed(2));
-      if (day.is_training) ticket.trainee_labor_cost = Number((Number(ticket.trainee_labor_cost || 0) + allocated).toFixed(2));
+      if (String(ticket.helper_driver_name || "").trim().toLowerCase() === String(day.driver).trim().toLowerCase()) { helperSupported += allocated; ticket.helper_labor_cost += allocated; }
+      if (day.is_training || String(ticket.helper_driver_name || "").trim().toLowerCase() === String(day.driver).trim().toLowerCase()) ticket.trainee_labor_cost = Number((Number(ticket.trainee_labor_cost || 0) + allocated).toFixed(2));
       else ticket.driver_labor_cost = allocated;
     });
-    return { ...day, ...shift, payroll_source: payroll ? "Uploaded Payroll" : day.is_training ? `Training with ${day.training_with}` : "Ticket Times", ticket_hours: Number(ticketHours.toFixed(2)), supported_hours: Number(Math.min(ticketHours, shift.paid).toFixed(2)), unsupported_hours: Number(Math.max(0, shift.paid - ticketHours).toFixed(2)), supported_labor_cost: supportedLaborCost, unsupported_labor_cost: unsupportedLaborCost, labor_cost: Number(laborCost.toFixed(2)), first_time: truckingClockLabel(day.first), last_time: truckingClockLabel(day.last) };
+    return { ...day, ...shift, helper_supported_labor_cost:helperSupported, helper_unsupported_labor_cost:ticketHours ? unsupportedLaborCost * helperHours / ticketHours : 0, payroll_source: payroll ? "Uploaded Payroll" : day.is_training ? `Training with ${day.training_with}` : day.helper_only ? "Helper · Main driver ticket times" : "Ticket Times", ticket_hours: Number(ticketHours.toFixed(2)), supported_hours: Number(Math.min(ticketHours, shift.paid).toFixed(2)), unsupported_hours: Number(Math.max(0, shift.paid - ticketHours).toFixed(2)), supported_labor_cost: supportedLaborCost, unsupported_labor_cost: unsupportedLaborCost, labor_cost: Number(laborCost.toFixed(2)), first_time: truckingClockLabel(day.first), last_time: truckingClockLabel(day.last) };
   });
   const dailyAdmins = [...allDays.values()].map((day) => {
     const ticketHours = day.tickets.reduce((sum, ticket) => sum + ticket.run_hours, 0);
@@ -33727,6 +33743,9 @@ function updateTruckingPatternFields(root, service, selected = {}) {
   const requiresEquipment = String(service || "").toLowerCase() === "equipment move"
     || rowsForSubcategory.some((row) => row.requires_equipment === true || String(row.requires_equipment) === "true");
   if (equipmentSection) equipmentSection.hidden = !requiresEquipment;
+  const containers = root.querySelector('#moveRequestContainerSection');
+  if (containers) containers.hidden = !isContainerMoveService({service});
+  if (isContainerMoveService({service}) && referenceField) referenceField.hidden = true;
   if (!requiresEquipment && equipmentSection) {
     equipmentSection.querySelectorAll('[name="line_equipment"], [name="line_notes"]').forEach((input) => { input.value = ""; });
   }
@@ -34343,6 +34362,8 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
         ${lineRows.map((line) => truckingRequestLineHtml(line)).join("")}
       </div>
     </section>
+    <section id="moveRequestContainerSection" hidden><h3>Containers / trailers to move</h3><p>Add one row per container. Each selected row creates its own ticket when dispatched.</p><div id="truckContainerLines">
+    ${(lineRows.filter(line=>line.container_no).length ? lineRows.filter(line=>line.container_no) : [{container_no:existing?.service_reference || ''}]).map(truckingContainerLineHtml).join('')}</div><button type="button" id="addTruckContainerBtn">Add container</button></section>
     <label class="move-request-description">Move description<textarea name="move_description" placeholder="Describe what needs to be moved, timing, and special instructions." required>${esc(existing?.move_description || existing?.notes || "")}</textarea></label>
     ${truckingDatalists()}
     </div>`;
@@ -34353,6 +34374,8 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
     $("truckRequestLines").insertAdjacentHTML("beforeend", truckingRequestLineHtml({}));
     truckingEnhanceSuggestInputs($("truckRequestLines"));
   };
+  $("addTruckContainerBtn").onclick = () => $("truckContainerLines").insertAdjacentHTML('beforeend', truckingContainerLineHtml({}));
+  $("truckContainerLines").onclick = event => { if(event.target.closest('[data-remove-container]')) event.target.closest('.truck-container-line').remove(); };
   $("truckRequestLines").onclick = (event) => {
     const button = event.target.closest("[data-outside-customer-equipment]");
     if (!button) return;
@@ -34429,6 +34452,10 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
   updateDumpTotal();
   $("modal").style.display = "flex";
   truckingEnhanceSuggestInputs(modalBody);
+}
+
+function truckingContainerLineHtml(line = {}) {
+  return '<div class="mini-grid truck-container-line"><label>Container / Trailer #<input name="line_container_no" value="'+esc(line.container_no || '')+'" placeholder="Container # or To follow"></label><label>Notes<input name="line_container_notes" value="'+esc(line.notes || '')+'"></label><button type="button" data-remove-container>Remove</button></div>';
 }
 
 function truckingRequestLineHtml(line) {
@@ -34531,7 +34558,7 @@ async function saveTruckingRequest(previousNo = "") {
     return alert("Select a valid rate option from the Rate Sheet.");
   }
   const selectedPattern = requiredRateOptions.find((rate) => rate.service === values.service_option) || {};
-  if (selectedPattern.reference_label && !values.service_reference) return alert(`${selectedPattern.reference_label} is required.`);
+  if (selectedPattern.reference_label && !isContainerMoveService({service:values.service_needed}) && !values.service_reference) return alert(`${selectedPattern.reference_label} is required.`);
   if (values.service_needed.toLowerCase() === "roll off service" && !values.tipping_fee) return alert("Select a tipping fee for Roll Off Service.");
   if (["high deck trailer", "highbed/chameleon", "flatrack/chameleon"].includes(values.service_needed.toLowerCase())) {
     if (!values.material_description) return alert(`Material(s) is required for ${values.service_needed}.`);
@@ -34579,8 +34606,18 @@ async function saveTruckingRequest(previousNo = "") {
   if (!isOutsideCustomerJobsite && !availableJobsites.includes(String(values.project_jobsite || "").trim().toLowerCase())) {
     return alert("Select Project / Jobsite from the available Fleet & Equipment locations.");
   }
-  const requiresEquipment = values.service_needed.toLowerCase() === "equipment move"
-    || selectedPattern.requires_equipment === true || String(selectedPattern.requires_equipment) === "true";
+  if (isContainerMoveService({service:values.service_needed})) {
+    lines.length = 0;
+    for (const row of modalBody.querySelectorAll('.truck-container-line')) {
+      const container = row.querySelector('[name=line_container_no]').value.trim();
+      if (!container) return alert('Enter each container number, or To follow if it is not yet known. Remove unused rows.');
+      lines.push({request_no:values.request_no, line_no:lines.length+1, container_no:container, equipment_label:[values.service_subcategory,values.service_size,container].filter(Boolean).join(' | '), service:values.service_option || values.service_needed, origin:values.origin || '',destination:values.destination || '',notes:row.querySelector('[name=line_container_notes]').value.trim(),status:'Requested'});
+    }
+    if (!lines.length) return alert('Add at least one container to move.');
+    values.service_reference = lines.map(line=>line.container_no).join(', ');
+  }
+  const requiresEquipment = !isContainerMoveService({service:values.service_needed}) && (values.service_needed.toLowerCase() === "equipment move"
+    || selectedPattern.requires_equipment === true || String(selectedPattern.requires_equipment) === "true");
   if (requiresEquipment && !lines.length) return alert("Add at least one Equipment Master asset or Outside Customer Equipment item.");
   if (requiresEquipment && lines.some((line) => !line.asset_tag && line.asset_source !== "Outside Customer")) {
     return alert(isAdminUser()
@@ -34715,8 +34752,8 @@ function truckingMoveTable(rows) {
         <div class="actions"><button type="button" data-trucking-move-action="edit" data-ticket-no="${esc(row.ticket_no)}">Open</button><button type="button" data-trucking-move-action="pdf" data-ticket-no="${esc(row.ticket_no)}">Ticket</button></div>
       </article>`).join("") || `<div class="empty">No scheduled moves found.</div>`}</div>`;
   }
-  return truckingSimpleTable(filtered, ["ticket_no", "move_date", "customer", "project", "jobsite", "driver_name", "trip_type", "service", "requested_equipment_label", "equipment_label", "origin", "destination", "container_no", "start_time", "end_time", "amount", "discount_percent", "discount_amount", "amount_to_bill", "status"], {
-    labels: ["Ticket #", "Date", "Customer", "Project", "Jobsite", "Driver", "Trip Type", "Service", "Equipment Requested", "Equipment Used", "Origin", "Destination", "Container #", "Start", "End", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Status"],
+  return truckingSimpleTable(filtered, ["ticket_no", "move_date", "customer", "project", "jobsite", "driver_name", "helper_driver_name", "trip_type", "service", "requested_equipment_label", "equipment_label", "origin", "destination", "container_no", "start_time", "end_time", "amount", "discount_percent", "discount_amount", "amount_to_bill", "status"], {
+    labels: ["Ticket #", "Date", "Customer", "Project", "Jobsite", "Driver", "Helper Driver", "Trip Type", "Service", "Equipment Requested", "Equipment Used", "Origin", "Destination", "Container #", "Start", "End", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Status"],
     format: { amount: (value) => money(value || 0), discount_percent: (value, row) => `${truckingDiscountPercent(row).toFixed(2)}%`, discount_amount: (value) => money(value || 0), amount_to_bill: (_value, row) => money(truckingAmountToBill(row)), status: (value) => badge(value || "Scheduled") },
     actions: (row) => `<button type="button" data-trucking-move-action="pdf" data-ticket-no="${esc(row.ticket_no)}">PDF</button><button type="button" data-trucking-move-action="edit" data-ticket-no="${esc(row.ticket_no)}">Edit</button>${!["Cancelled", "Finalized"].includes(row.status || "") ? `<button type="button" class="danger" data-trucking-move-action="cancel" data-ticket-no="${esc(row.ticket_no)}">Cancel</button>` : ""}`,
   });
@@ -35065,9 +35102,8 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   if (row.request_no && row.request_line_no) {
     await supabase.from("trucking_request_lines").update({ status: "Completed" })
       .eq("request_no", row.request_no).eq("line_no", row.request_line_no);
-    const siblingMoves = (await getAll("trucking_moves").catch(() => []))
-      .filter((move) => move.request_no === row.request_no && move.ticket_no !== row.ticket_no);
-    if (siblingMoves.every((move) => move.status === "Finalized" || move.status === "Cancelled")) {
+    const {data:remainingLines,error:lineStatusError}=await supabase.from("trucking_request_lines").select("line_no,status").eq("request_no",row.request_no);
+    if (!lineStatusError && remainingLines?.length && remainingLines.every(line=>["Completed","Cancelled"].includes(line.status))) {
       await supabase.from("trucking_requests").update({ status: "Completed" }).eq("request_no", row.request_no);
     }
   }
@@ -35320,7 +35356,7 @@ function truckingLaborDetailHtml(rows = []) {
   return `<div class="trucking-driver-performance-heading"><strong>Daily Driver Hours</strong><span>Upload only each driver's total hours per day. The system uses the saved hourly rate, treats the first 8 hours as regular, and charges hours above 8 at 150%. Without payroll, paid hours are the longer of 8 hours or first ticket start through last ticket end less lunch.</span></div>
     ${truckingSimpleTable(allocations.dailyDrivers.sort((a, b) => b.date.localeCompare(a.date) || a.driver.localeCompare(b.driver)), ["date", "driver", "payroll_source", "first_time", "last_time", "span", "lunch", "paid", "regular", "overtime", "ticket_hours", "unsupported_hours", "rate", "supported_labor_cost", "unsupported_labor_cost", "labor_cost"], { labels: ["Date", "Driver", "Hours Source", "First Ticket Start", "Last Ticket End", "Day Span", "Lunch", "Paid Hours", "Regular", "OT", "Run Hours", "Unsupported Hours", "Rate", "Labor Supported by Moves", "Labor Not Supported", "Total Driver Labor"], format: { date: (value) => esc(formatDisplayDate(value)), payroll_source: (value) => badge(value || "Ticket Times"), span: (value) => Number(value || 0).toFixed(2), lunch: (value) => Number(value || 0).toFixed(2), paid: (value) => Number(value || 0).toFixed(2), regular: (value) => Number(value || 0).toFixed(2), overtime: (value) => Number(value || 0).toFixed(2), ticket_hours: (value) => Number(value || 0).toFixed(2), unsupported_hours: (value) => Number(value || 0).toFixed(2), rate: (value) => money(value || 0), supported_labor_cost: (value) => money(value || 0), unsupported_labor_cost: (value) => money(value || 0), labor_cost: (value) => `<strong>${money(value || 0)}</strong>` }, empty: "No daily driver hours were found." })}
     <div class="trucking-driver-performance-heading"><strong>Cost Consumed per Run</strong><span>Actual ticket duration and the allocated share of driver and administrative labor.</span></div>
-    ${truckingSimpleTable(allocations.tickets.sort((a, b) => String(b.labor_date).localeCompare(String(a.labor_date)) || String(a.start_time).localeCompare(String(b.start_time))), ["labor_date", "ticket_no", "driver_name", "equipment_label", "start_time", "end_time", "run_hours", "driver_labor_cost", "trainee_labor_cost", "admin_labor_cost", "total_labor_cost", "ticket_income", "income_less_labor"], { labels: ["Date", "Ticket", "Driver", "Equipment Used", "Start", "End", "Run Hours", "Driver Labor", "Trainee / Ride-Along Labor", "Admin Allocation", "Total Labor", "Ticket Income", "Income Less Labor"], format: { labor_date: (value) => esc(formatDisplayDate(value)), start_time: (value) => esc(truckingClockLabel(truckingTimeMinutes(value))), end_time: (value) => esc(truckingClockLabel(truckingTimeMinutes(value))), run_hours: (value) => Number(value || 0).toFixed(2), driver_labor_cost: (value) => money(value || 0), trainee_labor_cost: (value) => money(value || 0), admin_labor_cost: (value) => money(value || 0), total_labor_cost: (value) => money(value || 0), ticket_income: (value) => money(value || 0), income_less_labor: (value) => `<strong>${money(value || 0)}</strong>` }, empty: "No run-level labor allocation was found." })}`;
+    ${truckingSimpleTable(allocations.tickets.sort((a, b) => String(b.labor_date).localeCompare(String(a.labor_date)) || String(a.start_time).localeCompare(String(b.start_time))), ["labor_date", "ticket_no", "driver_name", "equipment_label", "start_time", "end_time", "run_hours", "driver_labor_cost", "trainee_labor_cost", "admin_labor_cost", "total_labor_cost", "ticket_income", "income_less_labor"], { labels: ["Date", "Ticket", "Driver", "Equipment Used", "Start", "End", "Run Hours", "Driver Labor", "Helper / Trainee Labor", "Admin Allocation", "Total Labor", "Ticket Income", "Income Less Labor"], format: { labor_date: (value) => esc(formatDisplayDate(value)), start_time: (value) => esc(truckingClockLabel(truckingTimeMinutes(value))), end_time: (value) => esc(truckingClockLabel(truckingTimeMinutes(value))), run_hours: (value) => Number(value || 0).toFixed(2), driver_labor_cost: (value) => money(value || 0), trainee_labor_cost: (value) => money(value || 0), admin_labor_cost: (value) => money(value || 0), total_labor_cost: (value) => money(value || 0), ticket_income: (value) => money(value || 0), income_less_labor: (value) => `<strong>${money(value || 0)}</strong>` }, empty: "No run-level labor allocation was found." })}`;
 }
 
 async function readTruckingLaborRows(table, columns, signal) {
@@ -35348,7 +35384,7 @@ async function loadTruckingLaborLookups() {
       }, 20000);
     });
     const [moves, users, payrollHours] = await Promise.race([Promise.all([
-      readTruckingLaborRows("trucking_moves", "id,status,move_date,finalized_at,start_time,end_time,actual_hours,driver_name,ticket_no,equipment_label,amount,discount_amount,tipping_charge", controller.signal),
+      readTruckingLaborRows("trucking_moves", "id,status,move_date,finalized_at,start_time,end_time,actual_hours,driver_name,helper_driver_name,helper_driver_email,ticket_no,equipment_label,amount,discount_amount,tipping_charge", controller.signal),
       readTruckingLaborRows("app_profiles", "id,full_name,username,email,role,modules,trucking_labor_rate,trucking_admin_allocation,trucking_training,trucking_training_with_profile_id", controller.signal),
       readTruckingLaborRows("trucking_payroll_hours", "*", controller.signal),
     ]), timeout]);
@@ -36065,20 +36101,22 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
       const unallocatedShare = day && Number(day.ticket_hours || 0) > 0
         ? Number(ticket.run_hours || 0) / Number(day.ticket_hours || 1)
         : 1 / dayTicketCount;
-      const unallocated = day ? Number(day.unsupported_labor_cost || 0) * unallocatedShare : 0;
+      const helperDay = daily.get(ticket.labor_date+'|'+String(ticket.helper_driver_name || '').trim().toLowerCase());
+      const helperUnallocated = helperDay && helperDay.ticket_hours > 0 ? Number(helperDay.unsupported_labor_cost || 0) * ticket.run_hours / helperDay.ticket_hours : 0;
+      const unallocated = (day ? Number(day.unsupported_labor_cost || 0) * unallocatedShare : 0) + (label === 'Driver' ? 0 : helperUnallocated);
       const group = groups.get(key) || { date: dailyMode ? ticket.labor_date : "", category, customer, moves: 0, run_hours: 0, income: 0, allocated_labor: 0, unallocated_labor: 0, admin_labor: 0, total_labor: 0, profit: 0 };
       group.moves += 1; group.run_hours += Number(ticket.run_hours || 0); group.income += Number(ticket.ticket_income || 0); group.allocated_labor += Number(ticket.driver_labor_cost || 0) + (label === "Driver" ? 0 : Number(ticket.trainee_labor_cost || 0)); group.unallocated_labor += unallocated; group.admin_labor += Number(ticket.admin_labor_cost || 0);
       groups.set(key, group);
     });
-    if (label === "Driver") allocations.dailyDrivers.filter((day) => day.is_training || day.payroll_only).forEach((day) => {
+    if (label === "Driver") allocations.dailyDrivers.filter((day) => day.is_training || day.payroll_only || day.helper_supported_labor_cost > 0 || day.helper_only).forEach((day) => {
       const category = day.driver || "Unassigned Trainee";
       const categoryKey = String(category).trim().toLowerCase();
       const key = dailyMode ? `${day.date}|${categoryKey}|` : `${categoryKey}|`;
       const group = groups.get(key) || { date: dailyMode ? day.date : "", category, moves: 0, run_hours: 0, income: 0, allocated_labor: 0, unallocated_labor: 0, admin_labor: 0, total_labor: 0, profit: 0 };
       // Training and payroll-only rows carry labor cost, but they do not create
       // additional trucking moves or run hours beyond the finalized ticket.
-      group.allocated_labor += Number(day.supported_labor_cost || 0);
-      group.unallocated_labor += Number(day.unsupported_labor_cost || 0);
+      group.allocated_labor += Number(day.is_training || day.payroll_only ? day.supported_labor_cost || 0 : day.helper_supported_labor_cost || 0);
+      group.unallocated_labor += Number(day.is_training || day.payroll_only ? day.unsupported_labor_cost || 0 : day.helper_unsupported_labor_cost || 0);
       groups.set(key, group);
     });
     if (label === "Driver") {
@@ -36263,6 +36301,8 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
       driverMoveRows.push({
         ...ticket,
         driver_name: driver,
+        total_labor_cost: ticket.total_labor_cost - ticket.helper_labor_cost,
+        income_less_labor: ticket.income_less_labor + ticket.helper_labor_cost,
         report_service: truckingReportService(ticket),
         move_order: order,
         previous_ticket: sameDay ? (previous.ticket_no || "—") : "—",
@@ -36285,11 +36325,11 @@ function truckingManagementReportHtml(rows = [], reportType = "period", periodLa
   });
   const fuelReportRows = truckingFuelReportRows(fuelRows, productMeta.truckingDrivers || []);
   driverMoveRows.push(...fuelReportRows);
-  allocations.dailyDrivers.filter((day) => (day.is_training || day.payroll_only) && !fuelReportRows.some(row => row.labor_date === day.date && row.driver_name.toLowerCase() === String(day.driver).toLowerCase())).forEach((day) => driverMoveRows.push({
+  allocations.dailyDrivers.filter((day) => (day.is_training || day.payroll_only || day.helper_supported_labor_cost > 0 || day.helper_only) && !fuelReportRows.some(row => row.labor_date === day.date && row.driver_name.toLowerCase() === String(day.driver).toLowerCase())).forEach((day) => driverMoveRows.push({
     driver_name: day.driver, labor_date: day.date, move_order: "—", customer: "Labor",
-    report_service: day.is_training ? `Training labor with ${day.training_with || "assigned driver"}` : "Payroll labor — no finalized move",
+    report_service: day.helper_only || day.helper_supported_labor_cost > 0 ? "Helper driver labor" : day.is_training ? `Training labor with ${day.training_with || "assigned driver"}` : "Payroll labor — no finalized move",
     route: `${Number(day.paid || 0).toFixed(2)} paid hr · ${money(day.labor_cost || 0)}`,
-    start_time: "", end_time: "", run_hours: 0, gap_between_moves: "—", total_labor_cost: Number(day.labor_cost || 0), ticket_income: 0, income_less_labor: -Number(day.labor_cost || 0), is_labor_daily: true,
+    start_time: "", end_time: "", run_hours: 0, gap_between_moves: "—", total_labor_cost: Number(day.is_training || day.payroll_only ? day.labor_cost || 0 : (day.helper_supported_labor_cost || 0)+(day.helper_unsupported_labor_cost || 0)), ticket_income: 0, income_less_labor: -Number(day.is_training || day.payroll_only ? day.labor_cost || 0 : (day.helper_supported_labor_cost || 0)+(day.helper_unsupported_labor_cost || 0)), is_labor_daily: true,
   }));
   const loggedLaborRows = truckingApplyLoggedLabor(driverMoveRows, productMeta.truckingPayrollHours || [], productMeta.truckingDrivers || []);
   driverMoveRows.length = 0;
@@ -38542,6 +38582,7 @@ async function openTruckingDispatchFromRequest(requestNo) {
     <div class="dispatch-request-form">
     <div class="form-grid">
       <label>Trucking Driver<input name="driver_name" class="suggest-input" data-suggest-source="trucking_drivers" autocomplete="off" list="truckDriverOptions" placeholder="Search Trucking Driver" required><small>Select a user configured as Trucking Driver.</small></label>
+      <label>Helper Driver (optional)<input name="helper_driver_name" class="suggest-input" data-suggest-source="trucking_drivers" autocomplete="off" list="truckDriverOptions" placeholder="Select helper driver"><small>Hours follow the main driver's ticket times. Only the main driver completes the ticket.</small></label>
       <label>Dispatch Date<input type="date" name="move_date" value="${esc(truckingToday())}" required></label>
     </div>
     <div class="notice"><strong>Original Move Description:</strong><br>${esc(req.move_description || req.notes || "No move description was provided.")}</div>
@@ -38549,7 +38590,7 @@ async function openTruckingDispatchFromRequest(requestNo) {
       <div class="mini-grid truck-line-head truck-dispatch-head"><strong>Include</strong><strong>Requested Item</strong><strong>Service</strong><strong>Actual Truck / Equipment</strong><strong>Discount %</strong><strong>Origin</strong><strong>Destination</strong></div>
       ${reqLines.map((line) => `<div class="mini-grid truck-dispatch-line" data-line="${esc(line.line_no)}">
         <input type="checkbox" checked>
-        <span>${esc(line.equipment_label || req.service_needed || "Move item")}</span>
+        ${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea></label>' : '<span>'+esc(line.equipment_label || req.service_needed || "Move item")+'</span>'}
         <input list="truckServiceOptions" value="${esc(line.service || "")}">
         <input class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" placeholder="Type actual equipment, asset #, plate, serial, VIN, or location" autocomplete="off" inputmode="search">
         <input type="number" min="0" max="100" step="0.01" value="0" placeholder="Discount %">
@@ -38562,7 +38603,22 @@ async function openTruckingDispatchFromRequest(requestNo) {
   modalSave.style.display = "";
   modalSave.disabled = false;
   modalSave.textContent = "Dispatch";
-  modalSave.onclick = () => saveTruckingDispatch(req, reqLines);
+  modalSave.onclick = async () => {
+    if (modalSave.disabled) return;
+    modalSave.disabled = true;
+    try { await saveTruckingDispatch(req, reqLines); } catch(error) { alert(error.message || 'Could not dispatch.'); } finally { modalSave.disabled = false; }
+  };
+  if (isContainerMoveService({service:req.service_needed})) {
+    const add = document.createElement('button'); add.type='button'; add.textContent='Add container';
+    modalBody.querySelector('.truck-lines').append(add);
+    add.onclick=()=>{
+      const template=modalBody.querySelector('.truck-dispatch-line'); const clone=template.cloneNode(true);
+      const lineNo=Math.max(0,...(linesResult.data || []).map(line=>Number(line.line_no)),...reqLines.map(line=>Number(line.line_no)))+1;
+      clone.dataset.line=String(lineNo); clone.querySelector('[name=dispatch_container_no]').value=''; clone.querySelector('input[type=checkbox]').checked=true;
+      reqLines.push({...reqLines[0],id:undefined,line_no:lineNo,ticket_no:null,container_no:'',_newContainer:true});
+      add.before(clone); truckingEnhanceSuggestInputs(clone);
+    };
+  }
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   $("modal").style.display = "flex";
   truckingEnhanceSuggestInputs(modalBody);
@@ -38645,6 +38701,10 @@ async function saveTruckingDispatch(req, reqLines) {
   if (!driverName) return alert("Driver is required.");
   const driver = (productMeta.truckingDrivers || []).find((item) => item.name === driverName) || {};
   if (!driver.email) return alert("Select a user configured specifically as a Trucking Driver.");
+  const helperName = modalBody.querySelector('[name=helper_driver_name]')?.value.trim() || '';
+  const helper = (productMeta.truckingDrivers || []).find(item=>item.name === helperName);
+  if (helperName && !helper?.email) return alert('Select a helper configured as a Trucking Driver.');
+  if (helper && helper.email.toLowerCase() === driver.email.toLowerCase()) return alert('The main and helper driver must be different people.');
   let nextTicketNumber;
   try {
     nextTicketNumber = await createDispatchTicketNumberGenerator(req.request_no);
@@ -38659,6 +38719,8 @@ async function saveTruckingDispatch(req, reqLines) {
     if (!row.querySelector("input[type=checkbox]")?.checked) continue;
     const lineNo = Number(row.dataset.line || 0);
     const original = reqLines.find((line) => Number(line.line_no) === lineNo) || {};
+    const containerNo = row.querySelector('[name=dispatch_container_no]')?.value.trim() || original.container_no || '';
+    if (isContainerMoveService({service:req.service_needed}) && !containerNo) return alert('Enter a container number or To follow for each selected container.');
     const inputs = row.querySelectorAll("input");
     const service = inputs[1]?.value.trim() || original.service || "";
     const actualEquipmentInput = inputs[2]?.value.trim() || "";
@@ -38689,7 +38751,10 @@ async function saveTruckingDispatch(req, reqLines) {
       requested_by: req.requested_by,
       po_no: req.po_no,
       move_description: req.move_description || req.notes || "",
-      requested_equipment_label: original.equipment_label || "",
+      requested_equipment_label: containerNo ? [req.service_subcategory,req.service_size,containerNo].filter(Boolean).join(' | ') : original.equipment_label || "",
+      container_no: containerNo,
+      helper_driver_name: helper?.name || null,
+      helper_driver_email: helper?.email || null,
       asset_source: actualAsset.source || "",
       asset_tag: actualAsset.asset_tag || "",
       equipment_label: actualEquipment,
@@ -38733,6 +38798,16 @@ async function saveTruckingDispatch(req, reqLines) {
     updates.push({ lineNo, ticketNo });
   }
   if (!moveRows.length) return alert("Select at least one equipment line to dispatch.");
+  // Persist added container lines before their tickets; retain them on a failed dispatch for retry.
+  const newLines = moveRows.map(move=>({move,original:reqLines.find(line=>Number(line.line_no)===move.request_line_no)})).filter(({original})=>original?._newContainer);
+  if (newLines.length) {
+    const {error} = await supabase.from('trucking_request_lines').insert(newLines.map(({move})=>({request_no:req.request_no,line_no:move.request_line_no,container_no:move.container_no,equipment_label:move.requested_equipment_label,service:move.service,origin:move.origin,destination:move.destination,status:'Requested'})));
+    if (error) return alert(error.message || 'Could not save additional containers. Reopen dispatch and try again.');
+    newLines.forEach(({original})=>{ original._newContainer=false; });
+  }
+  const {data:existingTickets,error:existingError}=await supabase.from('trucking_moves').select('request_line_no,status').eq('request_no',req.request_no);
+  if (existingError) return alert(existingError.message);
+  if ((existingTickets || []).some(ticket=>! /cancel|void|revers/i.test(String(ticket.status || '')) && moveRows.some(move=>move.request_line_no===ticket.request_line_no))) return alert('A selected line already has a ticket. Reopen dispatch to see the remaining lines.');
   let insertError = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { error } = await supabase.from("trucking_moves").insert(moveRows);
@@ -38769,7 +38844,8 @@ async function saveTruckingDispatch(req, reqLines) {
     if (assetError) fleetUpdateErrors.push(`${move.asset_tag}: ${assetError.message || "Unknown error"}`);
   }
   for (const update of updates) {
-    await supabase.from("trucking_request_lines").update({ status: "Dispatched", ticket_no: update.ticketNo }).eq("request_no", req.request_no).eq("line_no", update.lineNo);
+    const savedMove = moveRows.find(move=>move.ticket_no===update.ticketNo);
+    await supabase.from("trucking_request_lines").update({ status: "Dispatched", ticket_no: update.ticketNo, container_no:savedMove?.container_no || null, equipment_label:savedMove?.requested_equipment_label || '' }).eq("request_no", req.request_no).eq("line_no", update.lineNo);
   }
   await supabase.from("trucking_requests").update({ status: "Dispatched" }).eq("request_no", req.request_no);
   closeModal();
@@ -38826,6 +38902,7 @@ async function openTruckingMoveForm(ticketNo = "") {
       <label>Jobsite<input name="jobsite" list="truckJobsiteOptions" value="${esc(existing?.jobsite || "")}"></label>
       <label>PO #<input name="po_no" value="${esc(existing?.po_no || "")}"></label>
       <label>Driver<select name="driver_name" required>${truckingDriverSelectOptions(existing?.driver_name || "")}</select><small>You can reassign this ticket if drivers swap.</small></label>
+      <label>Helper Driver (optional)<input name="helper_driver_name" class="suggest-input" data-suggest-source="trucking_drivers" value="${esc(existing?.helper_driver_name || "")}" placeholder="Select helper driver"><small>Uses main ticket times; does not own the ticket.</small></label>
       <label>Trip type<select name="trip_type"><option>One-Way</option><option>Round Trip</option></select></label>
       <label>Service<input name="service" list="truckServiceOptions" value="${esc(existing?.service || "")}"></label>
       <label>Equipment Requested<input value="${esc(requestedEquipment)}" readonly><small>Equipment listed on the original move request.</small></label>
@@ -38933,6 +39010,12 @@ async function saveTruckingMove() {
   }
   const driverChanged = !!existingMove
     && String(existingMove.driver_name || "").trim().toLowerCase() !== String(driver.name || "").trim().toLowerCase();
+  const helperName = String(payload.helper_driver_name || '').trim();
+  const helper = (productMeta.truckingDrivers || []).find(item=>item.name === helperName);
+  if (helperName && !helper?.email) return alert('Select a helper configured as a Trucking Driver.');
+  if (helper && helper.email.toLowerCase() === String(driver.email).toLowerCase()) return alert('The main and helper driver must be different people.');
+  payload.helper_driver_name = helper?.name || null;
+  payload.helper_driver_email = helper?.email || null;
   payload.driver_name = driver.name;
   payload.driver_email = driver.email || "";
   if (driverChanged) {
