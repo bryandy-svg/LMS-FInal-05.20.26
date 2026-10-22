@@ -6074,7 +6074,7 @@ async function emailSelectedAgingInvoices() {
   const customer = documents[0].customer || {};
   const email = normalizeEmailRecipients(customer.email || "");
   const invoiceDetails = documents.map(({ inv }) => {
-    const displayedInvoiceNo = inv._workOrder?.wo_no || (/work order/i.test(inv.type || "") && inv.source_ref ? inv.source_ref : inv.invoice_no);
+    const displayedInvoiceNo = inv.invoice_no;
     const workOrderNo = inv._workOrder?.wo_no || (/work order/i.test(inv.type || "") ? inv.source_ref || "" : "");
     return [
       `Invoice ${displayedInvoiceNo}`,
@@ -6537,6 +6537,7 @@ async function reconcileLegacyWorkOrderInvoiceNumbers(invoices = []) {
     /work order|repair/i.test(invoice.type || "")
     && invoice.source_ref
     && String(invoice.invoice_no || "") !== String(invoice.source_ref || "")
+    && !isWorkOrderInvoiceRevision(invoice.invoice_no, invoice.source_ref)
     && !/void|reversed/i.test(invoice.status || "")
   );
   if (!workOrderInvoices.length) return false;
@@ -26992,6 +26993,45 @@ async function appendIssueWorkNote(wo, issue, mechanic, note) {
   await supabase.from("work_order_issues").update({ work_notes }).eq("id", row.id);
 }
 
+
+function isWorkOrderInvoiceRevision(invoiceNo, workOrderNo) {
+  const base = String(workOrderNo || "");
+  const number = String(invoiceNo || "");
+  return Boolean(base && number.startsWith(base) && /^R(?:[1-9][0-9]*)?$/.test(number.slice(base.length)));
+}
+
+function nextWorkOrderInvoiceNumber(workOrderNo, invoices = []) {
+  const used = new Set(invoices.map(row => String(row.invoice_no || "")));
+  if (!used.has(workOrderNo)) return workOrderNo;
+  let index = -1;
+  for (const number of used) {
+    if (isWorkOrderInvoiceRevision(number, workOrderNo)) {
+      const suffix = number.slice(workOrderNo.length + 1);
+      index = Math.max(index, suffix ? Number(suffix) : 0);
+    }
+  }
+  return workOrderNo + "R" + (index < 0 ? "" : index + 1);
+}
+
+async function validateWorkOrderInvoiceRevisions(invoices) {
+  let latestDate = "";
+  for (const invoice of invoices) {
+    const { data, error } = await supabase.from("general_ledger").select("account,debit,credit,source,posting_date").eq("invoice_no", invoice.invoice_no);
+    if (error) throw error;
+    const rows = data || [];
+    const balances = new Map();
+    for (const row of rows) {
+      balances.set(row.account, (balances.get(row.account) || 0) + Math.round(Number(row.debit || 0)*100) - Math.round(Number(row.credit || 0)*100));
+      if (row.source === "Invoice Reversal") latestDate = [latestDate, row.posting_date || ""].sort().pop();
+    }
+    if (!rows.some(row => row.source === "Invoice Reversal") || [...balances.values()].some(value => value !== 0)) {
+      throw new Error("Invoice " + invoice.invoice_no + " is not fully reversed. Complete its reversal before creating a revision.");
+    }
+    latestDate = [latestDate, invoice.void_date || ""].sort().pop();
+  }
+  return latestDate;
+}
+
 async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) {
   const notify = message => { if (batch) throw new Error(message); alert(message); };
   const wo = workOrder || currentRows.find((row) => row.wo_no === woNo);
@@ -27010,7 +27050,7 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
     return;
   }
   await loadAccountingCloseDate(true);
-  const postingDate = nextOpenWorkOrderPostingDate(wo.posting_date || closingDate);
+  let postingDate = nextOpenWorkOrderPostingDate(wo.posting_date || closingDate);
   const products = productMeta.products?.length ? productMeta.products : await getAll("products");
   const lines = [
     ...(wo._parts || []).filter(isBillableWorkOrderPart).map((p) => {
@@ -27025,25 +27065,16 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
   }
   try {
     const existingInvoices = await getAll("invoices");
-    // Never overwrite a reversed invoice's original posting while its reversal
-    // remains in the ledger. Such invoices require an audited accounting revision.
-    const priorInvoice = existingInvoices.find((row) => row.invoice_no === wo.wo_no);
-    if (priorInvoice) {
-      const { data: reversals, error: reversalError } = await supabase.from("general_ledger")
-        .select("id").eq("invoice_no", wo.wo_no).eq("source", "Invoice Reversal").limit(1);
-      if (reversalError) throw reversalError;
-      if (reversals?.length || priorInvoice.void_date || /void|revers/i.test(priorInvoice.status || "")) {
-        throw new Error(`Invoice ${wo.wo_no} has reversal history. Accounting must post an audited invoice revision before it can be invoiced again; the original invoice and reversal have not been changed.`);
-      }
-    }
-    const incompleteInvoice = existingInvoices.find((invoiceRow) =>
-      String(invoiceRow.source_ref || "") === String(wo.wo_no || "")
-      && /work order/i.test(invoiceRow.type || "")
-      && !/paid|void|reversed/i.test(invoiceRow.status || "")
-    );
-    // A Work Order invoice keeps one identity from opening through invoicing.
-    // The Work Order # is also its Invoice #; never generate a second WO number.
-    const invoiceNo = wo.wo_no;
+    const relatedInvoices = existingInvoices.filter(row => String(row.source_ref || "") === String(wo.wo_no) && /work order/i.test(row.type || ""));
+    const reversedInvoices = relatedInvoices.filter(row => row.void_date || /void|revers/i.test(row.status || ""));
+    const activeInvoices = relatedInvoices.filter(row => !reversedInvoices.includes(row));
+    if (activeInvoices.length > 1 || activeInvoices.some(row => /paid/i.test(row.status || ""))) throw new Error("An active or paid invoice already exists for this work order. Review it before creating another invoice.");
+    const reversalDate = await validateWorkOrderInvoiceRevisions(reversedInvoices);
+    if (reversalDate && postingDate < reversalDate) postingDate = nextOpenWorkOrderPostingDate(reversalDate);
+    const incompleteInvoice = activeInvoices[0];
+    const invoiceNo = incompleteInvoice?.invoice_no || nextWorkOrderInvoiceNumber(wo.wo_no, existingInvoices);
+    const isRevision = isWorkOrderInvoiceRevision(invoiceNo, wo.wo_no);
+    if (isRevision && !reversedInvoices.length) throw new Error("The original invoice must be reversed before creating a revision.");
     const conflictingInvoice = existingInvoices.find((invoiceRow) =>
       String(invoiceRow.invoice_no || "") === String(invoiceNo)
       && String(invoiceRow.id || "") !== String(incompleteInvoice?.id || "")
@@ -27052,6 +27083,7 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
     if (conflictingInvoice) {
       throw new Error(`Invoice # ${invoiceNo} is already used by another transaction.`);
     }
+    await assertInvoiceHasNoReversalHistory(invoiceNo);
     const invoicePayload = {
       invoice_no: invoiceNo,
       invoice_date: postingDate,
@@ -27061,7 +27093,7 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
       source_ref: wo.wo_no,
       status: "Open",
       created_by: incompleteInvoice?.created_by || profile?.full_name || profile?.username || profile?.email || session?.user?.email || "User",
-      notes: `Work order invoice ${wo.wo_no}. Actual closing date: ${closingDate}. Accounting posting date: ${postingDate}.`,
+      notes: `Work order invoice ${wo.wo_no}.${isRevision ? " Revision " + invoiceNo + "; replaces reversed invoice(s): " + reversedInvoices.map(row => row.invoice_no).join(", ") + "." : ""} Actual closing date: ${closingDate}. Accounting posting date: ${postingDate}.`,
     };
     let invoice;
     if (incompleteInvoice?.id) {
@@ -27069,7 +27101,9 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
       if (error) throw error;
       invoice = data;
     } else {
-      invoice = await upsertOne("invoices", invoicePayload, "invoice_no");
+      const { data, error } = await supabase.from("invoices").insert(invoicePayload).select().single();
+      if (error) throw error;
+      invoice = data;
     }
     const { error: deleteLinesError } = await supabase.from("invoice_lines").delete().eq("invoice_id", invoice.id);
     if (deleteLinesError) throw deleteLinesError;
@@ -28340,7 +28374,7 @@ async function emailCustomerInvoice(invoiceNo) {
   const documentData = await loadCustomerInvoiceDocument(invoiceNo);
   if (!documentData) return alert(`Invoice ${invoiceNo} could not be loaded.`);
   const { inv, customer } = documentData;
-  const displayedInvoiceNo = inv._workOrder?.wo_no || inv.invoice_no;
+  const displayedInvoiceNo = inv.invoice_no;
   const workOrderNo = inv._workOrder?.wo_no || (/work order/i.test(inv.type || "") ? inv.source_ref || "" : "");
   const email = normalizeEmailRecipients(customer.email || "");
   const total = invoiceTotal(inv);

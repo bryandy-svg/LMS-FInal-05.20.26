@@ -27,3 +27,19 @@ for (const name of ['saveInvoiceModal','reverseInvoice','postInvoiceLedger']) as
   await assert.rejects(context.assertInvoiceHasNoReversalHistory('W1'),/Read failed/);
   console.log('PASS: inactive parts excluded, legitimate repeated SKUs retained, invoice/cost totals filtered, reversed invoices and failed reads block mutation.');
 })().catch(error=>{console.error(error);process.exitCode=1});
+
+const rev=vm.createContext({supabase:{from:()=>({select:()=>({eq:async()=>({data:rev.rows,error:rev.error})})})}});
+vm.runInContext(extract('isWorkOrderInvoiceRevision')+extract('nextWorkOrderInvoiceNumber')+extract('validateWorkOrderInvoiceRevisions'),rev);
+assert.equal(rev.nextWorkOrderInvoiceNumber('W1',[]),'W1');
+assert.equal(rev.nextWorkOrderInvoiceNumber('W1',[{invoice_no:'W1'}]),'W1R');
+assert.equal(rev.nextWorkOrderInvoiceNumber('W1',[{invoice_no:'W1'},{invoice_no:'W1R'}]),'W1R1');
+assert.equal(rev.nextWorkOrderInvoiceNumber('W1',[{invoice_no:'W1'},{invoice_no:'W1R'},{invoice_no:'W1R2'}]),'W1R3');
+assert.equal(rev.isWorkOrderInvoiceRevision('W100020R12','W100020'),true);
+assert.equal(rev.isWorkOrderInvoiceRevision('W1000200R','W100020'),false);
+(async()=>{
+ rev.rows=[{account:'AR',debit:100,credit:0,source:'Invoice',posting_date:'2026-10-01'},{account:'AR',debit:0,credit:100,source:'Invoice Reversal',posting_date:'2026-10-22'}];
+ assert.equal(await rev.validateWorkOrderInvoiceRevisions([{invoice_no:'W1'}]),'2026-10-22');
+ rev.rows[1].credit=90;await assert.rejects(rev.validateWorkOrderInvoiceRevisions([{invoice_no:'W1'}]),/not fully reversed/);
+ rev.rows=[];await assert.rejects(rev.validateWorkOrderInvoiceRevisions([{invoice_no:'W1'}]),/not fully reversed/);
+ rev.error=Error('Unavailable');await assert.rejects(rev.validateWorkOrderInvoiceRevisions([{invoice_no:'W1'}]),/Unavailable/);
+})().catch(error=>{console.error(error);process.exitCode=1});
