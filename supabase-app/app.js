@@ -34680,6 +34680,68 @@ async function saveTruckingRequest(previousNo = "") {
   renderFilteredTruckingRequests();
 }
 
+function truckingScheduleGroups(rows, date, assets = []) {
+  const groups = new Map();
+  const scheduled = rows.filter(row=>String(row.move_date || '').slice(0,10) === date && !/^(finalized|complete|completed|cancelled|canceled|void|voided|reversed)$/i.test(String(row.status || '').trim()) && !isManualTruckingTicket(row));
+  scheduled.sort((a,b)=>String(a.start_time || '99').localeCompare(String(b.start_time || '99')) || String(a.ticket_no || '').localeCompare(String(b.ticket_no || ''),undefined,{numeric:true}));
+  for (const row of scheduled) {
+    const asset = assets.find(item=>row.asset_tag && item.asset_tag === row.asset_tag && (!row.asset_source || item.source === row.asset_source));
+    const plate = row.truck_license || asset?.plate || 'Not recorded';
+    const main = String(row.driver_name || '').trim() || 'Unassigned driver';
+    const helper = String(row.helper_driver_name || '').trim();
+    for (const driver of [...new Set([main,helper].filter(Boolean))]) {
+      const key=driver.toLowerCase(); const group=groups.get(key) || {driver,tasks:[]};
+      group.tasks.push({customer:row.customer || 'Not recorded',plate,service:row.service || 'Not recorded',description:row.move_description || row.notes || row.requested_equipment_label || 'Not recorded',origin:row.origin || '',destination:row.destination || '',container:row.container_no || '',main,helper,isHelper:driver !== main});
+      groups.set(key,group);
+    }
+  }
+  return [...groups.values()].sort((a,b)=>a.driver.localeCompare(b.driver));
+}
+
+function truckingScheduleText(rows, date, assets = []) {
+  const label = new Date(date+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  const groups = truckingScheduleGroups(rows,date,assets);
+  const text = ['*Schedule for '+label+'*','Schedule is subject to change','*Uniform is Mandatory*'];
+  if (!groups.length) text.push('','No scheduled moves for this date.');
+  for (const group of groups) {
+    text.push('','*'+group.driver+'*');
+    group.tasks.forEach((task,index)=>{
+      text.push('','*Task '+(index+1)+'*','Customer: '+task.customer,'Plate #: '+task.plate,'Service: '+task.service,'Description of move: '+task.description);
+      if (task.origin || task.destination) text.push('Route: '+(task.origin || 'Not recorded')+' → '+(task.destination || 'Not recorded'));
+      if (task.container) text.push('Container #: '+task.container);
+      if (task.isHelper) text.push('Helper to: '+task.main+' (main driver completes the ticket)');
+      else if (task.helper) text.push('Helper driver: '+task.helper);
+    });
+  }
+  return text.join('\n');
+}
+
+async function openTruckingScheduleReport() {
+  await loadTruckingLookups({useCache:true});
+  const rows = productMeta.truckingMoves || [], assets=productMeta.truckingAssets || [];
+  modalTitle.textContent='Trucking Schedule Report';
+  modalBody.innerHTML='<div class="toolbar"><label>Schedule date<input type="date" id="truckingScheduleDate" value="'+esc(truckingToday())+'"></label><button type="button" id="truckingScheduleApply">Apply Report</button><button type="button" id="truckingScheduleCopy">Copy for WhatsApp</button><button type="button" id="truckingSchedulePrint">PDF / Print</button></div><p id="truckingScheduleStatus" role="status"></p><div id="truckingSchedulePreview" style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5"></div>';
+  modalSave.style.display='none'; $('modalCancel').textContent='Close'; $('modal').style.display='flex';
+  let text='';
+  const apply=()=>{
+    const date=$('truckingScheduleDate').value;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) { text=''; $('truckingSchedulePreview').textContent='Select a schedule date.'; return false; }
+    text=truckingScheduleText(rows,date,assets); $('truckingSchedulePreview').textContent=text.replace(/^\*(.*)\*$/gm,'$1'); $('truckingScheduleStatus').textContent=''; return true;
+  };
+  $('truckingScheduleApply').onclick=apply; $('truckingScheduleDate').onchange=apply;
+  $('truckingScheduleCopy').onclick=async()=>{
+    if(!apply()) return;
+    try {await navigator.clipboard.writeText(text);$('truckingScheduleStatus').textContent='Copied — paste into WhatsApp.';}
+    catch {const selection=window.getSelection(),range=document.createRange();range.selectNodeContents($('truckingSchedulePreview'));selection.removeAllRanges();selection.addRange(range);$('truckingScheduleStatus').textContent='Copy is unavailable. The report is selected; press Ctrl+C or use Copy.';}
+  };
+  $('truckingSchedulePrint').onclick=()=>{
+    if(!apply()) return;
+    const popup=openInAppDocumentWindow('Trucking Schedule'); if(!popup)return;
+    popup.document.write('<!doctype html><html><head><title>Trucking Schedule</title><style>@page{size:Letter landscape;margin:.4in}body{font:12px Arial;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body>'+esc(text.replace(/^\*(.*)\*$/gm,'$1'))+'</body></html>'); popup.document.close();setTimeout(()=>{popup.focus();popup.print();},150);
+  };
+  apply();
+}
+
 async function renderTruckingSchedulerView() {
   currentCfg = tableMap.trucking;
   $("viewTitle").textContent = isTruckingDriverUser() ? "My Scheduled Moves" : "Trucking Scheduler";
@@ -34709,7 +34771,7 @@ async function renderTruckingSchedulerView() {
     <section class="panel">
       <div class="panel-head">
         <div class="panel-title"><strong>${isTruckingDriverUser() ? "Assigned Moves" : "Dispatcher Scheduler"}</strong><span id="truckMoveCount"></span></div>
-        <div class="actions">${isTruckingDriverUser() ? "" : `<button onclick="exportRowsCsv(currentRows, 'trucking-moves.csv')">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" onclick="openTruckingMoveForm()">New ticket</button>`}</div>
+        <div class="actions">${isTruckingDriverUser() ? "" : `<button type="button" onclick="openTruckingScheduleReport()">Schedule Report</button><button onclick="exportRowsCsv(currentRows, 'trucking-moves.csv')">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" onclick="openTruckingMoveForm()">New ticket</button>`}</div>
       </div>
       <div id="truckMoveHost"></div>
     </section>
@@ -36573,7 +36635,7 @@ async function renderTruckingReportView() {
   const iso = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   const preferenceKey = "lms.truckingReport.preferences.v1";
   $("content").innerHTML = `<section class="panel trucking-report-panel"><div class="panel-head"><div class="panel-title"><strong>Trucking Performance Report</strong><span>Choose a day, week, or custom period and display daily detail or one consolidated covered-period report. No accounting entries.</span></div></div>
-    <div class="toolbar trucking-report-controls"><label>Period<select id="truckingReportPeriod"><option value="day">Day</option><option value="week" selected>Week</option><option value="custom">Custom Period</option></select></label><label>From<input type="date" id="truckingReportFrom" value="${iso(monday)}"></label><label>To<input type="date" id="truckingReportTo" value="${iso(sunday)}"></label><label>Report Type<select id="truckingReportType"><option value="daily">Daily Breakdown</option><option value="period" selected>Covered Period Summary</option></select></label><div class="trucking-report-section-control"><span>Report Sections</span><details id="truckingReportSection"><summary id="truckingReportSectionSummary">All Sections</summary><div class="trucking-report-section-menu"><label><input type="checkbox" value="all" checked>All Sections</label><label><input type="checkbox" value="dashboard">Dashboard Summary</label><label><input type="checkbox" value="reconciliation">Report Reconciliation</label><label><input type="checkbox" value="top_level">Top-Level Summary</label><label><input type="checkbox" value="fuel_pricing">Fuel Pricing Basis</label><label><input type="checkbox" value="day">Summary by Day</label><label><input type="checkbox" value="driver">Summary by Driver</label><label><input type="checkbox" value="driver_moves">Driver Move Chronology</label><label><input type="checkbox" value="trucking_moves">Trucking Move Chronology</label><label><input type="checkbox" value="trucking_simple">Simple Trucking Summary</label><label><input type="checkbox" value="customer">Summary by Customer</label><label><input type="checkbox" value="equipment">Summary by Service</label><label><input type="checkbox" value="jobsite">Summary by Jobsite</label><label><input type="checkbox" value="fuel">Fuel Usage & Pricing</label><label><input type="checkbox" value="pending_requests">Pending Move Requests</label><label><input type="checkbox" value="unscheduled_requests">Unscheduled Move Requests</label><label><input type="checkbox" value="detail">Ticket Detail</label></div></details></div><label>Print Paper<select id="truckingReportPaperSize"><option value="letter">Letter</option><option value="tabloid">11 × 17</option></select></label><button type="button" class="primary" id="applyTruckingReportBtn">Apply Report</button><button type="button" id="saveTruckingReportSetupBtn">Save Report Setup</button><button type="button" id="resetTruckingReportBtn">Reset Filters</button><button type="button" onclick="window.print()">PDF / Print</button></div>
+    <div class="toolbar trucking-report-controls"><label>Period<select id="truckingReportPeriod"><option value="day">Day</option><option value="week" selected>Week</option><option value="custom">Custom Period</option></select></label><label>From<input type="date" id="truckingReportFrom" value="${iso(monday)}"></label><label>To<input type="date" id="truckingReportTo" value="${iso(sunday)}"></label><label>Report Type<select id="truckingReportType"><option value="daily">Daily Breakdown</option><option value="period" selected>Covered Period Summary</option></select></label><div class="trucking-report-section-control"><span>Report Sections</span><details id="truckingReportSection"><summary id="truckingReportSectionSummary">All Sections</summary><div class="trucking-report-section-menu"><label><input type="checkbox" value="all" checked>All Sections</label><label><input type="checkbox" value="dashboard">Dashboard Summary</label><label><input type="checkbox" value="reconciliation">Report Reconciliation</label><label><input type="checkbox" value="top_level">Top-Level Summary</label><label><input type="checkbox" value="fuel_pricing">Fuel Pricing Basis</label><label><input type="checkbox" value="day">Summary by Day</label><label><input type="checkbox" value="driver">Summary by Driver</label><label><input type="checkbox" value="driver_moves">Driver Move Chronology</label><label><input type="checkbox" value="trucking_moves">Trucking Move Chronology</label><label><input type="checkbox" value="trucking_simple">Simple Trucking Summary</label><label><input type="checkbox" value="customer">Summary by Customer</label><label><input type="checkbox" value="equipment">Summary by Service</label><label><input type="checkbox" value="jobsite">Summary by Jobsite</label><label><input type="checkbox" value="fuel">Fuel Usage & Pricing</label><label><input type="checkbox" value="pending_requests">Pending Move Requests</label><label><input type="checkbox" value="unscheduled_requests">Unscheduled Move Requests</label><label><input type="checkbox" value="detail">Ticket Detail</label></div></details></div><label>Print Paper<select id="truckingReportPaperSize"><option value="letter">Letter</option><option value="tabloid">11 × 17</option></select></label><button type="button" onclick="openTruckingScheduleReport()">Schedule Report</button><button type="button" class="primary" id="applyTruckingReportBtn">Apply Report</button><button type="button" id="saveTruckingReportSetupBtn">Save Report Setup</button><button type="button" id="resetTruckingReportBtn">Reset Filters</button><button type="button" onclick="window.print()">PDF / Print</button></div>
     <div id="truckingManagementReportHost"></div></section>`;
   const reportTypeLabel = $("truckingReportType")?.closest("label");
   if (reportTypeLabel) reportTypeLabel.insertAdjacentHTML("afterend", '<label>Labor Columns<select id="truckingReportLaborColumns"><option value="total" selected>Total Labor only</option><option value="detailed">Detailed labor breakdown</option></select></label>');
