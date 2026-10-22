@@ -122,5 +122,6 @@
   "scheduled-driver-sync",
   "assigned-driver-loading",
   "schedule-report-button",
-  "ticket-editor-scope"
+  "ticket-editor-scope",
+  "schedule-date-loading"
 ]
