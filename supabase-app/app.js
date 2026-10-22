@@ -35087,7 +35087,7 @@ function assignedStandbyFitsClockTime(operational, startTime, endTime) {
 
 async function assignedDriverSnapshotIsCurrent(row) {
   const fresh=await readTruckingTicket(row.ticket_no);
-  const fields=['status','driver_email','helper_driver_email','service','equipment_label','asset_tag','requested_equipment_label','origin','destination','move_description','rate','rate_type','amount','discount_percent'];
+  const fields=['status','move_date','driver_email','helper_driver_email','service','equipment_label','asset_tag','requested_equipment_label','origin','destination','move_description','rate','rate_type','amount','discount_percent'];
   if(!fresh || fields.some(key=>String(fresh[key] ?? '')!==String(row[key] ?? ''))) {
     alert('Dispatch has changed this assignment. Reopen the task to load the latest details before saving.');
     return false;
