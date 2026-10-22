@@ -25029,8 +25029,8 @@ async function voidWorkOrder(woNo) {
       const asset = productMeta.assets?.find((a) => String(a.asset_tag || "").toLowerCase() === String(wo.asset_tag || "").toLowerCase());
       if (asset && String(asset.status || "") === wo.wo_no) {
         const { error } = await supabase.from("assets").update({
-          status: "For Repair",
-          notes: appendDatedNote(asset.notes, `${wo.wo_no} voided ${formatDisplayDate(details.voidDate)}. ${details.reason}`),
+          status: "Repair Request Cancelled",
+          notes: appendDatedNote(asset.notes, `[Repair request cancelled] ${wo.wo_no} voided ${formatDisplayDate(details.voidDate)}. ${details.reason}`),
         }).eq("asset_tag", wo.asset_tag);
         if (error) throw error;
       }
@@ -30578,9 +30578,12 @@ function assetStats(assets, workOrders) {
 
 let equipmentRepairQueueTab = 'pending';
 function repairQueueArchived(asset) {
-  const notes=String(asset.notes || '');
-  const cleared=notes.lastIndexOf('[Repair queue cleared 2026-10-01]');
-  return cleared>=0 && cleared>notes.toLowerCase().lastIndexOf('repair requested');
+  const notes = String(asset.notes || '');
+  const requested = notes.toLowerCase().lastIndexOf('repair requested');
+  const cleared = Math.max(notes.lastIndexOf('[Repair queue cleared 2026-10-01]'), notes.lastIndexOf('[Repair request cancelled]'));
+  const voids = [...notes.matchAll(/\bW[\w-]*\d+ voided \d{1,2}\/\d{1,2}\/\d{4}\./gi)];
+  const voided = voids.length ? voids[voids.length - 1].index : -1;
+  return Math.max(cleared, voided) >= 0 && Math.max(cleared, voided) > requested;
 }
 async function renderEquipmentRepairQueueView() {
   if (isDualRequestPortalUser()) return await renderEquipmentRepairRequestMobile();
@@ -41240,13 +41243,17 @@ function equipmentRepairQueueTable(rows) {
     <td>${badge(asset.status || "")}</td>
     <td>${esc(asset._openWo?.description || repairRequestText(asset) || "")}</td>
     <td>${asset._openWo ? badge(asset._openWo.wo_no || "") : ""}</td>
-    <td><div class="rowactions">${asset._openWo ? `<button class="rowbtn" type="button" data-open-wo="${esc(asset._openWo.wo_no)}">Open WO</button>` : `<button class="rowbtn primary" type="button" data-create-wo-asset="${esc(asset.asset_tag)}">Assign WO</button><button class="rowbtn" type="button" data-asset-operational="${esc(asset.asset_tag)}">Make operational</button>`}</div></td>
+    <td><div class="rowactions">${asset._openWo ? `<button class="rowbtn" type="button" data-open-wo="${esc(asset._openWo.wo_no)}">Open WO</button>` : `<button class="rowbtn" type="button" data-edit-repair-request="${esc(asset.asset_tag)}">Edit request</button><button class="rowbtn danger" type="button" data-cancel-repair-request="${esc(asset.asset_tag)}">Cancel request</button><button class="rowbtn primary" type="button" data-create-wo-asset="${esc(asset.asset_tag)}">Assign WO</button><button class="rowbtn" type="button" data-asset-operational="${esc(asset.asset_tag)}">Make operational</button>`}</div></td>
   </tr>`).join("") : `<tr><td colspan="${heads.length}" class="empty">No equipment repair requests are waiting for review.</td></tr>`}</tbody></table></div>`;
 }
 
 function repairRequestText(asset) {
   const text = String(asset.notes || "");
-  const match = text.match(/Repair requested[^:]*:\s*([^|]+)/i);
+  const edits = [...text.matchAll(/\[Repair request edited\] Issue: ([^\n]+)/g)];
+  const lastRequest = text.toLowerCase().lastIndexOf('repair requested');
+  if (edits.length && edits[edits.length - 1].index > lastRequest) return edits[edits.length - 1][1].trim();
+  const latest = lastRequest >= 0 ? text.slice(lastRequest) : text;
+  const match = latest.match(/Repair requested.*?:\s+([\s\S]*?)(?: \| Requestor email:|$)/i);
   return match ? match[1].trim() : text;
 }
 
@@ -41259,6 +41266,8 @@ function renderFilteredEquipmentRepairQueue() {
 }
 
 function bindEquipmentRepairQueue() {
+  document.querySelectorAll('[data-edit-repair-request]').forEach(button => button.onclick = () => editPendingRepairRequest(button.dataset.editRepairRequest));
+  document.querySelectorAll('[data-cancel-repair-request]').forEach(button => button.onclick = () => cancelPendingRepairRequest(button.dataset.cancelRepairRequest));
   document.querySelectorAll("[data-repair-po-view]").forEach(button => button.onclick = () => openRepairPoFiles(button.dataset.repairPoView));
   document.querySelectorAll("[data-create-wo-asset]").forEach((b) => b.onclick = () => openNewWorkOrderModal({ assetTag: b.dataset.createWoAsset, description: repairRequestText(currentRows.find((a) => a.asset_tag === b.dataset.createWoAsset)) }));
   document.querySelectorAll("[data-asset-operational]").forEach((b) => b.onclick = () => markAssetOperational(b.dataset.assetOperational));
@@ -41269,6 +41278,53 @@ function bindEquipmentRepairQueue() {
     });
   });
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
+}
+
+async function updatePendingRepairRequest(asset, changes) {
+  const { data: orders, error: orderError } = await supabase.from('work_orders').select('wo_no,status,invoice_no').eq('asset_tag', asset.asset_tag);
+  if (orderError) throw orderError;
+  if ((orders || []).some(wo => !/void|cancel|closed|complete|invoiced/i.test(wo.status || '') && !wo.invoice_no)) throw new Error('This equipment now has an active work order. Refresh and edit the work order instead.');
+  let query = supabase.from('assets').update({ ...changes, last_update_date: localToday() }).eq('id', asset.id);
+  query = asset.notes == null ? query.is('notes', null) : query.eq('notes', asset.notes);
+  query = asset.status == null ? query.is('status', null) : query.eq('status', asset.status);
+  const { data, error } = await query.select('id');
+  if (error) throw error;
+  if (!data?.length) throw new Error('This request changed. Refresh before editing or cancelling it.');
+}
+
+function editPendingRepairRequest(assetTag) {
+  const asset = currentRows.find(row => row.asset_tag === assetTag);
+  if (!asset || asset._openWo || asset._completedWo) return;
+  const fields = [['requested_by','Requested by',asset.requested_by],['assigned_operator','Operator',asset.assigned_operator],['location','Location',asset.location],['repair_po_no','PO #',asset.repair_po_no]];
+  editing = null;
+  $('modalTitle').textContent = 'Edit repair request ' + asset.asset_tag;
+  $('modalBody').innerHTML = '<div class="form-grid">' + fields.map(([key,label,value]) => '<div class="field"><label>' + label + '</label><input data-repair-edit="' + key + '" value="' + esc(value || '') + '"></div>').join('') + '<div class="field wide"><label>Issue / request</label><textarea data-repair-edit="issue">' + esc(repairRequestText(asset)) + '</textarea></div></div>';
+  $('modalSave').textContent = 'Save request';
+  $('modalCancel').textContent = 'Cancel';
+  $('modal').style.display = 'flex';
+  $('modalSave').onclick = async () => {
+    const values = {};
+    document.querySelectorAll('[data-repair-edit]').forEach(field => values[field.dataset.repairEdit] = field.value.trim());
+    if (!values.issue || !values.requested_by) throw new Error('Requested by and issue are required.');
+    const issue = values.issue.replace(/\r?\n/g, ' ');
+    delete values.issue;
+    await updatePendingRepairRequest(asset, { ...values, notes: appendDatedNote(asset.notes, '[Repair request edited] Issue: ' + issue) });
+    closeModal(true);
+    await renderEquipmentRepairQueueView();
+  };
+}
+
+async function cancelPendingRepairRequest(assetTag) {
+  const asset = currentRows.find(row => row.asset_tag === assetTag);
+  if (!asset || asset._openWo || asset._completedWo) return;
+  const reason = prompt('Reason for cancelling repair request ' + asset.asset_tag + ':');
+  if (reason == null) return;
+  if (!reason.trim()) return alert('A cancellation reason is required.');
+  if (!confirm('Cancel this repair request? It will leave the pending queue. Its history and PO files will be retained.')) return;
+  try {
+    await updatePendingRepairRequest(asset, { status: 'Repair Request Cancelled', notes: appendDatedNote(asset.notes, '[Repair request cancelled] ' + reason.trim()) });
+    await renderEquipmentRepairQueueView();
+  } catch (error) { alert(error.message || error); }
 }
 
 async function markAssetOperational(assetTag) {
