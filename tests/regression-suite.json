@@ -121,5 +121,6 @@
   "trucking-schedule-report",
   "scheduled-driver-sync",
   "assigned-driver-loading",
-  "schedule-report-button"
+  "schedule-report-button",
+  "ticket-editor-scope"
 ]
