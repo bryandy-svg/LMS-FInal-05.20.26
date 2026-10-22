@@ -34743,41 +34743,65 @@ function truckingScheduleText(rows, date, assets = []) {
   return text.join('\n');
 }
 
-async function openTruckingScheduleReport() {
-  modalTitle.textContent='Trucking Schedule Report';
-  modalBody.innerHTML='<p role="status">Loading schedule details…</p>';
-  modalSave.style.display='none'; $('modalCancel').textContent='Close'; $('modal').style.display='flex';
-  const loadingNode=modalBody.firstElementChild;
-  try { await loadTruckingLookups({useCache:true}); }
-  catch(error) {
-    if(modalBody.firstElementChild!==loadingNode || $('modal').style.display==='none') return;
-    modalBody.innerHTML='<p role="alert">Could not load schedule details. '+esc(error.message || error)+'</p><button type="button" id="retryTruckingSchedule">Retry</button>';
-    $('retryTruckingSchedule').onclick=()=>openTruckingScheduleReport();
-    return;
+async function readTruckingScheduleDate(date, signal) {
+  const columns='id,ticket_no,move_date,status,start_time,driver_name,helper_driver_name,customer,truck_license,asset_tag,asset_source,service,move_description,notes,requested_equipment_label,origin,destination,container_no,imported_final_ticket,import_source,import_batch';
+  const rows=[];
+  for(let offset=0;;offset+=200) {
+    const {data,error}=await supabase.from('trucking_moves').select(columns).eq('move_date',date)
+      .or('status.is.null,status.not.in.(Finalized,Completed,Cancelled,Canceled,Void,Voided,Reversed)')
+      .order('id',{ascending:true}).range(offset,offset+199).abortSignal(signal);
+    if(error) throw error;
+    rows.push(...(data || []));
+    if((data || []).length<200) break;
   }
-  if(modalBody.firstElementChild!==loadingNode || $('modal').style.display==='none') return;
-  const rows = productMeta.truckingMoves || [], assets=productMeta.truckingAssets || [];
+  const active=rows.filter(row=>!isManualTruckingTicket(row));
+  const assets=[];
+  for(const [table,key,source] of [['assets','asset_tag','Fleet'],['outside_customer_fleet','reference','Outside']]) {
+    const tags=[...new Set(active.filter(row=>!row.truck_license && row.asset_tag && (!row.asset_source || row.asset_source===source)).map(row=>row.asset_tag))];
+    for(let i=0;i<tags.length;i+=100) {
+      const {data,error}=await supabase.from(table).select(key+',plate').in(key,tags.slice(i,i+100)).abortSignal(signal);
+      if(error) throw error;
+      assets.push(...(data || []).map(asset=>({asset_tag:asset[key],plate:asset.plate,source})));
+    }
+  }
+  return {rows:active,assets};
+}
+
+async function openTruckingScheduleReport() {
   modalTitle.textContent='Trucking Schedule Report';
   modalBody.innerHTML='<div class="toolbar"><label>Schedule date<input type="date" id="truckingScheduleDate" value="'+esc(truckingToday())+'"></label><button type="button" id="truckingScheduleApply">Apply Report</button><button type="button" id="truckingScheduleCopy">Copy for WhatsApp</button><button type="button" id="truckingSchedulePrint">PDF / Print</button></div><p id="truckingScheduleStatus" role="status"></p><div id="truckingSchedulePreview" style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5"></div>';
   modalSave.style.display='none'; $('modalCancel').textContent='Close'; $('modal').style.display='flex';
-  let text='';
-  const apply=()=>{
-    const date=$('truckingScheduleDate').value;
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) { text=''; $('truckingSchedulePreview').textContent='Select a schedule date.'; return false; }
-    text=truckingScheduleText(rows,date,assets); $('truckingSchedulePreview').textContent=text.replace(/^\*(.*)\*$/gm,'$1'); $('truckingScheduleStatus').textContent=''; return true;
+  const dateInput=$('truckingScheduleDate'), preview=$('truckingSchedulePreview'), status=$('truckingScheduleStatus');
+  const copy=$('truckingScheduleCopy'), print=$('truckingSchedulePrint');
+  let text='', loadedDate='', generation=0, controller;
+  const apply=async()=>{
+    const run=++generation; controller?.abort(); controller=new AbortController();
+    const date=dateInput.value; text=''; loadedDate=''; copy.disabled=true; print.disabled=true;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) {preview.textContent='Select a schedule date.';status.textContent='';return;}
+    preview.textContent='';status.textContent='Loading schedule details…';
+    const activeController=controller;
+    const timer=setTimeout(()=>activeController.abort(),20000);
+    try {
+      const {rows,assets}=await readTruckingScheduleDate(date,activeController.signal);
+      if(run!==generation || !preview.isConnected || $('modal').style.display==='none') return;
+      text=truckingScheduleText(rows,date,assets);loadedDate=date;
+      preview.textContent=text.replace(/^\*(.*)\*$/gm,'$1');status.textContent='';copy.disabled=false;print.disabled=false;
+    } catch(error) {
+      if(run===generation && preview.isConnected) status.textContent='Could not load schedule details. '+(error.message || 'Please retry.')+' Click Apply Report to retry.';
+    } finally {clearTimeout(timer);}
   };
-  $('truckingScheduleApply').onclick=apply; $('truckingScheduleDate').onchange=apply;
-  $('truckingScheduleCopy').onclick=async()=>{
-    if(!apply()) return;
-    try {await navigator.clipboard.writeText(text);$('truckingScheduleStatus').textContent='Copied — paste into WhatsApp.';}
-    catch {const selection=window.getSelection(),range=document.createRange();range.selectNodeContents($('truckingSchedulePreview'));selection.removeAllRanges();selection.addRange(range);$('truckingScheduleStatus').textContent='Copy is unavailable. The report is selected; press Ctrl+C or use Copy.';}
+  $('truckingScheduleApply').onclick=apply;dateInput.onchange=apply;
+  copy.onclick=async()=>{
+    if(!text || loadedDate!==dateInput.value)return;
+    try {await navigator.clipboard.writeText(text);status.textContent='Copied — paste into WhatsApp.';}
+    catch {const selection=window.getSelection(),range=document.createRange();range.selectNodeContents(preview);selection.removeAllRanges();selection.addRange(range);status.textContent='Copy is unavailable. The report is selected; press Ctrl+C or use Copy.';}
   };
-  $('truckingSchedulePrint').onclick=()=>{
-    if(!apply()) return;
+  print.onclick=()=>{
+    if(!text || loadedDate!==dateInput.value)return;
     const popup=openInAppDocumentWindow('Trucking Schedule'); if(!popup)return;
     popup.document.write('<!doctype html><html><head><title>Trucking Schedule</title><style>@page{size:Letter landscape;margin:.4in}body{font:12px Arial;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body>'+esc(text.replace(/^\*(.*)\*$/gm,'$1'))+'</body></html>'); popup.document.close();setTimeout(()=>{popup.focus();popup.print();},150);
   };
-  apply();
+  await apply();
 }
 
 async function renderTruckingSchedulerView() {
