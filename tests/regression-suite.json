@@ -119,5 +119,6 @@
   "dispatch-helper-containers",
   "dispatch-save-button",
   "trucking-schedule-report",
-  "scheduled-driver-sync"
+  "scheduled-driver-sync",
+  "assigned-driver-loading"
 ]

@@ -5217,6 +5217,7 @@ async function loadView(view, listOptions = {}) {
   }
   try {
     if (view === "truckinglabor") return await renderTruckingLaborDetailsView();
+    if (view === "truckingassigned") return await renderAssignedDriverView();
     void ensurePartyMasterSuggestRows().catch(error => console.warn("Party suggestions unavailable", error));
     if (view === "requestportal") return await renderRequestPortalHome();
     if (view === "dashboard") return await renderDashboard();
@@ -5253,7 +5254,6 @@ async function loadView(view, listOptions = {}) {
     if (view === "truckingrequests") return await renderTruckingRequestsView();
     if (view === "truckingquotes") return await renderTruckingQuotationsView();
     if (view === "trucking") return await renderTruckingSchedulerView();
-    if (view === "truckingassigned") return await renderAssignedDriverView();
     if (view === "truckingticketentry") return await renderTruckingTicketEntryView();
     if (view === "truckingtickets") return await renderTruckingTicketsView();
     if (view === "truckingreport") return await renderTruckingReportView();
@@ -34890,12 +34890,51 @@ function truckingMoveBelongsToCurrentDriver(row) {
   return Boolean(currentName && currentName === String(row.driver_name || "").trim().toLowerCase());
 }
 
+async function readAssignedDriverRows() {
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),20000);
+  const rows=[];
+  const columns='id,ticket_no,request_no,move_date,status,driver_name,driver_email,customer,equipment_label,origin,destination,move_description,notes,imported_final_ticket,import_source,import_batch';
+  const driverOnly=isTruckingDriverUser();
+  const email=String(profile?.email || session?.user?.email || '').trim().toLowerCase();
+  const name=String(profile?.full_name || profile?.username || '').trim();
+  // Quote PostgREST values and escape LIKE wildcards so identities are exact matches.
+  const literal=value=>JSON.stringify(value.replace(/[\\%_]/g, match=>'\\'+match));
+  try {
+    if(driverOnly && !email && !name) return [];
+    for(let offset=0;;offset+=200) {
+      let query=supabase.from('trucking_moves').select(columns)
+        .or('status.is.null,status.not.in.(Finalized,Completed,Cancelled,Canceled,Void,Voided,Reversed)');
+      if(driverOnly) {
+        const clauses=[];
+        if(email) clauses.push('driver_email.ilike.'+literal(email));
+        if(name && email) {
+          clauses.push('and(driver_email.is.null,driver_name.ilike.'+literal(name)+')');
+          clauses.push('and(driver_email.eq."",driver_name.ilike.'+literal(name)+')');
+        } else if(name) clauses.push('driver_name.ilike.'+literal(name));
+        query=query.or(clauses.join(','));
+      }
+      const {data,error}=await query.order('move_date',{ascending:true}).order('id',{ascending:true}).range(offset,offset+199).abortSignal(controller.signal);
+      if(error) throw error;
+      rows.push(...(data || []));
+      if((data || []).length<200) break;
+    }
+    return rows.filter(row=>!isManualTruckingTicket(row) && !/^(finalized|completed|cancelled|canceled|void|voided|reversed)$/i.test(String(row.status || '')) && (!driverOnly || truckingMoveBelongsToCurrentDriver(row)));
+  } finally { clearTimeout(timer); }
+}
+
 async function renderAssignedDriverView() {
   $("viewTitle").textContent = "Assigned Driver";
   $("viewSub").textContent = "Driver assignments waiting for completion and required signatures.";
-  let rows = await getViewRows("trucking_moves").catch(() => []);
-  rows = rows.filter((row) => !isManualTruckingTicket(row) && !["Finalized", "Cancelled"].includes(row.status || ""));
-  if (isTruckingDriverUser()) rows = rows.filter(truckingMoveBelongsToCurrentDriver);
+  let rows;
+  try { rows=await readAssignedDriverRows(); }
+  catch(error) {
+    if(currentView!=='truckingassigned') return;
+    $('content').innerHTML='<div class="notice" role="alert">Could not load assignments. '+esc(error.message || 'Please retry.')+' <button type="button" id="retryAssignedDriver">Retry</button></div>';
+    $('retryAssignedDriver').onclick=()=>renderAssignedDriverView();
+    return;
+  }
+  if(currentView!=='truckingassigned') return;
   currentRows = rows.sort((a, b) => String(a.move_date || "").localeCompare(String(b.move_date || "")) || String(a.ticket_no || "").localeCompare(String(b.ticket_no || "")));
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="assignedDriverSearch" placeholder="Search assignment, customer, equipment, origin, destination"></div>
