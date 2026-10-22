@@ -38603,11 +38603,8 @@ async function openTruckingDispatchFromRequest(requestNo) {
   modalSave.style.display = "";
   modalSave.disabled = false;
   modalSave.textContent = "Dispatch";
-  modalSave.onclick = async () => {
-    if (modalSave.disabled) return;
-    modalSave.disabled = true;
-    try { await saveTruckingDispatch(req, reqLines); } catch(error) { alert(error.message || 'Could not dispatch.'); } finally { modalSave.disabled = false; }
-  };
+  // The shared modal save handler owns validation and duplicate-click protection.
+  modalSave.onclick = () => saveTruckingDispatch(req, reqLines);
   if (isContainerMoveService({service:req.service_needed})) {
     const add = document.createElement('button'); add.type='button'; add.textContent='Add container';
     modalBody.querySelector('.truck-lines').append(add);

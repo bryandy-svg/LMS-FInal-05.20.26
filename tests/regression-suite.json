@@ -116,5 +116,6 @@
   "repair-po-upload",
   "check-full-reversal",
   "pending-trucking-report",
-  "dispatch-helper-containers"
+  "dispatch-helper-containers",
+  "dispatch-save-button"
 ]
