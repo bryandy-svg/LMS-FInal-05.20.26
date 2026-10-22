@@ -10,6 +10,11 @@ vm.runInContext(functions(['truckingRequestTickets','openScheduledRequestTickets
  const stale={ticket_no:'T1',status:'Scheduled',equipment_label:'Old truck',service:'Flatbed'};
  result={...stale};assert.equal(await ctx.assignedDriverSnapshotIsCurrent(stale),true);
  result={...stale,equipment_label:'2235CV',service:'Equipment Move'};assert.equal(await ctx.assignedDriverSnapshotIsCurrent(stale),false);assert.match(alerts.pop(),/Dispatch has changed/);
+ result={...stale,move_date:'2026-10-26'};assert.equal(await ctx.assignedDriverSnapshotIsCurrent({...stale,move_date:'2026-10-23'}),false);
+ result={...stale,driver_email:'new@driver.test'};assert.equal(await ctx.assignedDriverSnapshotIsCurrent({...stale,driver_email:'old@driver.test'}),false);
+ vm.runInContext(functions(['truckingMoveBelongsToCurrentDriver']),ctx);
+ ctx.profile={email:'new@driver.test',full_name:'New Driver'};assert.equal(ctx.truckingMoveBelongsToCurrentDriver(result),true);
+ ctx.profile={email:'old@driver.test',full_name:'Old Driver'};assert.equal(ctx.truckingMoveBelongsToCurrentDriver(result),false);
  result=null;assert.equal(await ctx.assignedDriverSnapshotIsCurrent(stale),false);
  // A dispatched request must be rejected before reading form values or performing any write.
  ctx.truckingRequestTickets=async()=>[{ticket_no:'T1'}];vm.runInContext(functions(['saveTruckingRequest']),ctx);await ctx.saveTruckingRequest('R1');assert.match(alerts.pop(),/linked assignment/);
