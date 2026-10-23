@@ -27411,16 +27411,33 @@ function paidInvoiceStampText(inv) {
   return invoiceTotal(inv) > 0 && invoiceBalance(inv) <= 0.005 ? "PAID" : "";
 }
 
+async function loadInvoiceEditorContext(inv) {
+  const [lines, orders] = await Promise.all([
+    Array.isArray(inv?._lines) ? inv._lines : inv?.id ? workOrderScopedRows('invoice_lines', 'invoice_id', [inv.id]) : [],
+    inv?._salesOrder ? [inv._salesOrder] : inv?.source_ref && /parts sales|customer deposit/i.test(inv.type || '') ? workOrderScopedRows('sales_orders', 'order_no', [inv.source_ref]) : [],
+  ]);
+  await hydrateLineProducts(lines);
+  return { lines, salesOrder: orders[0] || null };
+}
+
 async function openInvoiceModal(inv = null, forceReadOnly = false) {
-  await ensureListEditorProducts();
-  productMeta.products = await getAll("products");
+  $('modalTitle').textContent = inv ? 'Loading invoice ' + inv.invoice_no : 'New customer invoice';
+  $('modalBody').innerHTML = '<p role="status">Loading invoice details…</p>';
+  const loadingNode = $('modalBody').firstElementChild;
+  $('modalSave').disabled = true;
+  $('modalSave').onclick = null;
+  $('modalCancel').textContent = 'Close';
+  $('modal').style.display = 'flex';
+  try {
+  const context = await loadInvoiceEditorContext(inv);
+  if (!loadingNode.isConnected || $('modal').style.display === 'none') return;
+  if (inv) inv = { ...inv, _lines: context.lines };
+  $('modalSave').disabled = false;
+  $('modalSave').textContent = 'Save';
+  $('modalCancel').textContent = 'Cancel';
   const readOnly = Boolean(inv && (forceReadOnly || /paid|void|reversed/i.test(invoiceDisplayStatus(inv))));
   editing = inv;
-  let linkedSourceSalesOrder = inv?._salesOrder || null;
-  if (inv?.source_ref && !linkedSourceSalesOrder && /parts sales|customer deposit/i.test(inv.type || "")) {
-    const orders = await getAll("sales_orders").catch(() => []);
-    linkedSourceSalesOrder = orders.find((order) => String(order.order_no || "") === String(inv.source_ref || "")) || null;
-  }
+  const linkedSourceSalesOrder = context.salesOrder;
   const displayedCustomerPo = inv?.customer_po || salesOrderInvoicePoReference(linkedSourceSalesOrder || {});
   const initialPaymentMode = inv?.payment_mode || linkedSourceSalesOrder?.payment_mode || "PO";
   const initialReferenceLabel = paymentReferencePrintLabel(initialPaymentMode);
@@ -27462,6 +27479,13 @@ async function openInvoiceModal(inv = null, forceReadOnly = false) {
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => quickCreateCustomerInOpenModal());
   document.querySelectorAll("[data-invoice-source-open]").forEach((button) => button.onclick = () => openInvoiceSourceOverlay(button.dataset.invoiceSourceOpen));
   if (readOnly) setInvoiceModalReadOnly(inv);
+  } catch (error) {
+    if (!loadingNode.isConnected || $('modal').style.display === 'none') return;
+    $('modalBody').innerHTML = '<p role="alert">Could not load this invoice. ' + esc(error.message || error) + '</p>';
+    $('modalSave').textContent = 'Retry';
+    $('modalSave').disabled = false;
+    $('modalSave').onclick = () => openInvoiceModal(inv, forceReadOnly);
+  }
 }
 
 async function openInvoiceSourceOverlay(sourceReference) {
