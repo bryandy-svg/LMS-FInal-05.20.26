@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+const c=vm.createContext({});vm.runInContext(functions(['sortTruckingSchedulerRows']),c);
+let result;const rows=['10','2','1'].map(value=>({cells:[{dataset:{filterValue:value}}]}));
+const body={rows,append:(...items)=>result=items.map(row=>row.cells[0].dataset.filterValue)};
+const wrap={dataset:{sortColumn:'0',sortDirection:'1'},querySelector:()=>body};
+c.sortTruckingSchedulerRows(wrap);assert.deepEqual(result,['1','2','10']);wrap.dataset.sortDirection='-1';c.sortTruckingSchedulerRows(wrap);assert.deepEqual(result,['10','2','1']);
+assert.match(functions(['renderTruckingSchedulerView']),/if \(\$\("truckMoveHost"\)\)/);
+assert.match(functions(['installModulePeriodControls']),/state.view==='trucking' && \$\('modulePeriodControls'\)/);
+assert.match(functions(['truckingMoveTable']),/multiFilters: true/);
+assert.match(functions(['updateTruckingSchedulerTable']),/box.checked = allSelected/);
+console.log('Scheduler numeric sorting and stable control refresh wiring passed');
