@@ -128,5 +128,6 @@
   "invoice-editor-loading",
   "invoice-header-transfer",
   "aging-batch-payment",
-  "direct-ap-open-period"
+  "direct-ap-open-period",
+  "direct-ap-reposted-vendor"
 ]
