@@ -11137,7 +11137,58 @@ function showAccountDrill(data, account) {
   document.querySelectorAll(".column-filter").forEach((input) => input.oninput = applyColumnFilters);
 }
 
+function financialExportSnapshot() {
+  const report = document.querySelector('#accountingTableHost .financial-report');
+  if (!report) return null;
+  const copy = report.cloneNode(true);
+  copy.querySelectorAll('.statement-drill-row, .financial-report-help, .statement-caret, input, select').forEach(node => node.remove());
+  copy.querySelectorAll('button').forEach(button => button.replaceWith(document.createTextNode(button.textContent.trim())));
+  copy.querySelectorAll('tr[hidden]').forEach(row => row.remove());
+  return copy;
+}
+
+function financialExportHtml(report) {
+  const title = report.querySelector('h2')?.textContent || 'Financial Report';
+  return '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(title)+'</title><style>' +
+    '@page{size:Letter portrait;margin:16mm}*{box-sizing:border-box}body{font:11px Arial,sans-serif;color:#172638;margin:0 auto;max-width:760px;padding:24px;background:white}.financial-report-header{text-align:center;border-bottom:3px solid #175c68;padding-bottom:14px;margin-bottom:20px}.financial-company{font-size:13px;letter-spacing:2px;text-transform:uppercase;color:#175c68}h2{font-size:24px;margin:8px 0}header small{display:block;color:#657381;margin-top:6px}table{width:100%;border-collapse:collapse;table-layout:fixed}td,th{padding:6px 10px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid #e4e9ee}td:first-child,th:first-child{width:72%}.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}.statement-section-title,.trial-balance-section{background:#dfecef;color:#175c68;font-size:13px}.statement-subsection-title{background:#f2f6f8}.statement-account-row td:first-child{padding-left:22px}.statement-subsection-total,.statement-subtotal,.trial-balance-subtotal{font-weight:bold;border-top:1px solid #899ba5}.statement-key-total,.statement-grand-total,tfoot{font-weight:bold;background:#eaf2f4;border-top:2px solid #175c68}.statement-balance-check{font-size:10px;color:#526579}.trial-balance-report td:first-child,.trial-balance-report th:first-child{width:44%}.trial-balance-report td:nth-child(2){width:24%}thead{display:table-header-group}tfoot{display:table-row-group}tr{break-inside:avoid}.statement-section-title,.statement-subsection-title,.trial-balance-section{break-after:avoid}@media print{body{padding:0;max-width:none}*{print-color-adjust:exact}}' +
+    '</style></head><body>'+report.outerHTML+'</body></html>';
+}
+
+async function exportFinancialWorkbook(report) {
+  const title = report.querySelector('h2')?.textContent.trim() || 'Financial Report';
+  const header = report.querySelector('header');
+  const headings = [...(header?.children || [])].map(node => node.textContent.trim());
+  const data = headings.map(text => [text]);
+  data.push([]);
+  const merges = [];
+  let width = 2;
+  report.querySelectorAll('table > thead > tr, table > tbody > tr, table > tfoot > tr').forEach(tr => {
+    const row = [];
+    [...tr.children].forEach(cell => {
+      const text = cell.textContent.trim();
+      const numeric = cell.classList.contains('num') && text !== '';
+      const value = numeric ? Number(text.replace(/[$,]/g,'').replace(/^\((.*)\)$/,'-$1')) : text;
+      const col = row.length;
+      row.push(numeric && Number.isFinite(value) ? value : text);
+      const span = Number(cell.colSpan || 1);
+      if (span > 1) { merges.push({s:{r:data.length,c:col},e:{r:data.length,c:col+span-1}}); for(let i=1;i<span;i++) row.push(null); }
+    });
+    width = Math.max(width,row.length); data.push(row);
+  });
+  const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs');
+  const sheet = XLSX.utils.aoa_to_sheet(data);
+  for(let r=0;r<headings.length;r++) merges.push({s:{r,c:0},e:{r,c:width-1}});
+  sheet['!merges']=merges;
+  sheet['!cols']=Array.from({length:width},(_,i)=>({wch:i===0?58:width===4&&i===1?24:22}));
+  sheet['!rows']=data.map((_,i)=>({hpt:i<headings.length?24:20}));
+  Object.keys(sheet).filter(key=>!key.startsWith('!')).forEach(key=>{if(sheet[key].t==='n')sheet[key].z='#,##0.00;[Red](#,##0.00);"-"';});
+  const workbook=XLSX.utils.book_new();XLSX.utils.book_append_sheet(workbook,sheet,title.slice(0,31));
+  XLSX.writeFile(workbook,title.replace(/\s+/g,'-')+'-'+today()+'.xlsx');
+}
+
 function exportAccountingCsv() {
+  const financial = financialExportSnapshot();
+  if (financial) return exportFinancialWorkbook(financial).catch(error => alert('Unable to export report: '+(error.message || error)));
   const rows = [...document.querySelectorAll("#accountingTableHost table tr")].map((tr) => [...tr.children].map((cell) => `"${String(cell.textContent || "").replace(/"/g, '""')}"`).join(","));
   const blob = new Blob([rows.join("\n")], { type: "text/csv" });
   const a = document.createElement("a");
@@ -30063,6 +30114,8 @@ function openInAppDocumentWindow(title = "Document Preview") {
 }
 
 function previewCurrentSystemView() {
+  const financial = currentView === "accounting" ? financialExportSnapshot() : null;
+  if (financial) return openPrintWindow(financialExportHtml(financial), financial.querySelector("h2")?.textContent || "Financial Report");
   const title = String($("viewTitle")?.textContent || "LMS Imports Report").trim();
   return printReportOnly("content", title);
 }
