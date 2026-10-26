@@ -29608,6 +29608,23 @@ async function reverseRental(rentalNo) {
   await renderRentalsView();
 }
 
+async function customerPaymentReversalAccount(payment) {
+  const batch = String(payment.notes || '').match(/(?:^|\|)\s*Batch\s+([^|\n]+)/i)?.[1]?.trim();
+  const references = [...new Set([payment.receipt_no, batch].filter(Boolean))];
+  const { data, error } = await supabase.from('general_ledger').select('*').in('reference', references);
+  if (error) throw error;
+  const writeOff = /write.?off/i.test(payment.method || '');
+  const source = writeOff ? 'AR Write-Off' : 'Customer Payment';
+  const rows = (data || []).filter(row => row.source === source && !/void|draft|unposted|reversed/i.test(row.status || ''));
+  const allocation = rows.filter(row => subledgerAccountMatches(row.account, 'Accounts Receivable') && row.invoice_no === payment.invoice_no && row.customer === payment.customer);
+  const amount = Number(payment.amount || 0);
+  if (amount <= 0 || Math.abs(allocation.reduce((sum,row)=>sum+Number(row.credit || 0)-Number(row.debit || 0),0)-amount)>0.005) throw new Error('The original payment allocation could not be verified. No reversal was posted.');
+  const offsets = rows.filter(row => !subledgerAccountMatches(row.account, 'Accounts Receivable') && Number(row.debit || 0)>0);
+  const accounts = [...new Set(offsets.map(row=>row.account).filter(Boolean))];
+  if (accounts.length !== 1) throw new Error('The original offset account is missing or ambiguous. No reversal was posted.');
+  return { account: accounts[0], writeOff };
+}
+
 async function reverseCustomerPayment(receiptNo) {
   const payment = currentRows.find((row) => row.receipt_no === receiptNo);
   if (!payment || /reversed|void/i.test(payment.status || "")) return;
@@ -29618,21 +29635,25 @@ async function reverseCustomerPayment(receiptNo) {
   const date = await chooseAccountingPostingDate('Reverse customer payment ' + receiptNo);
   if (!date) return;
   try {
+    const { account: offsetAccount, writeOff } = await customerPaymentReversalAccount(payment);
+    const { data: previous, error: previousError } = await supabase.from('general_ledger').select('id').eq('reference', 'REV-' + receiptNo).limit(1);
+    if (previousError) throw previousError;
+    if (previous?.length) throw new Error('This payment already has reversal entries. Refresh before continuing.');
     const amount = Number(payment.amount || 0);
     await supabase.from("customer_payments").update({ status: "Reversed", notes: [payment.notes, `Reversed ${new Date().toLocaleString()}: ${reason.trim()}`].filter(Boolean).join("\n") }).eq("receipt_no", receiptNo);
     await upsertManyWithOptionalColumns("general_ledger", [
       { entry_date: date, posting_date: date, account: "Accounts Receivable (A/R)", customer: payment.customer, invoice_no: payment.invoice_no, description: `Reverse customer payment ${receiptNo}`, reference: `REV-${receiptNo}`, bank_reference: payment.bank_reference || null, debit: amount, credit: 0, source: "Customer Payment Reversal", status: "Posted" },
-      { entry_date: date, posting_date: date, account: "FHB Checking", customer: payment.customer, invoice_no: payment.invoice_no, description: `Reverse customer payment ${receiptNo}`, reference: `REV-${receiptNo}`, bank_reference: payment.bank_reference || null, debit: 0, credit: amount, source: "Customer Payment Reversal", status: "Posted" },
+      { entry_date: date, posting_date: date, account: offsetAccount, customer: payment.customer, invoice_no: payment.invoice_no, description: `Reverse customer payment ${receiptNo}`, reference: `REV-${receiptNo}`, bank_reference: payment.bank_reference || null, debit: 0, credit: amount, source: "Customer Payment Reversal", status: "Posted" },
     ], "id", ["bank_reference"]);
-    await upsertOneWithOptionalColumns("bank_transactions", {
+    if (!writeOff) await upsertOneWithOptionalColumns("bank_transactions", {
       tx_date: date,
-      bank_account: "FHB Checking",
+      bank_account: offsetAccount,
       description: `Reversal of customer payment ${receiptNo}`,
       reference: `REV-${payment.bank_reference || receiptNo}`,
       amount: -Math.abs(amount),
       status: "Matched",
       matched_reference: payment.invoice_no,
-      notes: `Account: FHB Checking | ${reason.trim()}`,
+      notes: `Account: ${offsetAccount} | ${reason.trim()}`,
     }, "id", ["bank_account"], "Payment reversal posted. Run the bank account SQL update to store its reconciliation account directly.");
     await updateInvoicePaymentStatus(payment.invoice_no);
     if (currentView === "accounting") await renderAccountingView();
