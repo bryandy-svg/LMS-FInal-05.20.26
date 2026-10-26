@@ -8335,22 +8335,42 @@ function balanceSheetScheduleReceiptPo(data, row) {
 }
 
 function landedCostScheduleBundleMap(rows) {
-  const map = new Map();
-  (rows || []).filter((row) => /landed cost invoice/i.test(row.source || "") && Number(row.debit || 0) > 0).forEach((row) => {
+  // A PO can have multiple freight invoices. Keep the connected references together.
+  const groups = [];
+  for (const row of rows || []) {
+    if (!/landed cost invoice/i.test(row.source || "") || Number(row.debit || 0) <= 0) continue;
     const bundle = String(row.reference || row.invoice_no || "").trim();
-    const clearedText = String(row.description || "").match(/clear landed cost accrual\s+(.+?)(?:\s+-\s+|$)/i)?.[1] || "";
-    clearedText.split(",").map((value) => value.trim()).filter(Boolean).forEach((poNo) => map.set(poNo.toLowerCase(), bundle));
-  });
+    const text = String(row.description || "").match(/clear landed cost accrual\s+(.+?)(?:\s+-\s+|$)/i)?.[1] || "";
+    const keys = new Set([bundle, ...text.split(",")].map(x => x.trim().toLowerCase()).filter(Boolean));
+    const invoices = new Set([bundle]);
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (![...groups[i].keys].some(key => keys.has(key))) continue;
+      groups[i].keys.forEach(key => keys.add(key));
+      groups[i].invoices.forEach(key => invoices.add(key));
+      groups.splice(i, 1);
+    }
+    groups.push({ keys, invoices });
+  }
+  const map = new Map();
+  for (const group of groups) {
+    const label = [...group.invoices].sort((a,b) => a.localeCompare(b, undefined, { numeric: true })).join(" / ");
+    group.keys.forEach(key => map.set(key, label));
+  }
   return map;
 }
 
 function balanceSheetScheduleReference(data, schedule, row, matchedReferences, landedBundles) {
   const source = String(row.source || "");
   const description = String(row.description || "");
-  const rawReference = String(row.work_order_no || row.reference || row.invoice_no || "").trim();
+  const adjustmentReference = source === "Schedule Adjustment" ? description.match(/^Schedule adjustment for ([^:]+):/i)?.[1]?.trim() : "";
+  const rawReference = adjustmentReference || String(row.work_order_no || row.reference || row.invoice_no || "").trim();
   const isBeginningOrStandaloneJournal = /beginning balance|opening balance/i.test(`${source} ${description}`)
     || (/manual journal/i.test(source) && (!rawReference || !matchedReferences.has(rawReference.toLowerCase())));
   if (isBeginningOrStandaloneJournal) return "Beginning Balance";
+  if (source === "AP Correction") {
+    const correctedPo = description.match(/^Supplemental AP correction ([^\s]+) invoice /i)?.[1];
+    if (correctedPo) return correctedPo;
+  }
   if (schedule.normal === "debit") {
     const workOrderNo = `${rawReference} ${row.description || ""}`.match(/\bW\d+\b/i)?.[0];
     if (workOrderNo) return workOrderNo.toUpperCase();
@@ -11001,6 +11021,41 @@ async function createCheckRunFromPo(data, poNo, invoiceNo = "", receiptGroupKey 
   $("modal").style.display = "flex";
 }
 
+function assertScheduleAccrualCoverage(existing, proposed, receipts) {
+  for (const account of ["Parts Accrual", "Landed Cost Accrual"]) {
+    const additions = proposed.filter(row => row.account === account);
+    if (!additions.length) continue;
+    const all = [...existing.filter(row => row.account === account), ...additions];
+    const schedule = { title: account, normal: "credit", accountPattern: new RegExp("^" + account + "$", "i") };
+    const map = account === "Landed Cost Accrual" ? landedCostScheduleBundleMap(all) : new Map();
+    const matched = new Set(all.flatMap(row => [row.reference, row.invoice_no]).filter(Boolean).map(x => x.toLowerCase()));
+    const key = row => {
+      const ref = balanceSheetScheduleReference({ receipts }, schedule, row, matched, map);
+      return (map.get(ref.toLowerCase()) || ref).toLowerCase();
+    };
+    for (const target of new Set(additions.map(key))) {
+      const balance = all.filter(row => key(row) === target).reduce((sum,row) => sum + Number(row.credit || 0) - Number(row.debit || 0), 0);
+      if (balance < -0.005) throw new Error(account + " has insufficient posted accrual for " + target + " on the posting date. Reconcile receipts and earlier invoices before posting; this would leave a negative balance of " + Math.abs(balance).toFixed(2) + ".");
+    }
+  }
+}
+
+async function validateScheduleAccrualPosting(rows, replaceReference = "", replaceSource = "") {
+  const date = rows[0]?.posting_date;
+  if (!date) throw new Error("An accrual posting date is required.");
+  const accounts = [...new Set(rows.filter(row => ["Parts Accrual", "Landed Cost Accrual"].includes(row.account)).map(row => row.account))];
+  if (!accounts.length) return;
+  const ledger = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.from("general_ledger").select("id,account,reference,invoice_no,work_order_no,description,source,status,debit,credit,posting_date").in("account", accounts).lte("posting_date", date).order("id").range(offset, offset + 499);
+    if (error) throw error;
+    ledger.push(...(data || []));
+    if ((data || []).length < 500) break;
+  }
+  const receipts = await getAll("goods_receipts", { strict: true, columns: "gr_no,po_no" });
+  assertScheduleAccrualCoverage(ledger.filter(row => !(replaceReference && row.reference === replaceReference && row.source === replaceSource)), rows, receipts);
+}
+
 async function postPurchaseOrderLedger(po, record) {
   const amount = Number(record.vendor_invoice_amount || poReceivedTotal(po) || poTotal(po));
   const received = poReceivedTotal(po);
@@ -11024,6 +11079,7 @@ async function postPurchaseOrderLedger(po, record) {
   if (originalError) throw originalError;
   const activeOriginalRows = (originalRows || []).filter((row) => !/reversed|void/i.test(row.status || ""));
   if (!activeOriginalRows.length) {
+    await validateScheduleAccrualPosting(rows);
     await upsertManyWithOptionalColumns("general_ledger", rows, "id", ["bank_reference"]);
     return;
   }
@@ -11056,6 +11112,7 @@ async function postPurchaseOrderLedger(po, record) {
   )).filter(Boolean);
   if (correctionRows.length) {
     assertBalancedLedgerRows(correctionRows, `AP correction ${po.po_no}`);
+    await validateScheduleAccrualPosting(correctionRows);
     await upsertManyWithOptionalColumns("general_ledger", correctionRows, "id", ["bank_reference"]);
   }
 }
@@ -17307,12 +17364,15 @@ async function postLandedCostInvoiceLedger(landedPo, sourcePoNo, costType = "Oth
   const linked = linkedLandedSourcePoNos(landedPo);
   const sourceLabel = linked.length ? linked.join(", ") : sourcePoNo;
   const postingDate = landedPo.posting_date || landedPo.vendor_invoice_date || today();
-  await supabase.from("general_ledger").delete().eq("reference", landedPo.po_no).eq("source", "Landed Cost Invoice");
-  await upsertMany("general_ledger", [
+  const rows = [
     { entry_date: postingDate, posting_date: postingDate, account: "Landed Cost Accrual", vendor: landedPo.vendor, invoice_no: landedPo.vendor_invoice_no, invoice_date: landedPo.vendor_invoice_date, due_date: landedPo.due_date, description: `Clear landed cost accrual ${sourceLabel} - ${costType}`, reference: landedPo.po_no, debit: roundCurrency(amount - miscFreight), credit: 0, source: "Landed Cost Invoice", status: "Posted" },
     ...(miscFreight > 0 ? [{ entry_date: postingDate, posting_date: postingDate, account: "Freight", vendor: landedPo.vendor, invoice_no: landedPo.vendor_invoice_no, invoice_date: landedPo.vendor_invoice_date, due_date: landedPo.due_date, description: `Misc Freight and Other Charges ${landedPo.po_no}`, reference: landedPo.po_no, debit: miscFreight, credit: 0, source: "Landed Cost Invoice", status: "Posted" }] : []),
     { entry_date: postingDate, posting_date: postingDate, account: "Accounts Payable (A/P)", vendor: landedPo.vendor, invoice_no: landedPo.vendor_invoice_no, invoice_date: landedPo.vendor_invoice_date, due_date: landedPo.due_date, description: `Landed cost payable for ${sourceLabel}`, reference: landedPo.po_no, debit: 0, credit: amount, source: "Landed Cost Invoice", status: "Posted" },
-  ], "id");
+  ];
+  await validateScheduleAccrualPosting(rows, landedPo.po_no, "Landed Cost Invoice");
+  const { error: deleteError } = await supabase.from("general_ledger").delete().eq("reference", landedPo.po_no).eq("source", "Landed Cost Invoice");
+  if (deleteError) throw deleteError;
+  await upsertMany("general_ledger", rows, "id");
 }
 
 async function openGoodsReceiptModal(po) {
@@ -23852,6 +23912,25 @@ async function ensureWorkOrderAccountingAccounts(includeWip = false) {
   if (missing.length) throw new Error(`Work order accounting cannot post because these accounts are missing from Chart of Accounts: ${missing.join(", ")}.`);
 }
 
+function assertWorkOrderCostCoverage(rows, expectedCost, postingDate, invoiceNo) {
+  const balance = rows.filter(row => row.posting_date <= postingDate && !(row.reference === invoiceNo && row.source === "Work Order Invoice Cost"))
+    .reduce((sum,row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+  if (Math.abs(balance - expectedCost) > 0.005) throw new Error("Accepted part cost does not match posted WIP on " + postingDate + ". Reconcile issued/returned parts or choose a posting date after issuance before invoicing.");
+  return Math.max(0, roundCurrency(balance));
+}
+
+async function validateWorkOrderCostCoverage(wo, invoiceNo, expectedCost, postingDate) {
+  const rows = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.from("general_ledger").select("id,reference,invoice_no,work_order_no,source,posting_date,debit,credit").in("account", ["Work Order Parts - WIP", "WIP Parts"])
+      .or(`reference.like.%${wo.wo_no}%,work_order_no.eq.${wo.wo_no},invoice_no.like.${wo.wo_no}%`).order("id").range(offset, offset + 499);
+    if (error) throw error;
+    rows.push(...(data || []).filter(row => row.work_order_no === wo.wo_no || [row.reference, row.invoice_no].some(value => String(value || "").match(/W\d+/i)?.[0] === wo.wo_no)));
+    if ((data || []).length < 500) break;
+  }
+  return assertWorkOrderCostCoverage(rows, expectedCost, postingDate, invoiceNo);
+}
+
 async function ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products = [], postingDate = "") {
   const customer = wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer) ? wo.bill_to_customer : null;
   if (!customer) return;
@@ -23862,28 +23941,15 @@ async function ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products = [], po
     const product = (products || []).find((item) => item.id === part.product_id || item.sku === part.sku) || {};
     return sum + Number(part.accepted_qty || 0) * Number(part.unit_cost || product.cost || 0);
   }, 0);
-  if (!expectedCost) return;
-  const { data: acceptedRows, error } = await supabase
-    .from("general_ledger")
-    .select("account,debit,credit")
-    .in("source", ["Work Order Parts", "Work Order Part Void"])
-    .or(`reference.like.${wo.wo_no}-PART-%,reference.like.VOID-${wo.wo_no}-PART-%`);
-  if (error) throw error;
-  const alreadyPosted = (acceptedRows || [])
-    .filter((row) => row.account === "Parts Inventory")
-    .reduce((sum, row) => sum + Number(row.credit || 0) - Number(row.debit || 0), 0);
-  const wipToRelease = Math.max(0, (acceptedRows || [])
-    .filter((row) => row.account === "Work Order Parts - WIP")
-    .reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
-  const missingCost = Math.max(0, expectedCost - Math.max(0, alreadyPosted));
-  await supabase.from("general_ledger").delete().eq("reference", invoiceNo).eq("source", "Work Order Invoice Cost");
-  const costToRecognize = wipToRelease + missingCost;
+  const wipToRelease = await validateWorkOrderCostCoverage(wo, invoiceNo, expectedCost, ledgerDate);
+  const costToRecognize = wipToRelease;
   if (!costToRecognize) return;
+  const { error: deleteError } = await supabase.from("general_ledger").delete().eq("reference", invoiceNo).eq("source", "Work Order Invoice Cost");
+  if (deleteError) throw deleteError;
   const rows = [
     { entry_date: ledgerDate, posting_date: ledgerDate, account: "COGS - Parts", customer, invoice_no: invoiceNo, invoice_date: ledgerDate, asset: wo.asset_tag || null, description: `Recognize work order parts cost ${wo.wo_no}`, reference: invoiceNo, debit: costToRecognize, credit: 0, source: "Work Order Invoice Cost", status: "Posted" },
   ];
   if (wipToRelease) rows.push({ entry_date: ledgerDate, posting_date: ledgerDate, account: "Work Order Parts - WIP", customer, invoice_no: invoiceNo, invoice_date: ledgerDate, asset: wo.asset_tag || null, description: `Clear parts WIP for ${wo.wo_no}`, reference: invoiceNo, debit: 0, credit: wipToRelease, source: "Work Order Invoice Cost", status: "Posted" });
-  if (missingCost) rows.push({ entry_date: ledgerDate, posting_date: ledgerDate, account: "Parts Inventory", customer, invoice_no: invoiceNo, invoice_date: ledgerDate, asset: wo.asset_tag || null, description: `Inventory relief for unposted parts on ${wo.wo_no}`, reference: invoiceNo, debit: 0, credit: missingCost, source: "Work Order Invoice Cost", status: "Posted" });
   assertBalancedLedgerRows(rows, `Work order cost ${wo.wo_no}`);
   await upsertMany("general_ledger", rows, "id");
 }
@@ -27194,6 +27260,8 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
       throw new Error(`Invoice # ${invoiceNo} is already used by another transaction.`);
     }
     await assertInvoiceHasNoReversalHistory(invoiceNo);
+    const expectedPartsCost = (wo._parts || []).filter(isBillableWorkOrderPart).reduce((sum, part) => sum + Number(part.accepted_qty || 0) * Number(part.unit_cost || products.find(p => p.id === part.product_id || p.sku === part.sku)?.cost || 0), 0);
+    if (wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)) await validateWorkOrderCostCoverage(wo, invoiceNo, expectedPartsCost, postingDate);
     const invoicePayload = {
       invoice_no: invoiceNo,
       invoice_date: postingDate,

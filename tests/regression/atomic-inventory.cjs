@@ -13,6 +13,7 @@ function fn(name){const i=src.indexOf(`async function ${name}(`);assert(i>=0);re
  fail=false;await context.syncAllocatedLandedCostToReceipts(po,8,{posting_date:'2026-10-01'});assert.equal(calls.at(-1).args.p_changes[0].landed_unit_cost,19);
  const acceptance=fn('saveWorkOrderPartEdits');assert(acceptance.includes("rpc('save_work_order_parts_atomic'"));assert(!acceptance.includes('deductProductWithMotherComponents('));assert(!acceptance.includes('upsertManyWithOptionalColumns('));
  for(const name of ['syncGoodsReceiptInvoiceFromAp','syncAllocatedLandedCostToReceipts']){assert(!fn(name).includes('.update('));assert(!fn(name).includes('postConsumedInventoryCostCorrection('));}
- assert(fn('ensureWorkOrderInvoiceCostLedger').includes('Work Order Part Void'));
+ assert(fn('ensureWorkOrderInvoiceCostLedger').includes('validateWorkOrderCostCoverage'));
+ assert(!fn('validateWorkOrderCostCoverage').includes('.in("source"'),'WIP coverage must include returns and reversals, not just issuance sources');
  console.log('PASS: AP and landed-cost RPC payloads, success-only local updates, error preservation, atomic acceptance wiring, return-aware invoice costing');
 })().catch(error=>{console.error(error);process.exitCode=1;});
