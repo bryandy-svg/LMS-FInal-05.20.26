@@ -9231,11 +9231,11 @@ function loadBalancedJournalPaymentChecks() {
   ]);
 }
 
-async function balancedJournalEditEligibility(group, paymentChecks = null) {
+async function balancedJournalEditEligibility(group, paymentChecks = null, { reversal = false } = {}) {
   if (!group?.reference) return { allowed: false, reason: "Journal reference is missing." };
   if (/manual journal accrual/i.test(group.source || "")) return { allowed: false, reason: "This journal belongs to a dated accrual pair. Post a separate correcting journal to preserve both entries." };
   if (/reversed|void|cancel/i.test(group.status || "")) return { allowed: false, reason: "Reversed or voided journals are read-only." };
-  if (isLockedAccountingDate(group.posting_date)) return { allowed: false, reason: "The posting date is in a closed accounting period." };
+  if (!reversal && isLockedAccountingDate(group.posting_date)) return { allowed: false, reason: "The posting date is in a closed accounting period." };
   const reference = String(group.reference).trim();
   const [payments, checkRuns, invoices, bankTransactions] = await (paymentChecks || loadBalancedJournalPaymentChecks());
   const active = (row) => !/void|reversed|cancel/i.test(row.status || "");
@@ -9447,15 +9447,15 @@ async function reverseDirectApToEdit(data, reference, invoiceNo = "", receiptGro
   const gl = data?.allGl?.length ? data.allGl : await getAll("general_ledger");
   const group = manualJournalHistoryGroups(gl).find((item) => String(item.reference || "") === String(reference || ""));
   if (!group) return alert(`Direct AP journal ${reference} was not found.`);
-  const eligibility = await balancedJournalEditEligibility(group);
+  const eligibility = await balancedJournalEditEligibility(group, null, { reversal: true });
   if (!eligibility.allowed) return alert(`This Direct AP entry cannot be reversed for editing. ${eligibility.reason}`);
-  const reversed = await reverseManualJournal(reference);
+  const reversed = await reverseManualJournal(reference, { defaultDate: group.posting_date, returnDate: true });
   if (!reversed) return;
   const prefill = {
     ...group,
-    posting_date: today(),
+    posting_date: reversed,
     bank_reference: "",
-    lines: (group.lines || []).map((line) => ({ ...line, id: null, posting_date: today(), entry_date: today() })),
+    lines: (group.lines || []).map((line) => ({ ...line, id: null, posting_date: reversed, entry_date: reversed })),
   };
   await openBalancedJournalModal(data, null, prefill);
 }
@@ -9525,6 +9525,12 @@ async function workOrderPartsPostingDate(wo) {
 
 async function chooseAccountingPostingDate(label, defaultDate = today()) {
   try { await loadAccountingCloseDate(true); } catch(error) { alert(error.message); return null; }
+  // Suggest the first open day when the source posting belongs to a closed period.
+  if (isLockedAccountingDate(defaultDate)) {
+    const next = new Date(getAccountingCloseDate() + 'T00:00:00Z');
+    next.setUTCDate(next.getUTCDate() + 1);
+    defaultDate = next.toISOString().slice(0, 10);
+  }
   let suggested=formatDisplayDate(defaultDate);
   while (true) {
     const entered=prompt(label + '\n\nPosting date (MM/DD/YYYY). This determines the accounting period. Cancel leaves this action unposted.', suggested);
@@ -9539,10 +9545,10 @@ async function chooseAccountingPostingDate(label, defaultDate = today()) {
   }
 }
 
-async function reverseManualJournal(reference) {
+async function reverseManualJournal(reference, { defaultDate = today(), returnDate = false } = {}) {
   const reason = prompt(`Reason for reversing journal ${reference}`);
   if (reason === null || !reason.trim()) return alert("Reversal reason is required.");
-  const reversalDate = await chooseAccountingPostingDate('Reversal posting date');
+  const reversalDate = await chooseAccountingPostingDate('Reversal posting date', defaultDate);
   if (!reversalDate) return;
   if (isLockedAccountingDate(reversalDate)) return alert("The reversal date is inside the closed accounting period.");
   const { data: rows, error } = await supabase.from("general_ledger").select("*").eq("reference", reference).eq("source", "Manual Journal");
@@ -9576,7 +9582,7 @@ async function reverseManualJournal(reference) {
     await supabase.from("general_ledger").update({ status: "Reversed" }).eq("reference", reference).eq("source", "Manual Journal");
     await writeAuditLog({ tableName: "general_ledger", action: "Reversed manual journal", beforeData: { reference, lines: activeRows }, afterData: { reference: reversalReference, reason: reason.trim(), lines: reversalRows } });
     await renderAccountingView();
-    return true;
+    return returnDate ? reversalDate : true;
   } catch (reverseError) {
     alert(reverseError.message || reverseError);
     return false;

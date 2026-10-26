@@ -127,5 +127,6 @@
   "repair-request-actions",
   "invoice-editor-loading",
   "invoice-header-transfer",
-  "aging-batch-payment"
+  "aging-batch-payment",
+  "direct-ap-open-period"
 ]
