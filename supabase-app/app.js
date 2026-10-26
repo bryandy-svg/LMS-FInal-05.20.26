@@ -7577,15 +7577,23 @@ function accountsPayableRows(data) {
       ? String(row.reference || "").trim().replace(/^REV-/i, "")
       : String(row.reference || "").trim();
     if (!reference || poReferences.has(reference.toLowerCase())) return;
-    if (!manualGroups.has(reference)) manualGroups.set(reference, []);
-    manualGroups.get(reference).push(normalizeGlRow(row));
+    // A corrected posting can reuse the reference with a different vendor.
+    // Net each vendor independently so the old vendor's reversal cancels only its original.
+    const key = JSON.stringify([reference, String(row.vendor || '').trim().toLowerCase()]);
+    if (!manualGroups.has(key)) manualGroups.set(key, []);
+    manualGroups.get(key).push(normalizeGlRow(row));
   });
-  const directRows = [...manualGroups.entries()].map(([reference, rows]) => {
+  const directRows = [...manualGroups.entries()].map(([key, rows]) => {
+    const [reference] = JSON.parse(key);
     const apLines = rows.filter((row) => subledgerAccountMatches(row.account, "Accounts Payable"));
     const amount = apLines.reduce((sum, row) => sum + Number(row.credit || 0) - Number(row.debit || 0), 0);
     if (Math.abs(amount) <= 0.005) return null;
-    const apLine = apLines[0] || rows[0];
-    const firstValue = (field) => rows.find((row) => String(row?.[field] || "").trim())?.[field] || "";
+    const currentRows = [...rows].sort((a, b) => {
+      const historical = (row) => /reversed|void/i.test(row.status || '') || /reversal/i.test(row.source || '') ? 1 : 0;
+      return historical(a) - historical(b) || String(b.posting_date || b.entry_date || '').localeCompare(String(a.posting_date || a.entry_date || ''));
+    });
+    const apLine = currentRows.find((row) => subledgerAccountMatches(row.account, "Accounts Payable")) || currentRows[0];
+    const firstValue = (field) => currentRows.find((row) => String(row?.[field] || "").trim())?.[field] || "";
     const workOrderNo = firstValue("work_order_no");
     const description = firstValue("description");
     return {
