@@ -129,5 +129,6 @@
   "invoice-header-transfer",
   "aging-batch-payment",
   "direct-ap-open-period",
-  "direct-ap-reposted-vendor"
+  "direct-ap-reposted-vendor",
+  "new-part-picker-refresh"
 ]

@@ -413,7 +413,7 @@ function queueWorkOrderSearch(input) {
     state.controller = controller;
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const escaped = term.replace(/[\\%_]/g, '\\const remotePartInputs=new WeakMap();');
+      const escaped = term.replace(/[\\%_]/g, '\\let remotePartInputs=new WeakMap();');
       let query = supabase.from('work_orders').select('*');
       for (const token of term.split(/\s+/).filter(Boolean)) {
         const pattern = JSON.stringify('%' + token.replace(/[\\%_]/g, '\\const remotePartInputs=new WeakMap();') + '%');
@@ -3160,7 +3160,7 @@ function setupSeamlessDropdowns() {
     else hideSuggestMenu();
   }, true);
   document.addEventListener("focusin", (event) => {
-    if(remotePartInputs.get(event.target)?.error) remotePartInputs.delete(event.target);
+    if (!remotePartInputs.get(event.target)?.loading) remotePartInputs.delete(event.target);
     if(remoteWorkOrderInputs.get(event.target)?.error) remoteWorkOrderInputs.delete(event.target);
     useLmsSuggestPicker(event.target);
     if (isSuggestPicker(event.target)) {
@@ -43261,12 +43261,21 @@ async function approveProductMasterCreation(record, editingProduct = null) {
   return !samePart;
 }
 
+function publishSavedProduct(product) {
+  if (!product?.id || !product?.sku) return;
+  productMeta.products = [...(productMeta.products || []).filter((row) => row.id !== product.id && String(row.sku || '').toLowerCase() !== String(product.sku).toLowerCase()), product];
+  if (typeof purchaseContext !== 'undefined' && purchaseContext) purchaseContext.products = productMeta.products;
+  // Invalidate in-flight and completed searches without discarding the open document.
+  remotePartInputs = new WeakMap();
+}
+
 async function insertNewProduct(record) {
   const { data, error } = await supabase.from("products").insert(record).select().single();
   if (error) {
     if (/duplicate|unique|products.*sku/i.test(String(error.message || ""))) throw new Error(`SKU ${record.sku} already exists. Select the existing Product Master item.`);
     throw error;
   }
+  publishSavedProduct(data);
   return data;
 }
 
