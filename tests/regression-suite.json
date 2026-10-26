@@ -130,5 +130,6 @@
   "aging-batch-payment",
   "direct-ap-open-period",
   "direct-ap-reposted-vendor",
-  "new-part-picker-refresh"
+  "new-part-picker-refresh",
+  "quick-part-save-performance"
 ]
