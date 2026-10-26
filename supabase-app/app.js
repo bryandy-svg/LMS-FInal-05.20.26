@@ -5827,11 +5827,12 @@ async function renderAgingSummaryView() {
   currentCfg = agingCfg("summary");
   $("content").innerHTML = `
     <section class="panel">
-      <div class="panel-head"><div class="panel-title"><strong>AR / AP Aging As Of</strong><span>Type a date like 12/31/2025. Blank means today.</span></div><div class="actions"><label class="mini-filter">As of <input id="agingAsOf" placeholder="mm/dd/yyyy or yyyy-mm-dd"></label>${suggestInput("agingType", ["ar", "ap"], "ar", "Type")}${suggestInput("agingMode", ["summary", "detail"], "summary", "Mode")}<button id="agingApply">Apply</button><button id="agingBackBtn" type="button" hidden>Back to Aging Summary</button><button id="agingEmailSelectedBtn" type="button" hidden>Email selected invoices</button><button id="agingDownloadSelectedBtn" type="button" hidden>Download selected PDFs</button><button id="agingCsvBtn">Excel</button><button id="agingPdfExtractBtn">Aging PDF Extract</button></div></div>
+      <div class="panel-head"><div class="panel-title"><strong>AR / AP Aging As Of</strong><span>Type a date like 12/31/2025. Blank means today.</span></div><div class="actions"><label class="mini-filter">As of <input id="agingAsOf" placeholder="mm/dd/yyyy or yyyy-mm-dd"></label>${suggestInput("agingType", ["ar", "ap"], "ar", "Type")}${suggestInput("agingMode", ["summary", "detail"], "summary", "Mode")}<button id="agingApply">Apply</button><button id="agingBackBtn" type="button" hidden>Back to Aging Summary</button><button id="agingReceivePaymentBtn" type="button" hidden>Receive payment — selected invoices</button><button id="agingEmailSelectedBtn" type="button" hidden>Email selected invoices</button><button id="agingDownloadSelectedBtn" type="button" hidden>Download selected PDFs</button><button id="agingCsvBtn">Excel</button><button id="agingPdfExtractBtn">Aging PDF Extract</button></div></div>
       <div class="toolbar"><input class="searchbox" id="agingSearch" placeholder="Search aging by customer, vendor, invoice, reference"></div>
       <div id="agingNotice" class="notice">${agingNoticeText("ar", "")}</div>
       <div id="agingTableHost">${agingTableHtml(currentRows, "summary")}</div>
     </section>`;
+  $("agingReceivePaymentBtn").onclick = openAgingBatchPayment;
   $("agingApply").onclick = applyAgingFilters;
   $("agingSearch").oninput = renderFilteredAging;
   $("agingCsvBtn").onclick = exportCurrentCsv;
@@ -5912,9 +5913,51 @@ let agingSummarySearchBeforeDrill = "";
 
 function updateAgingActionButtons() {
   const detail = ($("agingMode")?.value || "summary") === "detail";
+  if ($("agingReceivePaymentBtn")) $("agingReceivePaymentBtn").hidden = !(detail && ($("agingType")?.value || "ar") === "ar");
   if ($("agingBackBtn")) $("agingBackBtn").hidden = !detail;
   if ($("agingEmailSelectedBtn")) $("agingEmailSelectedBtn").hidden = !(detail && ($("agingType")?.value || "ar") === "ar");
   if ($("agingDownloadSelectedBtn")) $("agingDownloadSelectedBtn").hidden = !detail;
+}
+
+async function openAgingBatchPayment() {
+  const selectedIds = new Set([...document.querySelectorAll('[data-aging-select-invoice]:checked')].filter(box => !box.closest('tr')?.hidden && box.closest('tr')?.style.display !== 'none').map(box => box.dataset.agingInvoiceId).filter(Boolean));
+  if (!selectedIds.size) return alert('Select the invoices to receive payment for first.');
+  const selected = currentRows.filter(row => selectedIds.has(String(row._record_id || row.id || '')));
+  const customers = [...new Set(selected.map(row => row.name || row.customer).filter(Boolean))];
+  if (customers.length !== 1) return alert('Select invoices for one customer per payment.');
+  const button = $('agingReceivePaymentBtn');
+  button.disabled = true;
+  button.textContent = 'Loading current balances…';
+  try {
+    const invoices = await workOrderScopedRows('invoices','customer',customers);
+    const [lines, payments, coa] = await Promise.all([
+      workOrderScopedRows('invoice_lines','invoice_id',invoices.map(row => row.id)),
+      workOrderScopedRows('customer_payments','invoice_no',invoices.map(row => row.invoice_no)),
+      getAll('chart_of_accounts'),
+    ]);
+    const data = { invoices: invoices.map(inv => ({ ...inv, _lines: lines.filter(line => line.invoice_id === inv.id), _paid: payments.filter(payment => payment.invoice_no === inv.invoice_no && !/void|cancel|reverse/i.test(payment.status || '')).reduce((sum,payment) => sum + Number(payment.amount || 0),0) })), payments, coa };
+    const rows = accountsReceivableRows(data).filter(row => selectedIds.has(String(row.id)) && row.balance > 0.005 && !/void|cancel|reverse|written off|paid/i.test(row.status || '')).map(row => ({ ...row, invoice_no: row.stored_invoice_no || row.invoice_no }));
+    if (rows.length !== selectedIds.size) return alert('Some selected invoices are now paid, cancelled, credited, or assigned to another customer. Refresh Aging and select the remaining open invoices.');
+    if (!button.isConnected) return;
+    const state = { asOf: $('agingAsOf').value, search: $('agingSearch').value, ids: new Set(currentRows.map(row => String(row._record_id || row.id || ''))) };
+    data.afterSettlement = async () => {
+      await renderAgingSummaryView();
+      $('agingAsOf').value = state.asOf;
+      $('agingType').value = 'ar';
+      $('agingMode').value = 'detail';
+      $('agingSearch').value = state.search;
+      currentRows = agingRows('ar','detail',state.asOf).filter(row => state.ids.has(String(row._record_id || row.id || '')));
+      currentCfg = agingCfg('detail');
+      $('agingNotice').textContent = agingNoticeText('ar',parseFlexibleDate(state.asOf));
+      renderFilteredAging();
+    };
+    await openBatchArSettlementModal(data, rows);
+    const notice = document.createElement('p');
+    notice.className = 'notice';
+    notice.textContent = 'Payment allocations use current outstanding balances, not the historical Aging as-of balances. Review the amounts before saving.';
+    $('modalBody').prepend(notice);
+  } catch (error) { alert(error.message || error); }
+  finally { button.disabled = false; button.textContent = 'Receive payment — selected invoices'; }
 }
 
 function selectedAgingPdfDocuments() {
@@ -6501,7 +6544,7 @@ function agingCell(field, row, mode = "") {
   if (mode === "detail" && row._gl_difference && field === "reference") return esc(row.reference || "A/P Control Reconciliation");
   if (mode === "detail" && row._gl_difference && field === "actions") return '<span class="badge warn">Review GL</span>';
   if (mode === "detail" && field === "select") {
-    if (row._aging_type === "ar") return `<input type="checkbox" data-aging-select-invoice="${esc(row.invoice_no || "")}" aria-label="Select invoice ${esc(row.invoice_no || "")}">`;
+    if (row._aging_type === "ar") return `<input type="checkbox" data-aging-invoice-id="${esc(row._record_id || row.id || "")}" data-aging-select-invoice="${esc(row.invoice_no || "")}" aria-label="Select invoice ${esc(row.invoice_no || "")}">`;
     const poNo = row._po_no || row.reference || "";
     return `<input type="checkbox" data-aging-select-po="${esc(poNo)}" aria-label="Select purchase order ${esc(poNo)}">`;
   }
@@ -7814,8 +7857,8 @@ function syncArInvoiceSelection() {
   if (summary) summary.textContent = `${checked.length} invoice${checked.length === 1 ? "" : "s"} selected`;
 }
 
-async function openBatchArSettlementModal(data) {
-  const rows = selectedArInvoiceRows(data);
+async function openBatchArSettlementModal(data, selectedRows = null) {
+  const rows = selectedRows || selectedArInvoiceRows(data);
   if (!rows.length) return alert("Select at least one open invoice.");
   const customers = [...new Set(rows.map((row) => String(row.customer || "").trim()).filter(Boolean))];
   if (customers.length !== 1) return alert("One receipt or write-off batch can only contain invoices for the same customer.");
@@ -8012,7 +8055,8 @@ async function saveBatchArSettlement(data, rows, finalPostingDate = "") {
     await incrementSequence("payment");
     productMeta.invoiceRows = null;
     closeModal(true);
-    await renderAccountingView();
+    if (data.afterSettlement) await data.afterSettlement();
+    else await renderAccountingView();
   } catch (error) {
     alert(`Could not post selected invoices. ${error.message || error}`);
   }
