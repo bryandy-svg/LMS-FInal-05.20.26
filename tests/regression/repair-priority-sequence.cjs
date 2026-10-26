@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+const c=vm.createContext({localStorage:{getItem:()=>'{broken'}});vm.runInContext(functions(['repairPrioritySequenceGroup','repairPrioritySequencePreferences','repairPrioritySequenceCompare','moveRepairPrioritySequence']),c);
+const a={wo_no:'W08648',customer:'LMS',priority:'High'},b={...a,wo_no:'W08745'},other={...a,customer:'Other'};
+const group=c.repairPrioritySequenceGroup(a),prefs={[group]:['W08745','W08648']};
+assert.ok(c.repairPrioritySequenceCompare(b,a,prefs)<0);assert.equal(c.repairPrioritySequenceCompare(b,other,prefs),0);
+assert.deepEqual(Array.from(c.moveRepairPrioritySequence(['W08648','W08745','W08758'],'W08745','top')),['W08745','W08648','W08758']);
+assert.deepEqual(Array.from(c.moveRepairPrioritySequence(['a','b','c'],'a','down')),['b','a','c']);
+assert.deepEqual(Array.from(c.moveRepairPrioritySequence(['a','b','c'],'b','up')),['b','a','c']);
+assert.deepEqual(Array.from(c.moveRepairPrioritySequence(['a'],'a','up')),['a']);
+assert.equal(Object.keys(c.repairPrioritySequencePreferences()).length,0);
+assert.match(functions(['exportRepairReport']),/reportCellExportText/);assert.match(functions(['exportTruckingVisibleTable']),/reportCellExportText/);
+assert.match(functions(['printReportOnly']),/\.no-print/);
+console.log('Repair priority sequence grouping, movement boundaries and export wiring passed');

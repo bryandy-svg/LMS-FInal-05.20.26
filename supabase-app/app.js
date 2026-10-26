@@ -8335,22 +8335,42 @@ function balanceSheetScheduleReceiptPo(data, row) {
 }
 
 function landedCostScheduleBundleMap(rows) {
-  const map = new Map();
-  (rows || []).filter((row) => /landed cost invoice/i.test(row.source || "") && Number(row.debit || 0) > 0).forEach((row) => {
+  // A PO can have multiple freight invoices. Keep the connected references together.
+  const groups = [];
+  for (const row of rows || []) {
+    if (!/landed cost invoice/i.test(row.source || "") || Number(row.debit || 0) <= 0) continue;
     const bundle = String(row.reference || row.invoice_no || "").trim();
-    const clearedText = String(row.description || "").match(/clear landed cost accrual\s+(.+?)(?:\s+-\s+|$)/i)?.[1] || "";
-    clearedText.split(",").map((value) => value.trim()).filter(Boolean).forEach((poNo) => map.set(poNo.toLowerCase(), bundle));
-  });
+    const text = String(row.description || "").match(/clear landed cost accrual\s+(.+?)(?:\s+-\s+|$)/i)?.[1] || "";
+    const keys = new Set([bundle, ...text.split(",")].map(x => x.trim().toLowerCase()).filter(Boolean));
+    const invoices = new Set([bundle]);
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (![...groups[i].keys].some(key => keys.has(key))) continue;
+      groups[i].keys.forEach(key => keys.add(key));
+      groups[i].invoices.forEach(key => invoices.add(key));
+      groups.splice(i, 1);
+    }
+    groups.push({ keys, invoices });
+  }
+  const map = new Map();
+  for (const group of groups) {
+    const label = [...group.invoices].sort((a,b) => a.localeCompare(b, undefined, { numeric: true })).join(" / ");
+    group.keys.forEach(key => map.set(key, label));
+  }
   return map;
 }
 
 function balanceSheetScheduleReference(data, schedule, row, matchedReferences, landedBundles) {
   const source = String(row.source || "");
   const description = String(row.description || "");
-  const rawReference = String(row.work_order_no || row.reference || row.invoice_no || "").trim();
+  const adjustmentReference = source === "Schedule Adjustment" ? description.match(/^Schedule adjustment for ([^:]+):/i)?.[1]?.trim() : "";
+  const rawReference = adjustmentReference || String(row.work_order_no || row.reference || row.invoice_no || "").trim();
   const isBeginningOrStandaloneJournal = /beginning balance|opening balance/i.test(`${source} ${description}`)
     || (/manual journal/i.test(source) && (!rawReference || !matchedReferences.has(rawReference.toLowerCase())));
   if (isBeginningOrStandaloneJournal) return "Beginning Balance";
+  if (source === "AP Correction") {
+    const correctedPo = description.match(/^Supplemental AP correction ([^\s]+) invoice /i)?.[1];
+    if (correctedPo) return correctedPo;
+  }
   if (schedule.normal === "debit") {
     const workOrderNo = `${rawReference} ${row.description || ""}`.match(/\bW\d+\b/i)?.[0];
     if (workOrderNo) return workOrderNo.toUpperCase();
@@ -11001,6 +11021,41 @@ async function createCheckRunFromPo(data, poNo, invoiceNo = "", receiptGroupKey 
   $("modal").style.display = "flex";
 }
 
+function assertScheduleAccrualCoverage(existing, proposed, receipts) {
+  for (const account of ["Parts Accrual", "Landed Cost Accrual"]) {
+    const additions = proposed.filter(row => row.account === account);
+    if (!additions.length) continue;
+    const all = [...existing.filter(row => row.account === account), ...additions];
+    const schedule = { title: account, normal: "credit", accountPattern: new RegExp("^" + account + "$", "i") };
+    const map = account === "Landed Cost Accrual" ? landedCostScheduleBundleMap(all) : new Map();
+    const matched = new Set(all.flatMap(row => [row.reference, row.invoice_no]).filter(Boolean).map(x => x.toLowerCase()));
+    const key = row => {
+      const ref = balanceSheetScheduleReference({ receipts }, schedule, row, matched, map);
+      return (map.get(ref.toLowerCase()) || ref).toLowerCase();
+    };
+    for (const target of new Set(additions.map(key))) {
+      const balance = all.filter(row => key(row) === target).reduce((sum,row) => sum + Number(row.credit || 0) - Number(row.debit || 0), 0);
+      if (balance < -0.005) throw new Error(account + " has insufficient posted accrual for " + target + " on the posting date. Reconcile receipts and earlier invoices before posting; this would leave a negative balance of " + Math.abs(balance).toFixed(2) + ".");
+    }
+  }
+}
+
+async function validateScheduleAccrualPosting(rows, replaceReference = "", replaceSource = "") {
+  const date = rows[0]?.posting_date;
+  if (!date) throw new Error("An accrual posting date is required.");
+  const accounts = [...new Set(rows.filter(row => ["Parts Accrual", "Landed Cost Accrual"].includes(row.account)).map(row => row.account))];
+  if (!accounts.length) return;
+  const ledger = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.from("general_ledger").select("id,account,reference,invoice_no,work_order_no,description,source,status,debit,credit,posting_date").in("account", accounts).lte("posting_date", date).order("id").range(offset, offset + 499);
+    if (error) throw error;
+    ledger.push(...(data || []));
+    if ((data || []).length < 500) break;
+  }
+  const receipts = await getAll("goods_receipts", { strict: true, columns: "gr_no,po_no" });
+  assertScheduleAccrualCoverage(ledger.filter(row => !(replaceReference && row.reference === replaceReference && row.source === replaceSource)), rows, receipts);
+}
+
 async function postPurchaseOrderLedger(po, record) {
   const amount = Number(record.vendor_invoice_amount || poReceivedTotal(po) || poTotal(po));
   const received = poReceivedTotal(po);
@@ -11024,6 +11079,7 @@ async function postPurchaseOrderLedger(po, record) {
   if (originalError) throw originalError;
   const activeOriginalRows = (originalRows || []).filter((row) => !/reversed|void/i.test(row.status || ""));
   if (!activeOriginalRows.length) {
+    await validateScheduleAccrualPosting(rows);
     await upsertManyWithOptionalColumns("general_ledger", rows, "id", ["bank_reference"]);
     return;
   }
@@ -11056,6 +11112,7 @@ async function postPurchaseOrderLedger(po, record) {
   )).filter(Boolean);
   if (correctionRows.length) {
     assertBalancedLedgerRows(correctionRows, `AP correction ${po.po_no}`);
+    await validateScheduleAccrualPosting(correctionRows);
     await upsertManyWithOptionalColumns("general_ledger", correctionRows, "id", ["bank_reference"]);
   }
 }
@@ -17307,12 +17364,15 @@ async function postLandedCostInvoiceLedger(landedPo, sourcePoNo, costType = "Oth
   const linked = linkedLandedSourcePoNos(landedPo);
   const sourceLabel = linked.length ? linked.join(", ") : sourcePoNo;
   const postingDate = landedPo.posting_date || landedPo.vendor_invoice_date || today();
-  await supabase.from("general_ledger").delete().eq("reference", landedPo.po_no).eq("source", "Landed Cost Invoice");
-  await upsertMany("general_ledger", [
+  const rows = [
     { entry_date: postingDate, posting_date: postingDate, account: "Landed Cost Accrual", vendor: landedPo.vendor, invoice_no: landedPo.vendor_invoice_no, invoice_date: landedPo.vendor_invoice_date, due_date: landedPo.due_date, description: `Clear landed cost accrual ${sourceLabel} - ${costType}`, reference: landedPo.po_no, debit: roundCurrency(amount - miscFreight), credit: 0, source: "Landed Cost Invoice", status: "Posted" },
     ...(miscFreight > 0 ? [{ entry_date: postingDate, posting_date: postingDate, account: "Freight", vendor: landedPo.vendor, invoice_no: landedPo.vendor_invoice_no, invoice_date: landedPo.vendor_invoice_date, due_date: landedPo.due_date, description: `Misc Freight and Other Charges ${landedPo.po_no}`, reference: landedPo.po_no, debit: miscFreight, credit: 0, source: "Landed Cost Invoice", status: "Posted" }] : []),
     { entry_date: postingDate, posting_date: postingDate, account: "Accounts Payable (A/P)", vendor: landedPo.vendor, invoice_no: landedPo.vendor_invoice_no, invoice_date: landedPo.vendor_invoice_date, due_date: landedPo.due_date, description: `Landed cost payable for ${sourceLabel}`, reference: landedPo.po_no, debit: 0, credit: amount, source: "Landed Cost Invoice", status: "Posted" },
-  ], "id");
+  ];
+  await validateScheduleAccrualPosting(rows, landedPo.po_no, "Landed Cost Invoice");
+  const { error: deleteError } = await supabase.from("general_ledger").delete().eq("reference", landedPo.po_no).eq("source", "Landed Cost Invoice");
+  if (deleteError) throw deleteError;
+  await upsertMany("general_ledger", rows, "id");
 }
 
 async function openGoodsReceiptModal(po) {
@@ -23852,6 +23912,25 @@ async function ensureWorkOrderAccountingAccounts(includeWip = false) {
   if (missing.length) throw new Error(`Work order accounting cannot post because these accounts are missing from Chart of Accounts: ${missing.join(", ")}.`);
 }
 
+function assertWorkOrderCostCoverage(rows, expectedCost, postingDate, invoiceNo) {
+  const balance = rows.filter(row => row.posting_date <= postingDate && !(row.reference === invoiceNo && row.source === "Work Order Invoice Cost"))
+    .reduce((sum,row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+  if (Math.abs(balance - expectedCost) > 0.005) throw new Error("Accepted part cost does not match posted WIP on " + postingDate + ". Reconcile issued/returned parts or choose a posting date after issuance before invoicing.");
+  return Math.max(0, roundCurrency(balance));
+}
+
+async function validateWorkOrderCostCoverage(wo, invoiceNo, expectedCost, postingDate) {
+  const rows = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.from("general_ledger").select("id,reference,invoice_no,work_order_no,source,posting_date,debit,credit").in("account", ["Work Order Parts - WIP", "WIP Parts"])
+      .or(`reference.like.%${wo.wo_no}%,work_order_no.eq.${wo.wo_no},invoice_no.like.${wo.wo_no}%`).order("id").range(offset, offset + 499);
+    if (error) throw error;
+    rows.push(...(data || []).filter(row => row.work_order_no === wo.wo_no || [row.reference, row.invoice_no].some(value => String(value || "").match(/W\d+/i)?.[0] === wo.wo_no)));
+    if ((data || []).length < 500) break;
+  }
+  return assertWorkOrderCostCoverage(rows, expectedCost, postingDate, invoiceNo);
+}
+
 async function ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products = [], postingDate = "") {
   const customer = wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer) ? wo.bill_to_customer : null;
   if (!customer) return;
@@ -23862,28 +23941,15 @@ async function ensureWorkOrderInvoiceCostLedger(wo, invoiceNo, products = [], po
     const product = (products || []).find((item) => item.id === part.product_id || item.sku === part.sku) || {};
     return sum + Number(part.accepted_qty || 0) * Number(part.unit_cost || product.cost || 0);
   }, 0);
-  if (!expectedCost) return;
-  const { data: acceptedRows, error } = await supabase
-    .from("general_ledger")
-    .select("account,debit,credit")
-    .in("source", ["Work Order Parts", "Work Order Part Void"])
-    .or(`reference.like.${wo.wo_no}-PART-%,reference.like.VOID-${wo.wo_no}-PART-%`);
-  if (error) throw error;
-  const alreadyPosted = (acceptedRows || [])
-    .filter((row) => row.account === "Parts Inventory")
-    .reduce((sum, row) => sum + Number(row.credit || 0) - Number(row.debit || 0), 0);
-  const wipToRelease = Math.max(0, (acceptedRows || [])
-    .filter((row) => row.account === "Work Order Parts - WIP")
-    .reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
-  const missingCost = Math.max(0, expectedCost - Math.max(0, alreadyPosted));
-  await supabase.from("general_ledger").delete().eq("reference", invoiceNo).eq("source", "Work Order Invoice Cost");
-  const costToRecognize = wipToRelease + missingCost;
+  const wipToRelease = await validateWorkOrderCostCoverage(wo, invoiceNo, expectedCost, ledgerDate);
+  const costToRecognize = wipToRelease;
   if (!costToRecognize) return;
+  const { error: deleteError } = await supabase.from("general_ledger").delete().eq("reference", invoiceNo).eq("source", "Work Order Invoice Cost");
+  if (deleteError) throw deleteError;
   const rows = [
     { entry_date: ledgerDate, posting_date: ledgerDate, account: "COGS - Parts", customer, invoice_no: invoiceNo, invoice_date: ledgerDate, asset: wo.asset_tag || null, description: `Recognize work order parts cost ${wo.wo_no}`, reference: invoiceNo, debit: costToRecognize, credit: 0, source: "Work Order Invoice Cost", status: "Posted" },
   ];
   if (wipToRelease) rows.push({ entry_date: ledgerDate, posting_date: ledgerDate, account: "Work Order Parts - WIP", customer, invoice_no: invoiceNo, invoice_date: ledgerDate, asset: wo.asset_tag || null, description: `Clear parts WIP for ${wo.wo_no}`, reference: invoiceNo, debit: 0, credit: wipToRelease, source: "Work Order Invoice Cost", status: "Posted" });
-  if (missingCost) rows.push({ entry_date: ledgerDate, posting_date: ledgerDate, account: "Parts Inventory", customer, invoice_no: invoiceNo, invoice_date: ledgerDate, asset: wo.asset_tag || null, description: `Inventory relief for unposted parts on ${wo.wo_no}`, reference: invoiceNo, debit: 0, credit: missingCost, source: "Work Order Invoice Cost", status: "Posted" });
   assertBalancedLedgerRows(rows, `Work order cost ${wo.wo_no}`);
   await upsertMany("general_ledger", rows, "id");
 }
@@ -27194,6 +27260,8 @@ async function invoiceWorkOrder(woNo, { batch = false, workOrder = null } = {}) 
       throw new Error(`Invoice # ${invoiceNo} is already used by another transaction.`);
     }
     await assertInvoiceHasNoReversalHistory(invoiceNo);
+    const expectedPartsCost = (wo._parts || []).filter(isBillableWorkOrderPart).reduce((sum, part) => sum + Number(part.accepted_qty || 0) * Number(part.unit_cost || products.find(p => p.id === part.product_id || p.sku === part.sku)?.cost || 0), 0);
+    if (wo.bill_to_customer && !/internal/i.test(wo.bill_to_customer)) await validateWorkOrderCostCoverage(wo, invoiceNo, expectedPartsCost, postingDate);
     const invoicePayload = {
       invoice_no: invoiceNo,
       invoice_date: postingDate,
@@ -34123,7 +34191,7 @@ function exportTruckingVisibleTable(button) {
       ? [row.innerText.trim(), ...Array(Math.max(0, columnCount - 1)).fill("")]
       : [...row.children].slice(0, columnCount).map((cell) => {
       const input = cell.querySelector("input, select, textarea");
-      return input && !["checkbox", "radio"].includes(input.type) ? input.value : cell.innerText.trim();
+      return input && !["checkbox", "radio"].includes(input.type) ? input.value : reportCellExportText(cell);
     }));
   const footerRows = [...wrap.querySelectorAll("tfoot tr")].map((row) => [...row.children].slice(0, columnCount).map((cell) => cell.innerText.trim()));
   if (!visibleRows.length) return alert("No visible rows to export.");
@@ -36905,7 +36973,7 @@ function printTruckingManagementReport() {
   const useTabloid = $("truckingReportPaperSize")?.value === "tabloid";
   const printable = source.cloneNode(true);
   printable.querySelectorAll("table").forEach(fitTruckingReportTable);
-  printable.querySelectorAll(".truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
+  printable.querySelectorAll(".no-print, .truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
   printable.querySelectorAll("tbody tr[hidden]").forEach((row) => row.remove());
   printable.querySelectorAll('.trucking-report-jobsite-table [data-report-column="category"]').forEach((cell) => {
     cell.style.setProperty("width", "11%", "important");
@@ -37259,7 +37327,7 @@ function printReportOnly(hostId, title) {
   const useTabloid = $(paperControlId)?.value === "tabloid";
   const printable = source.cloneNode(true);
   printable.querySelectorAll("[data-document-reference]").forEach((button) => button.replaceWith(document.createTextNode(String(button.textContent || "").trim())));
-  printable.querySelectorAll(".truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
+  printable.querySelectorAll(".no-print, .truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
   printable.querySelectorAll("tbody tr[hidden]").forEach((row) => row.remove());
   printable.querySelectorAll("td").forEach((cell) => {
     const value = String(cell.textContent || "").trim().replace(/\s+/g, "");
@@ -37595,6 +37663,61 @@ async function renderPartsReportView() {
   apply();
 }
 
+function repairPrioritySequenceGroup(row) {
+  return JSON.stringify([String(row.customer || "Unspecified Customer").trim(), String(row.priority || "Normal").trim().toLowerCase()]);
+}
+
+function repairPrioritySequencePreferences() {
+  try { const value = JSON.parse(localStorage.getItem("lms.repairPrioritySequence.v1") || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; }
+}
+
+function repairPrioritySequenceCompare(a, b, preferences) {
+  const group = repairPrioritySequenceGroup(a);
+  if (group !== repairPrioritySequenceGroup(b)) return 0;
+  const order = Array.isArray(preferences[group]) ? preferences[group] : [];
+  const rank = row => { const index = order.indexOf(String(row.wo_no)); return index < 0 ? Number.MAX_SAFE_INTEGER : index; };
+  return rank(a) - rank(b);
+}
+
+function moveRepairPrioritySequence(order, workOrder, direction) {
+  const result = [...new Set(order)];
+  const from = result.indexOf(workOrder);
+  if (from < 0) return result;
+  const to = direction === "top" ? 0 : direction === "up" ? Math.max(0, from - 1) : direction === "down" ? Math.min(result.length - 1, from + 1) : from;
+  result.splice(from, 1); result.splice(to, 0, workOrder);
+  return result;
+}
+
+function repairPrioritySequenceCell(value, row) {
+  return '<span>' + esc(value || "") + '</span><div class="no-print" data-repair-sequence-controls data-sequence-group="' + esc(repairPrioritySequenceGroup(row)) + '" data-sequence-wo="' + esc(row.wo_no) + '" style="display:flex;gap:3px;margin-top:5px">' + [["top","Top"],["up","↑"],["down","↓"]].map(([direction,label]) => '<button type="button" class="rowbtn" data-repair-sequence="' + direction + '" aria-label="Move ' + esc(row.wo_no) + ' ' + direction + ' within priority" title="Move ' + direction + '">' + label + '</button>').join("") + '</div>';
+}
+
+function reorderRepairPriorityReport(button) {
+  const control = button.closest('[data-repair-sequence-controls]');
+  const table = button.closest('table');
+  if (!control || !table) return;
+  const controls = [...table.querySelectorAll('[data-repair-sequence-controls]')].filter(item => item.dataset.sequenceGroup === control.dataset.sequenceGroup);
+  const order = controls.map(item => item.dataset.sequenceWo);
+  const next = moveRepairPrioritySequence(order, control.dataset.sequenceWo, button.dataset.repairSequence);
+  const preferences = repairPrioritySequencePreferences();
+  const previous = Array.isArray(preferences[control.dataset.sequenceGroup]) ? preferences[control.dataset.sequenceGroup] : [];
+  preferences[control.dataset.sequenceGroup] = [...next, ...previous.filter(id => !next.includes(id))];
+  try { localStorage.setItem("lms.repairPrioritySequence.v1", JSON.stringify(preferences)); }
+  catch { alert("The browser could not save the report sequence. Check browser storage and try again."); return; }
+  const rows = new Map(controls.map(item => [item.dataset.sequenceWo, item.closest('tr')]));
+  const anchor = document.createComment('repair sequence');
+  rows.get(order[0]).before(anchor);
+  for (const id of next) anchor.before(rows.get(id));
+  anchor.remove();
+  button.focus();
+}
+
+function reportCellExportText(cell) {
+  const copy = cell.cloneNode(true);
+  copy.querySelectorAll('[data-repair-sequence-controls]').forEach(node => node.remove());
+  return copy.textContent.trim();
+}
+
 function exportRepairReport() {
   const host = $("repairReportHost");
   if (!host) return;
@@ -37603,9 +37726,9 @@ function exportRepairReport() {
     const table = section.querySelector("table");
     if (!table) return;
     rows.push([section.querySelector("h3")?.innerText?.trim() || "Repair Report"]);
-    const headers = [...table.querySelectorAll("thead tr:first-child th")].map((cell) => cell.innerText.trim());
+    const headers = [...table.querySelectorAll("thead tr:first-child th")].map((cell) => reportCellExportText(cell));
     rows.push(headers);
-    table.querySelectorAll("tbody tr:not([hidden]), tfoot tr").forEach((tr) => rows.push([...tr.children].slice(0, headers.length).map((cell) => cell.innerText.trim())));
+    table.querySelectorAll("tbody tr:not([hidden]), tfoot tr").forEach((tr) => rows.push([...tr.children].slice(0, headers.length).map((cell) => reportCellExportText(cell))));
     rows.push([]);
   });
   if (!rows.length) return alert("Select at least one tabular repair report before exporting.");
@@ -37738,10 +37861,11 @@ async function renderRepairReportView() {
   };
   const openRepairAgingByPriorityTable = (rows) => {
     const priorityLabel = (value) => String(value || "Normal").trim() || "Normal";
-    const sorted = [...rows].sort((a, b) => String(a.customer || "Unspecified Customer").localeCompare(String(b.customer || "Unspecified Customer")) || repairPriorityRank(a.priority) - repairPriorityRank(b.priority) || String(a.date || "").localeCompare(String(b.date || "")));
+    const sequence = repairPrioritySequencePreferences();
+    const sorted = [...rows].sort((a, b) => String(a.customer || "Unspecified Customer").localeCompare(String(b.customer || "Unspecified Customer")) || repairPriorityRank(a.priority) - repairPriorityRank(b.priority) || repairPrioritySequenceCompare(a, b, sequence) || String(a.date || "").localeCompare(String(b.date || "")));
     const columns = ["date", "wo_no", "priority", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "income_to_date", "status"];
     const labels = ["Opened", "WO #", "Priority", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Income to Date", "Status"];
-    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging by Priority</h3>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, priority: reportWorkOrderPriorityButton, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${priorityLabel(row.priority)}`, groupLabel: (key) => { const [customer, priority] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">Priority: ${esc(priorityLabel(priority))}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
+    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging by Priority</h3><p class="no-print">Use Top, ↑ or ↓ beside a WO to sequence it within its customer and priority group. Order is saved in this browser and used for PDF and Excel.</p>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, wo_no: repairPrioritySequenceCell, priority: reportWorkOrderPriorityButton, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${priorityLabel(row.priority)}`, groupLabel: (key) => { const [customer, priority] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">Priority: ${esc(priorityLabel(priority))}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
   };
   const formats = { income_to_date: (v) => money(v || 0), labor_hours: (v) => Number(v || 0).toFixed(2), hours: (v) => Number(v || 0).toFixed(2), overtime_hours: (v) => Number(v || 0).toFixed(2), parts_cost: (v) => money(v || 0), labor_cost: (v) => money(v || 0), operational_cost: (v) => money(v || 0), freight: (v) => money(v || 0), income: (v) => money(v || 0), profit: (v) => `<strong>${money(v || 0)}</strong>`, margin: partsReportPercent, avg_turnaround: (v) => v == null ? "—" : `${Number(v).toFixed(1)} days`, turnaround_days: (v) => v == null ? "Open" : `${Number(v)} days`, unit_cost: (v) => money(v || 0), cost: (v) => money(v || 0), billing_value: (v) => money(v || 0) };
   const locationReport = (title, rows, field, label) => {
@@ -37841,6 +37965,8 @@ async function renderRepairReportView() {
     reorderRenderedManagementReportSections($("repairReportHost"), "[data-repair-report-section]", $("repairReportSections"));
   };
   $('repairReportHost').onclick=event=>{
+    const sequenceButton = event.target.closest('[data-repair-sequence]');
+    if (sequenceButton) return reorderRepairPriorityReport(sequenceButton);
     const mergeButton = event.target.closest('[data-repair-location-merge]');
     if (mergeButton) return consolidateRepairLocations(mergeButton.dataset.repairLocationMerge, workOrders, mergeButton);
     const button=event.target.closest('[data-report-wo-priority]');if(!button)return;
