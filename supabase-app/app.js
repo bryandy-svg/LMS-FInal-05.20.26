@@ -43239,8 +43239,11 @@ function partNumberEditDistance(left, right) {
 }
 
 async function approveProductMasterCreation(record, editingProduct = null) {
-  const products = await getAll("products");
-  const candidates = products.filter((product) => String(product.id || "") !== String(editingProduct?.id || ""));
+  const { data: products, error } = await supabase.rpc('product_creation_matches', {
+    p_sku: String(record.sku || '').trim(), p_exclude_id: editingProduct?.id || null,
+  });
+  if (error) throw new Error('Could not check for duplicate parts. Please retry. ' + (error.message || error));
+  const candidates = (products || []).filter((product) => String(product.id || "") !== String(editingProduct?.id || ""));
   const enteredSku = String(record.sku || "").trim();
   const exact = candidates.find((product) => String(product.sku || "").trim().toLowerCase() === enteredSku.toLowerCase());
   if (exact) {
@@ -43293,6 +43296,9 @@ async function saveQuickPartOverlay() {
   const validation = validateProductRecord(record);
   if (validation) return alert(validation);
   const saveButton = overlay.querySelector("#saveQuickPartBtn");
+  if (saveButton.disabled) return;
+  saveButton.disabled = true;
+  saveButton.textContent = "Checking part...";
   try {
     if (record.cost && record.markup_percent && !record.selling_price) {
       record.selling_price = Number((record.cost * (1 + record.markup_percent / 100)).toFixed(2));
@@ -43307,14 +43313,16 @@ async function saveQuickPartOverlay() {
     saveButton.disabled = true;
     saveButton.textContent = "Saving...";
     const saved = await insertNewProduct(record);
-    await incrementSequence("product");
-    productMeta.products = [...(productMeta.products || []).filter((product) => product.id !== saved.id && String(product.sku || "").toLowerCase() !== String(saved.sku || "").toLowerCase()), saved]
-      .sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || ""), undefined, { numeric: true, sensitivity: "base" }));
-    await writeAuditLog({ tableName: "products", action: "Created from transaction", beforeData: null, afterData: saved });
+
+    await Promise.all([
+      incrementSequence("product"),
+      writeAuditLog({ tableName: "products", action: "Created from transaction", beforeData: null, afterData: saved }),
+    ]);
     closeQuickPartOverlay();
     alert(`${saved.sku} - ${saved.name} was created and is now available in the parts search.`);
   } catch (error) {
     alert(error.message || error);
+  } finally {
     saveButton.disabled = false;
     saveButton.textContent = "Save part";
   }
