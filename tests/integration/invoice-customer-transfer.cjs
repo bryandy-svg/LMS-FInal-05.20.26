@@ -1,0 +1,18 @@
+// Run from repository root with @electric-sql/pglite 0.3.14 installed or PGLITE_MODULE set.
+const assert=require('assert/strict'),fs=require('fs');const {PGlite}=require(process.env.PGLITE_MODULE || '@electric-sql/pglite');
+(async()=>{const db=new PGlite();await db.exec(`create schema auth; create function auth.uid() returns uuid language sql as $$select '00000000-0000-0000-0000-000000000001'::uuid$$; create function auth.jwt() returns jsonb language sql as $$select '{}'::jsonb$$; create role anon;create role authenticated;
+create table app_profiles(id uuid,role text,modules text[]);insert into app_profiles values(auth.uid(),'Accounting','{}');
+create table customers(id uuid primary key,name text);insert into customers values('00000000-0000-0000-0000-000000000002','Old'),('00000000-0000-0000-0000-000000000003','New');
+create table invoices(id uuid primary key,invoice_no text,customer text,customer_po text,payment_mode text,status text,invoice_date date,due_date date);insert into invoices values('00000000-0000-0000-0000-000000000004','TEST','Old','PO1','PO','Partial',current_date,current_date);
+create table general_ledger(id uuid default gen_random_uuid(),entry_date date,posting_date date,account text,customer text,invoice_no text,invoice_date date,due_date date,description text,reference text,debit numeric,credit numeric,source text,status text);
+insert into general_ledger(account,customer,invoice_no,debit,credit,source,status) values('Accounts Receivable (A/R)','Old','TEST',100,0,'Invoice','Posted'),('Accounts Receivable (A/R)','Old','TEST',0,30,'Customer Payment','Posted');
+create table accounting_periods(status text,closed_through_date date); create table audit_log(event_type text not null,table_name text,record_key text,action text,module text,user_name text,user_email text,reason text,before_data jsonb,after_data jsonb);`);
+await db.exec(fs.readFileSync('supabase/migrations/20261026003141_invoice_customer_po_transfer.sql','utf8'));
+const save=(customer,expected,po='PO2',oldpo='PO1')=>db.query('select update_invoice_customer_po($1,$2,$3,$4,$5)', ['00000000-0000-0000-0000-000000000004',customer,po,expected,oldpo]);
+await save('00000000-0000-0000-0000-000000000003','Old');let r=await db.query('select customer,sum(debit-credit) balance from general_ledger group by customer order by customer');assert.equal(Number(r.rows[0].balance),70);assert.equal(Number(r.rows[1].balance),0);
+r=await db.query("select sum(debit-credit) balance,count(*) n from general_ledger where source='Invoice Customer Transfer'");assert.equal(Number(r.rows[0].balance),0);assert.equal(Number(r.rows[0].n),2);
+await save('00000000-0000-0000-0000-000000000003','New','PO3','PO2');r=await db.query('select count(*) n from general_ledger');assert.equal(Number(r.rows[0].n),4);
+await assert.rejects(save('00000000-0000-0000-0000-000000000002','Old'),/Invoice changed/);
+await save('00000000-0000-0000-0000-000000000002','New','PO4','PO3');r=await db.query('select customer,sum(debit-credit) balance from general_ledger group by customer order by customer');assert.equal(Number(r.rows[0].balance),0);assert.equal(Number(r.rows[1].balance),70);
+await db.exec("insert into accounting_periods values('Closed',current_date+1)");await assert.rejects(save('00000000-0000-0000-0000-000000000003','Old','PO5','PO4'),/closed accounting/);
+r=await db.query('select customer,customer_po from invoices');assert.deepEqual(r.rows[0],{customer:'Old',customer_po:'PO4'});await db.close();console.log('PostgreSQL PASS: partial balance 70 transferred, balanced journals, PO-only no journal, stale edit rejected, repeat transfer and closed-period rollback.');})().catch(e=>{console.error(e);process.exitCode=1});

@@ -125,5 +125,6 @@
   "ticket-editor-scope",
   "schedule-date-loading",
   "repair-request-actions",
-  "invoice-editor-loading"
+  "invoice-editor-loading",
+  "invoice-header-transfer"
 ]

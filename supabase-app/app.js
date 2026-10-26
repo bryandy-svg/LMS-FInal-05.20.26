@@ -27479,6 +27479,7 @@ async function openInvoiceModal(inv = null, forceReadOnly = false) {
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => quickCreateCustomerInOpenModal());
   document.querySelectorAll("[data-invoice-source-open]").forEach((button) => button.onclick = () => openInvoiceSourceOverlay(button.dataset.invoiceSourceOpen));
   if (readOnly) setInvoiceModalReadOnly(inv);
+  else if (inv) restrictExistingInvoiceEdits();
   } catch (error) {
     if (!loadingNode.isConnected || $('modal').style.display === 'none') return;
     $('modalBody').innerHTML = '<p role="alert">Could not load this invoice. ' + esc(error.message || error) + '</p>';
@@ -27523,6 +27524,40 @@ async function openInvoiceSourceOverlay(sourceReference) {
   } catch (error) {
     alert(`Could not open Sales Order ${reference}.\n\n${error.message || error}`);
   }
+}
+
+function restrictExistingInvoiceEdits() {
+  document.querySelectorAll('#modalBody input, #modalBody select, #modalBody textarea').forEach(field => {
+    if (!['customer','customer_po'].includes(field.dataset.productField)) {
+      field.disabled = true;
+      field.setAttribute('aria-readonly', 'true');
+    }
+  });
+  document.querySelectorAll('#modalBody button').forEach(button => {
+    if (!button.hasAttribute('data-invoice-source-open')) button.hidden = true;
+  });
+  const notice = document.createElement('p');
+  notice.className = 'notice';
+  notice.textContent = 'Only Customer and Customer PO # can be edited. Changing the customer transfers the outstanding receivable to that customer; invoice amounts and lines stay unchanged.';
+  $('modalBody').prepend(notice);
+}
+
+async function saveInvoiceCustomerPo() {
+  const invoice = editing;
+  if (!invoice?.id) throw new Error('Reopen the invoice before saving.');
+  const customer = document.querySelector('[data-product-field="customer"]')?.value?.trim();
+  const po = document.querySelector('[data-product-field="customer_po"]')?.value?.trim() || '';
+  const master = await requirePartyMasterSelection('customers', customer, 'a customer');
+  if (!master) return;
+  if ((invoice.payment_mode || 'PO') === 'PO' && !po) throw new Error('Customer PO # is required.');
+  if (master.name !== invoice.customer && !confirm('Transfer the outstanding receivable for ' + invoice.invoice_no + ' from ' + invoice.customer + ' to ' + master.name + '?')) return;
+  const { error } = await supabase.rpc('update_invoice_customer_po', {
+    p_invoice_id: invoice.id, p_customer_id: master.id, p_customer_po: po,
+    p_expected_customer: invoice.customer ?? null, p_expected_po: invoice.customer_po ?? null,
+  });
+  if (error) throw error;
+  closeModal(true);
+  await renderInvoicesView();
 }
 
 function setInvoiceModalReadOnly(inv) {
@@ -27694,6 +27729,7 @@ function parseInvoiceModalLines() {
 }
 
 async function saveInvoiceModal() {
+  if (editing?.id) return saveInvoiceCustomerPo();
   if (editing?.invoice_no) {
     try { await assertInvoiceHasNoReversalHistory(editing.invoice_no); }
     catch (error) { alert(error.message || error); return; }
