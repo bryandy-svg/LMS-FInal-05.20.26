@@ -290,6 +290,7 @@ function applyModuleListFilters(query,state,tab=state.tab) {
 }
 function installModulePeriodControls(state,bar) {
   if(!moduleDateFields[state.view]) return;
+  if(state.view==='trucking' && $('modulePeriodControls')) return;
   const controls=document.createElement('div');controls.className='toolbar';controls.id='modulePeriodControls';
   controls.innerHTML='<label>Period <select data-list-period><option value="outstanding">All dates / outstanding</option><option value="month">This month</option><option value="previous">Previous month</option><option value="custom">Custom range</option><option value="all">All dates</option></select></label><label>From <input type="date" data-list-from></label><label>To <input type="date" data-list-to></label><button type="button" data-list-apply>Apply dates</button>';
   $('modulePeriodControls')?.remove();
@@ -5310,7 +5311,7 @@ async function loadView(view, listOptions = {}) {
         if(pageScope && liveText.trim()!==pageScope.query)retainedSearch.dispatchEvent(new Event('input',{bubbles:true}));
       }
       if(retainedPeriodControls && currentView===view) {
-        $('modulePeriodControls')?.replaceWith(retainedPeriodControls);
+        if($('modulePeriodControls')!==retainedPeriodControls) $('modulePeriodControls')?.replaceWith(retainedPeriodControls);
         if(listOptions.period!=null) {
           retainedPeriodControls.querySelector('[data-list-period]').value=pageScope.period;
           retainedPeriodControls.querySelector('[data-list-from]').value=pageScope.from;
@@ -34094,8 +34095,8 @@ function truckingSimpleTable(rows, columns, options = {}) {
   const filterSelect = (col, index) => {
     const values = [...new Set(safeRows.map((row) => filterValue(row?.[col])))]
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-    if (String(options.wrapClass || "").split(/\s+/).includes("repair-report-table")) {
-      return `<details class="report-multi-filter" data-column-index="${index}" ontoggle="positionReportMultiFilter(this)"><summary aria-label="Filter ${safe(labels[col] || col)}">All</summary><div class="report-multi-options"><input type="search" placeholder="Search values" aria-label="Search filter values" oninput="searchReportMultiFilter(this)"><label><input type="checkbox" data-report-all checked onchange="toggleReportMultiFilterAll(this)"> Select all</label>${values.map(value => `<label data-report-option><input type="checkbox" value="${safe(value)}" checked onchange="applyReportMultiFilters(this)"> ${safe(value || "(Blank)")}</label>`).join("")}<button type="button" onclick="this.closest('details').open=false">Done</button></div></details>`;
+    if (options.multiFilters || String(options.wrapClass || "").split(/\s+/).includes("repair-report-table")) {
+      return `<details class="report-multi-filter" data-column-index="${index}" ontoggle="positionReportMultiFilter(this)"><summary aria-label="Filter ${safe(labels[col] || col)}">All</summary><div class="report-multi-options">${options.multiFilters ? `<button type="button" onclick="sortTruckingSchedulerColumn(this,1)">Sort ascending</button><button type="button" onclick="sortTruckingSchedulerColumn(this,-1)">Sort descending</button>` : ""}<input type="search" placeholder="Search values" aria-label="Search filter values" oninput="searchReportMultiFilter(this)"><label><input type="checkbox" data-report-all checked onchange="toggleReportMultiFilterAll(this)"> Select all</label>${values.map(value => `<label data-report-option><input type="checkbox" value="${safe(value)}" checked onchange="applyReportMultiFilters(this)"> ${safe(value || "(Blank)")}</label>`).join("")}<button type="button" onclick="this.closest('details').open=false">Done</button></div></details>`;
     }
     return `<select class="truck-column-filter" data-column-index="${index}" onchange="applyTruckingTableFilters(this)" aria-label="Filter ${safe(labels[col] || col)}">
       <option value="">All</option>
@@ -35073,7 +35074,9 @@ async function renderTruckingSchedulerView() {
   $("viewSub").textContent = isTruckingDriverUser()
     ? "View assigned moves, complete ticket details, and collect signatures."
     : "Dispatch requested moves, generate tickets, and maintain non-accounting trucking billing support.";
+  const schedulerScope = moduleListScope;
   await loadTruckingLookups({ useCache: true });
+  if(currentView !== 'trucking' || (schedulerScope && moduleListScope !== schedulerScope)) return;
   let rows = productMeta.truckingMoves || [];
   rows = rows.filter((row) => !isManualTruckingTicket(row));
   if (isTruckingDriverUser()) {
@@ -35086,6 +35089,15 @@ async function renderTruckingSchedulerView() {
     finalized: currentRows.filter((row) => truckingSchedulerStatusTab(row) === "finalized").length,
     cancelled: currentRows.filter((row) => truckingSchedulerStatusTab(row) === "cancelled").length,
   };
+  // Keep the live date/search controls attached while new records arrive.
+  if ($("truckMoveHost")) {
+    document.querySelectorAll('[data-trucking-scheduler-tab]').forEach(button => {
+      const badge = button.querySelector('.badge');
+      if (badge) badge.textContent = tabCounts[button.dataset.truckingSchedulerTab];
+    });
+    renderFilteredTruckingMoves();
+    return;
+  }
   $("content").innerHTML = `
     <div class="toolbar"><input class="searchbox" id="truckMoveSearch" placeholder="Search ticket, driver, customer, equipment, origin, destination"></div>
     <div class="tabbar trucking-request-tabs">
@@ -35140,6 +35152,7 @@ function truckingMoveTable(rows) {
       </article>`).join("") || `<div class="empty">No scheduled moves found.</div>`}</div>`;
   }
   return truckingSimpleTable(filtered, ["ticket_no", "move_date", "customer", "project", "jobsite", "driver_name", "helper_driver_name", "trip_type", "service", "requested_equipment_label", "equipment_label", "origin", "destination", "container_no", "start_time", "end_time", "amount", "discount_percent", "discount_amount", "amount_to_bill", "status"], {
+    multiFilters: true,
     labels: ["Ticket #", "Date", "Customer", "Project", "Jobsite", "Driver", "Helper Driver", "Trip Type", "Service", "Equipment Requested", "Equipment Used", "Origin", "Destination", "Container #", "Start", "End", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Status"],
     format: { amount: (value) => money(value || 0), discount_percent: (value, row) => `${truckingDiscountPercent(row).toFixed(2)}%`, discount_amount: (value) => money(value || 0), amount_to_bill: (_value, row) => money(truckingAmountToBill(row)), status: (value) => badge(value || "Scheduled") },
     actions: (row) => `<button type="button" data-trucking-move-action="pdf" data-ticket-no="${esc(row.ticket_no)}">PDF</button><button type="button" data-trucking-move-action="edit" data-ticket-no="${esc(row.ticket_no)}">Edit</button>${!["Cancelled", "Finalized"].includes(row.status || "") ? `<button type="button" class="danger" data-trucking-move-action="cancel" data-ticket-no="${esc(row.ticket_no)}">Cancel</button>` : ""}`,
@@ -35169,12 +35182,55 @@ function bindTruckingMoveActions(host) {
   };
 }
 
+// Retain focused filter controls and merge newly loaded choices without
+// silently broadening an explicit selection.
+function sortTruckingSchedulerColumn(button, direction) {
+  const wrap = button.closest('.tablewrap');
+  wrap.dataset.sortColumn = button.closest('details').dataset.columnIndex;
+  wrap.dataset.sortDirection = direction;
+  sortTruckingSchedulerRows(wrap);
+}
+
+function sortTruckingSchedulerRows(wrap) {
+  const body = wrap.querySelector('tbody');
+  const index = Number(wrap.dataset.sortColumn), direction = Number(wrap.dataset.sortDirection);
+  const rows = [...body.rows];
+  rows.sort((a,b) => String(a.cells[index]?.dataset.filterValue || '').localeCompare(String(b.cells[index]?.dataset.filterValue || ''), undefined, {numeric:true,sensitivity:'base'}) * direction);
+  body.append(...rows);
+}
+
+function updateTruckingSchedulerTable(host, html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const existing = host.querySelector('.tablewrap');
+  const incoming = template.content.querySelector('.tablewrap');
+  if (!existing || !incoming) { host.replaceChildren(template.content); return; }
+  existing.querySelectorAll('.report-multi-filter').forEach(details => {
+    const fresh = incoming.querySelector('[data-column-index="' + details.dataset.columnIndex + '"]');
+    if (!fresh) return;
+    const boxes = [...details.querySelectorAll('[data-report-option] input')];
+    const allSelected = boxes.every(box => box.checked);
+    const known = new Set(boxes.map(box => box.value));
+    const menu = details.querySelector('.report-multi-options');
+    fresh.querySelectorAll('[data-report-option]').forEach(label => {
+      const box = label.querySelector('input');
+      if (known.has(box.value)) return;
+      box.checked = allSelected;
+      menu.insertBefore(label, menu.lastElementChild);
+    });
+    searchReportMultiFilter(details.querySelector('input[type="search"]'));
+  });
+  existing.querySelector('tbody').replaceWith(incoming.querySelector('tbody'));
+  applyReportMultiFilters(existing);
+  if(existing.dataset.sortColumn != null) sortTruckingSchedulerRows(existing);
+}
+
 function renderFilteredTruckingMoves() {
   const tabRows = (currentRows || []).filter((row) => truckingSchedulerStatusTab(row) === truckingSchedulerTab);
   const search = $("truckMoveSearch")?.value || "";
   const shown = tabRows.filter((row) => truckingRowMatchesSearch(row, search));
   const host = $("truckMoveHost");
-  host.innerHTML = truckingMoveTable(tabRows);
+  updateTruckingSchedulerTable(host, truckingMoveTable(tabRows));
   bindTruckingMoveActions(host);
   const count = $("truckMoveCount");
   if (count) count.textContent = `${shown.length} move${shown.length === 1 ? "" : "s"} shown in ${truckingSchedulerTab}.`;
