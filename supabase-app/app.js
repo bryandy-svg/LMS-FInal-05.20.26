@@ -34191,7 +34191,7 @@ function exportTruckingVisibleTable(button) {
       ? [row.innerText.trim(), ...Array(Math.max(0, columnCount - 1)).fill("")]
       : [...row.children].slice(0, columnCount).map((cell) => {
       const input = cell.querySelector("input, select, textarea");
-      return input && !["checkbox", "radio"].includes(input.type) ? input.value : cell.innerText.trim();
+      return input && !["checkbox", "radio"].includes(input.type) ? input.value : reportCellExportText(cell);
     }));
   const footerRows = [...wrap.querySelectorAll("tfoot tr")].map((row) => [...row.children].slice(0, columnCount).map((cell) => cell.innerText.trim()));
   if (!visibleRows.length) return alert("No visible rows to export.");
@@ -36973,7 +36973,7 @@ function printTruckingManagementReport() {
   const useTabloid = $("truckingReportPaperSize")?.value === "tabloid";
   const printable = source.cloneNode(true);
   printable.querySelectorAll("table").forEach(fitTruckingReportTable);
-  printable.querySelectorAll(".truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
+  printable.querySelectorAll(".no-print, .truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
   printable.querySelectorAll("tbody tr[hidden]").forEach((row) => row.remove());
   printable.querySelectorAll('.trucking-report-jobsite-table [data-report-column="category"]').forEach((cell) => {
     cell.style.setProperty("width", "11%", "important");
@@ -37327,7 +37327,7 @@ function printReportOnly(hostId, title) {
   const useTabloid = $(paperControlId)?.value === "tabloid";
   const printable = source.cloneNode(true);
   printable.querySelectorAll("[data-document-reference]").forEach((button) => button.replaceWith(document.createTextNode(String(button.textContent || "").trim())));
-  printable.querySelectorAll(".truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
+  printable.querySelectorAll(".no-print, .truck-visible-export-bar, .truck-filter-row, button, input, select, textarea, details").forEach((node) => node.remove());
   printable.querySelectorAll("tbody tr[hidden]").forEach((row) => row.remove());
   printable.querySelectorAll("td").forEach((cell) => {
     const value = String(cell.textContent || "").trim().replace(/\s+/g, "");
@@ -37663,6 +37663,61 @@ async function renderPartsReportView() {
   apply();
 }
 
+function repairPrioritySequenceGroup(row) {
+  return JSON.stringify([String(row.customer || "Unspecified Customer").trim(), String(row.priority || "Normal").trim().toLowerCase()]);
+}
+
+function repairPrioritySequencePreferences() {
+  try { const value = JSON.parse(localStorage.getItem("lms.repairPrioritySequence.v1") || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; }
+}
+
+function repairPrioritySequenceCompare(a, b, preferences) {
+  const group = repairPrioritySequenceGroup(a);
+  if (group !== repairPrioritySequenceGroup(b)) return 0;
+  const order = Array.isArray(preferences[group]) ? preferences[group] : [];
+  const rank = row => { const index = order.indexOf(String(row.wo_no)); return index < 0 ? Number.MAX_SAFE_INTEGER : index; };
+  return rank(a) - rank(b);
+}
+
+function moveRepairPrioritySequence(order, workOrder, direction) {
+  const result = [...new Set(order)];
+  const from = result.indexOf(workOrder);
+  if (from < 0) return result;
+  const to = direction === "top" ? 0 : direction === "up" ? Math.max(0, from - 1) : direction === "down" ? Math.min(result.length - 1, from + 1) : from;
+  result.splice(from, 1); result.splice(to, 0, workOrder);
+  return result;
+}
+
+function repairPrioritySequenceCell(value, row) {
+  return '<span>' + esc(value || "") + '</span><div class="no-print" data-repair-sequence-controls data-sequence-group="' + esc(repairPrioritySequenceGroup(row)) + '" data-sequence-wo="' + esc(row.wo_no) + '" style="display:flex;gap:3px;margin-top:5px">' + [["top","Top"],["up","↑"],["down","↓"]].map(([direction,label]) => '<button type="button" class="rowbtn" data-repair-sequence="' + direction + '" aria-label="Move ' + esc(row.wo_no) + ' ' + direction + ' within priority" title="Move ' + direction + '">' + label + '</button>').join("") + '</div>';
+}
+
+function reorderRepairPriorityReport(button) {
+  const control = button.closest('[data-repair-sequence-controls]');
+  const table = button.closest('table');
+  if (!control || !table) return;
+  const controls = [...table.querySelectorAll('[data-repair-sequence-controls]')].filter(item => item.dataset.sequenceGroup === control.dataset.sequenceGroup);
+  const order = controls.map(item => item.dataset.sequenceWo);
+  const next = moveRepairPrioritySequence(order, control.dataset.sequenceWo, button.dataset.repairSequence);
+  const preferences = repairPrioritySequencePreferences();
+  const previous = Array.isArray(preferences[control.dataset.sequenceGroup]) ? preferences[control.dataset.sequenceGroup] : [];
+  preferences[control.dataset.sequenceGroup] = [...next, ...previous.filter(id => !next.includes(id))];
+  try { localStorage.setItem("lms.repairPrioritySequence.v1", JSON.stringify(preferences)); }
+  catch { alert("The browser could not save the report sequence. Check browser storage and try again."); return; }
+  const rows = new Map(controls.map(item => [item.dataset.sequenceWo, item.closest('tr')]));
+  const anchor = document.createComment('repair sequence');
+  rows.get(order[0]).before(anchor);
+  for (const id of next) anchor.before(rows.get(id));
+  anchor.remove();
+  button.focus();
+}
+
+function reportCellExportText(cell) {
+  const copy = cell.cloneNode(true);
+  copy.querySelectorAll('[data-repair-sequence-controls]').forEach(node => node.remove());
+  return copy.textContent.trim();
+}
+
 function exportRepairReport() {
   const host = $("repairReportHost");
   if (!host) return;
@@ -37671,9 +37726,9 @@ function exportRepairReport() {
     const table = section.querySelector("table");
     if (!table) return;
     rows.push([section.querySelector("h3")?.innerText?.trim() || "Repair Report"]);
-    const headers = [...table.querySelectorAll("thead tr:first-child th")].map((cell) => cell.innerText.trim());
+    const headers = [...table.querySelectorAll("thead tr:first-child th")].map((cell) => reportCellExportText(cell));
     rows.push(headers);
-    table.querySelectorAll("tbody tr:not([hidden]), tfoot tr").forEach((tr) => rows.push([...tr.children].slice(0, headers.length).map((cell) => cell.innerText.trim())));
+    table.querySelectorAll("tbody tr:not([hidden]), tfoot tr").forEach((tr) => rows.push([...tr.children].slice(0, headers.length).map((cell) => reportCellExportText(cell))));
     rows.push([]);
   });
   if (!rows.length) return alert("Select at least one tabular repair report before exporting.");
@@ -37806,10 +37861,11 @@ async function renderRepairReportView() {
   };
   const openRepairAgingByPriorityTable = (rows) => {
     const priorityLabel = (value) => String(value || "Normal").trim() || "Normal";
-    const sorted = [...rows].sort((a, b) => String(a.customer || "Unspecified Customer").localeCompare(String(b.customer || "Unspecified Customer")) || repairPriorityRank(a.priority) - repairPriorityRank(b.priority) || String(a.date || "").localeCompare(String(b.date || "")));
+    const sequence = repairPrioritySequencePreferences();
+    const sorted = [...rows].sort((a, b) => String(a.customer || "Unspecified Customer").localeCompare(String(b.customer || "Unspecified Customer")) || repairPriorityRank(a.priority) - repairPriorityRank(b.priority) || repairPrioritySequenceCompare(a, b, sequence) || String(a.date || "").localeCompare(String(b.date || "")));
     const columns = ["date", "wo_no", "priority", "asset_tag", "asset_description", "jobsite", "mechanics", "description", "open_age_days", "income_to_date", "status"];
     const labels = ["Opened", "WO #", "Priority", "Asset #", "Equipment Name", "Jobsite", "Mechanic(s)", "Repair Description", "Days Open", "Income to Date", "Status"];
-    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging by Priority</h3>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, priority: reportWorkOrderPriorityButton, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${priorityLabel(row.priority)}`, groupLabel: (key) => { const [customer, priority] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">Priority: ${esc(priorityLabel(priority))}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
+    return `<section class="parts-report-section repair-report-section" data-repair-report-section><h3>Open Repair Aging by Priority</h3><p class="no-print">Use Top, ↑ or ↓ beside a WO to sequence it within its customer and priority group. Order is saved in this browser and used for PDF and Excel.</p>${truckingSimpleTable(sorted, columns, { labels, format: { ...formats, wo_no: repairPrioritySequenceCell, priority: reportWorkOrderPriorityButton, description: (value) => `<span class="repair-description-two-lines" title="${esc(value || "")}">${esc(value || "")}</span>` }, footer: managementReportTotalFooter(sorted, columns), groupBy: (row) => `${row.customer || "Unspecified Customer"}\u0001${priorityLabel(row.priority)}`, groupLabel: (key) => { const [customer, priority] = String(key).split("\u0001"); return `<strong>Customer: ${esc(customer)}</strong><br><span class="repair-equipment-subheader">Priority: ${esc(priorityLabel(priority))}</span>`; }, wrapClass: "trucking-report-table repair-report-table open-repair-aging-table", empty: "No open repairs match this report selection." })}</section>`;
   };
   const formats = { income_to_date: (v) => money(v || 0), labor_hours: (v) => Number(v || 0).toFixed(2), hours: (v) => Number(v || 0).toFixed(2), overtime_hours: (v) => Number(v || 0).toFixed(2), parts_cost: (v) => money(v || 0), labor_cost: (v) => money(v || 0), operational_cost: (v) => money(v || 0), freight: (v) => money(v || 0), income: (v) => money(v || 0), profit: (v) => `<strong>${money(v || 0)}</strong>`, margin: partsReportPercent, avg_turnaround: (v) => v == null ? "—" : `${Number(v).toFixed(1)} days`, turnaround_days: (v) => v == null ? "Open" : `${Number(v)} days`, unit_cost: (v) => money(v || 0), cost: (v) => money(v || 0), billing_value: (v) => money(v || 0) };
   const locationReport = (title, rows, field, label) => {
@@ -37909,6 +37965,8 @@ async function renderRepairReportView() {
     reorderRenderedManagementReportSections($("repairReportHost"), "[data-repair-report-section]", $("repairReportSections"));
   };
   $('repairReportHost').onclick=event=>{
+    const sequenceButton = event.target.closest('[data-repair-sequence]');
+    if (sequenceButton) return reorderRepairPriorityReport(sequenceButton);
     const mergeButton = event.target.closest('[data-repair-location-merge]');
     if (mergeButton) return consolidateRepairLocations(mergeButton.dataset.repairLocationMerge, workOrders, mergeButton);
     const button=event.target.closest('[data-report-wo-priority]');if(!button)return;
