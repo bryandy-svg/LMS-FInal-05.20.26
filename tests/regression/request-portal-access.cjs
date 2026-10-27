@@ -1,0 +1,32 @@
+const assert=require('node:assert/strict');const handler=require('../../api/request-access.js');const {encodePassword,checkPassword,readData,history}=handler._test;
+process.env.SUPABASE_URL='https://database.test';process.env.SUPABASE_SERVICE_ROLE_KEY='test-only';
+let calls=[];const respond=(data,status=200)=>new Response(JSON.stringify(data),{status});
+async function invoke(body,origin='https://lms.test'){let status,data,headers={};const res={setHeader:(k,v)=>headers[k]=v,set statusCode(v){status=v;},end:s=>data=JSON.parse(s)};await handler({method:'POST',headers:{host:'lms.test',origin,'x-real-ip':'127.0.0.1'},body},res);return {status,data,headers};}
+(async()=>{
+ const vm=require('node:vm'),{functions}=require('../source.cjs');
+ const roleContext={profile:{role:'User',modules:['repairs','requestportal']},REQUEST_PORTAL_VIEWS:['requestportal','equipmentrequests','truckingrequests','equipmentrepairqueue','propertyrequests']};vm.createContext(roleContext);
+ vm.runInContext(functions(['normalizeModules','userModules','isMechanicUser','isFuelUser','isTruckingDriverUser','usesTruckingDriverMobileMode','isEquipmentRequestUser','isDualRequestPortalUser','isPropertyMaintenanceRequestUser','isTruckingRequestorUser','defaultView','canAccess']),roleContext);
+ assert.equal(roleContext.defaultView(),'repairs');assert.equal(roleContext.canAccess('requestportal'),true);assert.equal(roleContext.canAccess('accounting'),false);
+ roleContext.profile.modules=['truckingassigned','truckingtickets','requestportal'];assert.equal(roleContext.defaultView(),'truckingassigned');assert.equal(roleContext.usesTruckingDriverMobileMode(),true);assert.equal(roleContext.canAccess('propertyrequests'),true);
+ roleContext.profile.modules=['accounting','requestportal'];assert.equal(roleContext.canAccess('accounting'),true);assert.equal(roleContext.canAccess('invoices'),false);
+ const stored=await encodePassword('a-long-password');assert.ok(!stored.includes('a-long-password'));assert.equal(await checkPassword('a-long-password',stored),true);assert.equal(await checkPassword('wrong',stored),false);
+ global.fetch=async(url,init)=>{calls.push([String(url),init]);if(String(url).includes('request_portal_links'))return respond([{request_no:'LMS-00012'}]);return respond([]);};
+ await readData({owner_id:'owner-a'},{path:'/rest/v1/trucking_requests?select=*,customers(*)&request_no=eq.LMS-99999&or=(status.eq.Approved)'});
+ const read=new URL(calls.at(-1)[0]);assert.deepEqual(read.searchParams.getAll('request_no'),['eq.LMS-99999','in.("LMS-00012")']);assert.equal(read.searchParams.has('or'),false);assert.equal(read.searchParams.get('select'),'*');
+ await assert.rejects(readData({owner_id:'a'},{path:'/rest/v1/general_ledger?select=*'}),/not available/);
+ await assert.rejects(readData({owner_id:'a'},{path:'/rest/v1/rpc/reset_data'}),/not available/);
+ global.fetch=async(url,init)=>{const path=String(url);calls.push([path,init]);if(path.includes('rate_limit'))return respond(true);if(path.includes('find_staff'))return respond([{id:'staff-1',email:'staff@example.com',modules:['repairs','accounting']}]);if(path.includes('request_portal_accounts'))return respond([]);if(path.includes('/auth/v1/token'))return respond({user:{id:'staff-1'},access_token:'test',refresh_token:'test-refresh'});return respond([]);};
+ let result=await invoke({action:'guest',email:'staff@example.com',full_name:'Someone'});assert.equal(result.status,409);assert.equal(result.data.exists,true);
+ calls=[];result=await invoke({action:'login',username:'staff@example.com',password:'real-password'});assert.equal(result.status,200);assert.ok(calls.some(([url])=>url.includes('request_portal_add_access')));assert.ok(!calls.some(([url,init])=>url.includes('app_profiles?')&&init.method==='PATCH'),'Do not replace the staff permission array');assert.match(result.headers['Set-Cookie'],/HttpOnly; Secure; SameSite=Strict/);
+ calls=[];global.fetch=async(url,init)=>{calls.push([String(url),init]);if(String(url).includes('rate_limit'))return respond(true);if(String(url).includes('find_staff'))return respond([]);return respond([]);};
+ result=await invoke({action:'guest',email:'guest@example.com',full_name:'Guest'});assert.equal(result.status,200);assert.equal(result.data.identity.mode,'guest');assert.ok(!result.headers['Set-Cookie'].includes('Max-Age'));assert.ok(!calls.some(([url])=>url.includes('/auth/')),'Guest must not receive a company Auth identity');
+ assert.equal((await invoke({action:'guest'},'https://evil.test')).status,403);
+ global.fetch=async url=>String(url).includes('request_portal_links')?respond([{kind:'trucking',request_no:'LMS-1',record_id:'1',snapshot:{move_description:'Own move'}}]):String(url).includes('trucking_moves')?respond([{request_no:'LMS-1',ticket_no:'T1',status:'Finalized'}]):respond([{id:1,status:'Scheduled'}]);
+ assert.equal((await history({owner_id:'a'}))[0].status,'Completed');
+ let requestLines=[{request_no:'LMS-1',line_no:1,status:'Dispatched'},{request_no:'LMS-1',line_no:2,status:'Requested'}];
+ global.fetch=async url=>String(url).includes('request_portal_links')?respond([{kind:'trucking',request_no:'LMS-1',record_id:'1',snapshot:{move_description:'Own move'}}]):String(url).includes('trucking_moves')?respond([{request_no:'LMS-1',request_line_no:1,ticket_no:'T1',status:'Finalized'}]):String(url).includes('trucking_request_lines')?respond(requestLines):respond([{id:1,status:'Scheduled'}]);
+ assert.equal((await history({owner_id:'a'}))[0].status,'Partially completed','Unscheduled items must keep the request open');
+ requestLines[1].status='Cancelled';assert.equal((await history({owner_id:'a'}))[0].status,'Completed');
+ assert.equal((await invoke({action:'logout'})).status,200,'Expired sessions can sign out');
+ console.log('Request portal password hashing, ownership, guest isolation, existing-user access and completion status passed');
+})().catch(error=>{console.error(error);process.exitCode=1;});

@@ -3,6 +3,53 @@ import { mountEmailDelivery, openEmailSettings, rememberEmailPdf } from "./conne
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./supabase-config.js";
 
+
+let requestPortalIdentity = null;
+const REQUEST_PORTAL_VIEWS = ['requestportal','equipmentrequests','truckingrequests','equipmentrepairqueue','propertyrequests'];
+function requestPortalRestricted() {
+  return Boolean(requestPortalIdentity && (requestPortalIdentity.mode !== 'company' || REQUEST_PORTAL_VIEWS.includes(currentView)));
+}
+async function requestPortalApi(action, body = {}) {
+  const response = await fetch('/api/request-access', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...body})});
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || 'Request access failed.');
+  return result;
+}
+function prepareRequestPortalForm() {
+  if (!requestPortalIdentity) return;
+  $('modal').dataset.portalSubmission = crypto.randomUUID();
+  const fields = $('modalBody').querySelectorAll('input[type="email"],input[name="requested_by"],[data-equipment-request-field="requested_by"],[data-repair-request-field="requested_by"],#pmRequestedBy');
+  fields.forEach(field => {field.value = field.type === 'email' ? requestPortalIdentity.email : requestPortalIdentity.full_name;if(field.type==='email')field.readOnly=true;});
+  $('pmRequestStatus')?.closest('.field')?.setAttribute('hidden','');
+}
+async function submitRequestPortal(kind, record, lines = [], po = null) {
+  const button=$('modalSave');if(button.dataset.portalBusy==='1')return;
+  button.dataset.portalBusy='1';button.disabled=true;
+  try {
+    const result=await requestPortalApi('submit',{kind,record,lines,po,submission:$('modal').dataset.portalSubmission});
+    closeModal();invalidateViewReads();alert('Submitted successfully. Request '+result.data.request_no+'. You can check its status under My requests.');
+    await loadView('requestportal');
+  } catch(error) {alert(error.message || 'Could not submit the request. Please retry.');}
+  finally {button.disabled=false;delete button.dataset.portalBusy;}
+}
+async function renderRequestPortalHistory() {
+  const host=$('requestPortalHistory');if(!host)return;
+  try {const {data}=await requestPortalApi('history');if(!host.isConnected)return;
+    host.innerHTML='<h3>My requests</h3><p>'+ (requestPortalIdentity.mode==='guest'?'Requests from this guest session.':'Requests submitted through your account.')+'</p>'+data.map(row=>'<article class="notice"><strong>'+esc(row.request_no)+' — '+esc(row.status)+'</strong><p>'+esc(row.description)+'</p>'+row.tickets.map(ticket=>'<div>'+esc(ticket.ticket_no)+' · '+esc(formatDisplayDate(ticket.move_date))+' · '+esc(ticket.status)+'</div>').join('')+'</article>').join('')+(data.length?'':'<p>No requests submitted yet.</p>');
+  } catch(error){host.textContent=error.message;}
+}
+async function requestPortalDatabaseFetch(input, init) {
+  const method=String(init?.method||'GET').toUpperCase();
+  if(method!=='GET'&&method!=='HEAD')return new Response(JSON.stringify({message:'Use the request form to submit this change.'}),{status:403,headers:{'Content-Type':'application/json'}});
+  try {
+    const url=new URL(String(input?.url||input));
+    const {data}=await requestPortalApi('read',{path:url.pathname+url.search});
+    const singular=new Headers(init?.headers).get('Accept')?.includes('application/vnd.pgrst.object');
+    if(singular&&data.length!==1)return new Response(JSON.stringify({message:'Record not found',code:'PGRST116'}),{status:406,headers:{'Content-Type':'application/json'}});
+    return new Response(method==='HEAD'?null:JSON.stringify(singular?data[0]:data),{status:200,headers:{'Content-Type':'application/json','Content-Range':'0-'+Math.max(0,data.length-1)+'/'+data.length}});
+  }catch(error){return new Response(JSON.stringify({message:error.message}),{status:403,headers:{'Content-Type':'application/json'}});}
+}
+
 const viewReadCache = new Map();
 let viewReadGeneration = 0;
 let viewWritesInProgress = 0;
@@ -14,6 +61,7 @@ let sessionWarmBusy = false;
 let foregroundViewLoads = 0;
 const sessionWarmAttempted = new Set();
 function scheduleSessionWarmup() {
+  if(requestPortalIdentity) return;
   clearTimeout(sessionWarmTimer);
   sessionWarmTimer = setTimeout(() => void warmNextSessionTable(), 2000);
 }
@@ -89,6 +137,7 @@ function invalidateViewReads() {
 }
 
 async function appDatabaseFetch(input, init) {
+  if (requestPortalRestricted() && String(input?.url||input).includes('/rest/v1/')) return requestPortalDatabaseFetch(input, init);
   const method = String(init?.method || input?.method || "GET").toUpperCase();
   // This stable SQL function only reads inventory. POST is the RPC transport,
   // not a mutation; visiting Products must not evict every module's data.
@@ -1029,17 +1078,31 @@ async function boot() {
   const publicScan = hasAssetHash();
   renderNav();
   bindChrome();
+  new MutationObserver(records=>{
+    if(!requestPortalIdentity || !records.some(r=>r.target===$('modalBody')))return;
+    if($('modalBody').querySelector('[data-equipment-request-field="email_address"],input[name="requestor_email"],#pmRequestEmail'))prepareRequestPortalForm();
+    if(requestPortalIdentity) document.querySelectorAll('[data-property-request-convert],[data-property-request-edit]').forEach(button=>button.hidden=true);
+  }).observe($('modalBody'),{childList:true});
   const { data } = await supabase.auth.getSession();
   session = data.session;
-  if (session) await loadProfile();
-  if (session) await loadAccountingCloseDate();
+  if(new URLSearchParams(location.search).has('requests')) {
+    try {requestPortalIdentity=(await requestPortalApi('session')).identity;}catch {location.replace('/request-access.html');return;}
+    if(requestPortalIdentity.mode!=='company') {
+      session={user:{id:'request-portal',email:requestPortalIdentity.email}};
+      profile={email:requestPortalIdentity.email,full_name:requestPortalIdentity.full_name,username:requestPortalIdentity.email,role:'User',modules:['equipmentrequests','truckingrequests']};
+    } else if(!session) {location.replace('/request-access.html');return;}
+  }
+  if(session && (!requestPortalIdentity || requestPortalIdentity.mode==='company')) await loadProfile();
+  if(requestPortalIdentity?.mode==='company' && session?.user?.email?.toLowerCase()!==requestPortalIdentity.email.toLowerCase()) {location.replace('/request-access.html');return;}
+  if(session?.user?.email?.toLowerCase()==='request@lmsfm.com') {await supabase.auth.signOut({scope:'local'});location.replace('/request-access.html');return;}
+  if (session && (!requestPortalIdentity || requestPortalIdentity.mode==='company')) await loadAccountingCloseDate();
   renderNav();
   updateAuthView();
   if (publicScan) {
     await handleAssetHash();
   } else if (session) {
-    await loadView(defaultView());
-    await handleSharedDocumentHash();
+    await loadView(requestPortalIdentity ? 'requestportal' : defaultView());
+    if(!requestPortalIdentity) await handleSharedDocumentHash();
   }
   window.addEventListener("hashchange", async () => {
     if (hasAssetHash()) await handleAssetHash();
@@ -4497,6 +4560,7 @@ function renderNav() {
           : isTruckingRequestorUser()
             ? [{ group: "Move Request", items: [["truckingrequests", "Move Requests"]] }]
             : permittedModules;
+  if(userModules().includes('requestportal') && !isDualRequestPortalUser()) visibleModules.push({group:'Requests',items:[['requestportal','Request Choices']]});
   visibleNavigationModules = visibleModules;
   $("nav").innerHTML = `
     <div class="module-search-wrap">
@@ -4709,7 +4773,7 @@ async function openSystemSearchResult(result) {
 
 function isMechanicUser() {
   const role = String(profile?.role || "");
-  const mods = userModules().filter((m) => m && m !== "dashboard");
+  const mods = userModules().filter((m) => m && m !== "dashboard" && m !== "requestportal");
   return /mechanic/i.test(role) || (!userModules().includes("all") && mods.length === 1 && mods[0] === "repairs");
 }
 
@@ -4881,13 +4945,13 @@ async function finalizeTransactionReset(resetId) {
 
 function isEquipmentRequestUser() {
   const mods = userModules();
-  const visible = mods.filter((m) => m && m !== "dashboard");
+  const visible = mods.filter((m) => m && m !== "dashboard" && m !== "requestportal");
   return !isMechanicUser() && !isFuelUser() && !mods.includes("all") && visible.length === 1 && visible[0] === "equipmentrequests";
 }
 
 function isDualRequestPortalUser() {
   const mods = userModules();
-  const visible = mods.filter((m) => m && m !== "dashboard");
+  const visible = mods.filter((m) => m && m !== "dashboard" && m !== "requestportal");
   return !mods.includes("all")
     && visible.length >= 2
     && visible.includes("equipmentrequests")
@@ -4897,13 +4961,14 @@ function isDualRequestPortalUser() {
 
 function isPropertyMaintenanceRequestUser() {
   const mods = userModules();
-  const visible = mods.filter((m) => m && m !== "dashboard");
+  const visible = mods.filter((m) => m && m !== "dashboard" && m !== "requestportal");
   return !mods.includes("all") && visible.length === 1 && visible[0] === "propertyrequests";
 }
 
 function dualRequestPortalTabs(activeView) {
-  if (!isDualRequestPortalUser()) return "";
+  if (!requestPortalIdentity && !isDualRequestPortalUser()) return "";
   return `<nav class="request-portal-switcher" aria-label="Request type">
+    ${requestPortalIdentity?.mode==='company' ? '<button type="button" data-request-workspace>My workspace</button>' : ""}
     <button type="button" class="${activeView === "requestportal" ? "active" : ""}" data-request-portal-view="requestportal">Request choices</button>
     <button type="button" class="${activeView === "equipmentrequests" ? "active" : ""}" data-request-portal-view="equipmentrequests">Equipment Requests</button>
     <button type="button" class="${activeView === "truckingrequests" ? "active" : ""}" data-request-portal-view="truckingrequests">Trucking Move Requests</button>
@@ -4913,30 +4978,31 @@ function dualRequestPortalTabs(activeView) {
 }
 
 function bindDualRequestPortalTabs(root = document) {
+  root.querySelectorAll('[data-request-workspace]').forEach(button=>button.onclick=()=>loadView(defaultView()));
   root.querySelectorAll("[data-request-portal-view]").forEach((button) => {
     button.onclick = () => loadView(button.dataset.requestPortalView);
   });
 }
 
 function usesEquipmentRequestMobileView() {
-  return isEquipmentRequestUser() || isDualRequestPortalUser();
+  return Boolean(requestPortalIdentity && (requestPortalIdentity.mode!=='company' || REQUEST_PORTAL_VIEWS.includes(currentView))) || isEquipmentRequestUser() || isDualRequestPortalUser();
 }
 
 function usesTruckingRequestMobileView() {
-  return isTruckingRequestorUser() || isDualRequestPortalUser();
+  return Boolean(requestPortalIdentity && (requestPortalIdentity.mode!=='company' || REQUEST_PORTAL_VIEWS.includes(currentView))) || isTruckingRequestorUser() || isDualRequestPortalUser();
 }
 
 function isFuelUser() {
   const role = String(profile?.role || "");
   const mods = userModules();
-  const visible = mods.filter((m) => m && m !== "dashboard");
+  const visible = mods.filter((m) => m && m !== "dashboard" && m !== "requestportal");
   return /fuel/i.test(role) || (!mods.includes("all") && visible.length === 1 && visible[0] === "fuel");
 }
 
 function isTruckingDriverUser() {
   const role = String(profile?.role || "");
   const mods = userModules();
-  const visible = mods.filter((m) => m && m !== "dashboard");
+  const visible = mods.filter((m) => m && m !== "dashboard" && m !== "requestportal");
   const driverOnlyModules = visible.includes("truckingassigned")
     && visible.every((moduleId) => ["trucking_driver", "truckingassigned", "truckingtickets"].includes(moduleId));
   return /trucking\s*driver/i.test(role)
@@ -4945,14 +5011,14 @@ function isTruckingDriverUser() {
 
 function usesTruckingDriverMobileMode() {
   if (!isTruckingDriverUser()) return false;
-  const driverModules = new Set(["dashboard", "trucking_driver", "truckingassigned", "truckingtickets"]);
+  const driverModules = new Set(["dashboard", "trucking_driver", "truckingassigned", "truckingtickets", "requestportal"]);
   return !userModules().some((moduleId) => !driverModules.has(moduleId));
 }
 
 function isTruckingRequestorUser() {
   const role = String(profile?.role || "");
   const mods = userModules();
-  const visible = mods.filter((m) => m && m !== "dashboard");
+  const visible = mods.filter((m) => m && m !== "dashboard" && m !== "requestportal");
   return /requestor/i.test(role) || (!mods.includes("all") && (visible.includes("trucking_requestor") || (visible.length === 1 && visible[0] === "truckingrequests")));
 }
 
@@ -5026,6 +5092,7 @@ async function login() {
     return;
   }
   session = data.session;
+  if(email==='request@lmsfm.com') {await supabase.auth.signOut({scope:'local'});location.assign('/request-access.html');return;}
   await loadProfile();
   await saveRememberedLogin(email, password);
   renderNav();
@@ -5035,6 +5102,7 @@ async function login() {
 }
 
 async function logout() {
+  if(requestPortalIdentity) {await requestPortalApi('logout');await supabase.auth.signOut({scope:'local'});location.assign('/request-access.html');return;}
   await supabase.auth.signOut();
   session = null;
   invalidateViewReads();
@@ -5052,6 +5120,7 @@ function validatePasswordChange(currentPassword, newPassword, confirmation) {
 }
 
 function openChangePasswordModal() {
+  if(requestPortalIdentity?.mode!=='company' && requestPortalIdentity) return alert('Guest access has no password. Account password changes must be requested from LMS support.');
   if (!session?.user) return alert("Please log in before changing your password.");
   document.querySelector(".modalbox")?.classList.remove("wide-modal");
   $("modalTitle").textContent = "Change Password";
@@ -5160,6 +5229,7 @@ function hasAssetHash() {
 }
 
 function canAccess(view) {
+  if(REQUEST_PORTAL_VIEWS.includes(view) && userModules().includes('requestportal')) return true;
   if (isDualRequestPortalUser()) return ["requestportal", "equipmentrequests", "truckingrequests", "equipmentrepairqueue", "propertyrequests"].includes(view);
   if (isPropertyMaintenanceRequestUser()) return view === "propertyrequests";
   if (isMechanicUser()) return view === "repairs";
@@ -5178,19 +5248,21 @@ function canAccess(view) {
 
 async function loadView(view, listOptions = {}) {
   if (!session) return;
+  if(view==='requestportal' && !requestPortalIdentity && userModules().includes('requestportal')) {location.assign('/request-access.html');return;}
   if (isDualRequestPortalUser() && !["requestportal", "equipmentrequests", "truckingrequests", "equipmentrepairqueue", "propertyrequests"].includes(view)) view = "requestportal";
+  const portalRequestView = REQUEST_PORTAL_VIEWS.includes(view) && userModules().includes('requestportal');
   const mechanicManagerCustomerForms = isMechanicManagerUser()
     && view === "customerforms"
     && canAccess("customerforms");
-  if (isMechanicUser() && !mechanicManagerCustomerForms) view = "repairs";
-  if (!isDualRequestPortalUser() && isEquipmentRequestUser()) view = "equipmentrequests";
-  if (!isDualRequestPortalUser() && isPropertyMaintenanceRequestUser()) view = "propertyrequests";
-  if (isFuelUser()) view = "fuel";
-  if (isTruckingDriverUser()
+  if (isMechanicUser() && !mechanicManagerCustomerForms && !portalRequestView) view = "repairs";
+  if (!portalRequestView && !isDualRequestPortalUser() && isEquipmentRequestUser()) view = "equipmentrequests";
+  if (!portalRequestView && !isDualRequestPortalUser() && isPropertyMaintenanceRequestUser()) view = "propertyrequests";
+  if (isFuelUser() && !portalRequestView) view = "fuel";
+  if (isTruckingDriverUser() && !portalRequestView
       && !["truckingassigned", "truckingtickets"].includes(view)
       && !userModules().includes("all")
       && !userModules().includes(view)) view = "truckingassigned";
-  if (!isDualRequestPortalUser() && isTruckingRequestorUser()) view = "truckingrequests";
+  if (!portalRequestView && !isDualRequestPortalUser() && isTruckingRequestorUser()) view = "truckingrequests";
   if (!canAccess(view)) {
     $("content").innerHTML = `<div class="panel"><div class="empty">Your user does not have access to this module.</div></div>`;
     return;
@@ -5200,7 +5272,9 @@ async function loadView(view, listOptions = {}) {
   const retainedSearch = keepListScreen ? $('content').querySelector('input.searchbox') : null;
   const retainedScroll = keepListScreen ? {x:window.scrollX,y:window.scrollY} : null;
   if (view !== currentView) { $('moduleListPaging')?.remove(); clearTransientViewState(); }
+  if(requestPortalIdentity && REQUEST_PORTAL_VIEWS.includes(view)!==REQUEST_PORTAL_VIEWS.includes(currentView)) invalidateViewReads();
   currentView = view;
+  if(requestPortalIdentity) updateAuthView();
   const savedRepairTab = listOptions.append ? $("repairTableHost")?.dataset.tab : null;
   const pageScope = openModuleListScope(view, listOptions);
   let pageFailed = false;
@@ -29891,6 +29965,7 @@ async function renderPropertyRequestsView() {
   currentRows = rows;
   $("content").innerHTML = `${dualRequestPortalTabs("propertyrequests")}<section class="panel"><div class="panel-head"><div class="panel-title"><strong>Maintenance Requests</strong><span>Request repairs, preventive maintenance, inspections, cleaning, landscaping, and other property work.</span></div><div class="actions"><button id="propertyRequestCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="newPropertyRequestBtn">New request</button></div></div><div class="notice"><strong>Monitoring only:</strong> Submitting or approving a request does not create AP, AR, cash, invoice, or General Ledger entries.</div><div class="table-wrap"><table><thead><tr><th>Request #</th><th>Date</th><th>Property</th><th>Requested By</th><th>Category</th><th>Priority</th><th>Area</th><th>Issue</th><th>Status</th><th>Work Order</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows.map((r) => `<tr><td>${esc(r.request_no)}</td><td>${esc(formatDisplayDate(r.request_date))}</td><td><strong>${esc(r.property_name)}</strong><br><small>${esc(r.property_no)}</small></td><td>${esc(r.requested_by)}<br><small>${esc(r.requestor_email)}</small></td><td>${esc(r.category)}</td><td>${badge(r.priority)}</td><td>${esc(r.location_area)}</td><td>${esc(r.issue_description)}</td><td>${badge(r.status)}</td><td>${esc(r.work_order_no)}</td><td><div class="row-actions"><button data-property-request-edit="${esc(r.id)}">View / Edit</button>${!/Completed|Denied|Cancelled/i.test(r.status) && !r.work_order_no ? `<button class="primary" data-property-request-convert="${esc(r.id)}">Create Work Order</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="11" class="empty">No property maintenance requests yet.</td></tr>`}</tbody></table></div></section>`;
   bindDualRequestPortalTabs();
+  if(requestPortalIdentity) document.querySelectorAll('[data-property-request-convert],[data-property-request-edit]').forEach(button=>button.hidden=true);
   $("newPropertyRequestBtn").onclick = () => openPropertyMaintenanceRequestModal(null, properties);
   document.querySelectorAll("[data-property-request-edit]").forEach((b) => b.onclick = () => openPropertyMaintenanceRequestModal(rows.find((r) => r.id === b.dataset.propertyRequestEdit), properties));
   document.querySelectorAll("[data-property-request-convert]").forEach((b) => b.onclick = () => createPropertyWorkOrderFromRequest(rows.find((r) => r.id === b.dataset.propertyRequestConvert), properties));
@@ -29905,6 +29980,7 @@ function openPropertyMaintenanceRequestModal(row, properties) {
     const property = properties.find((p) => p.id === $("pmRequestProperty").value);
     const record = { request_no: $("pmRequestNo").value.trim(), request_date: $("pmRequestDate").value || today(), property_id: property?.id || null, property_no: property?.property_no || "", property_name: property?.property_name || "", requested_by: $("pmRequestedBy").value.trim(), requestor_email: $("pmRequestEmail").value.trim(), requestor_phone: $("pmRequestPhone").value.trim(), category: $("pmRequestCategory").value, priority: $("pmRequestPriority").value, preferred_date: $("pmRequestPreferred").value || null, location_area: $("pmRequestArea").value.trim(), issue_description: $("pmRequestIssue").value.trim(), status: $("pmRequestStatus").value, notes: $("pmRequestNotes").value.trim(), updated_at: new Date().toISOString() };
     if (!property || !record.request_no || !record.requested_by || !record.issue_description) return alert("Property, request #, requested by, and issue are required.");
+    if(requestPortalIdentity) return submitRequestPortal('property',record);
     const query = row ? supabase.from("property_maintenance_requests").update(record).eq("id", row.id) : supabase.from("property_maintenance_requests").insert(record);
     const { error } = await query; if (error) return alert(error.message); closeModal(); await renderPropertyRequestsView();
   };
@@ -30847,7 +30923,7 @@ function repairQueueArchived(asset) {
   return Math.max(cleared, voided) >= 0 && Math.max(cleared, voided) > requested;
 }
 async function renderEquipmentRepairQueueView() {
-  if (isDualRequestPortalUser()) return await renderEquipmentRepairRequestMobile();
+  if (requestPortalIdentity || isDualRequestPortalUser()) return await renderEquipmentRepairRequestMobile();
   currentCfg = { heads: ["asset_tag", "name", "location", "gps_location", "assigned_operator", "requested_by", "approved_by", "repair_po_no", "status", "_openWoIssue", "wo_no"], labels: ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Status", "Issue / Request", "Assigned WO"] };
   $("viewTitle").textContent = "Equipment Repair Requests";
   $("viewSub").textContent = "Repair requests submitted from mobile login, QR scan, or Fleet & Equipment before work-order assignment.";
@@ -30959,6 +31035,7 @@ function openEquipmentRepairRequestModal() {
   });
   $("modalSave").textContent = "Submit repair request";
   bindRepairPoUpload();
+  prepareRequestPortalForm();
   $("modalSave").onclick = saveEquipmentRepairRequestModal;
   $("modalCancel").textContent = "Cancel";
   $("modal").style.display = "flex";
@@ -30990,6 +31067,7 @@ async function saveEquipmentRepairRequestModal() {
     notes: [asset.notes || "", requestNote].filter(Boolean).join("\n"),
   };
   const poFile = document.querySelector("[data-repair-po-upload]")?.files?.[0];
+  if(requestPortalIdentity) return submitRequestPortal('repair',{...values,asset_id:asset.id},[],poFile?await prepareEquipmentRequestPoAttachment(poFile):null);
   if (poFile) await saveRepairRequestWithPo(asset.id, record, poFile);
   else {
     const { error } = await supabase.from("assets").update(record).eq("id", asset.id);
@@ -34932,6 +35010,7 @@ async function saveTruckingRequest(previousNo = "") {
       status: "Requested",
     });
   }
+  if(requestPortalIdentity) return submitRequestPortal('trucking',values,lines);
   if (!existingService && isAdminUser()) {
     const { error: serviceError } = await supabase.from("trucking_rates").upsert({
       service: values.service_needed.trim(),
@@ -40808,6 +40887,9 @@ async function renderRequestPortalHome() {
         <button type="button" class="request-choice-card" data-request-choice="propertyrequests"><strong>Property Maintenance Request</strong><span>Report repairs, cleaning, landscaping, inspections, or preventive maintenance for a property.</span></button>
       </div>
     </section>`;
+  if(requestPortalIdentity) {
+    const history=document.createElement('section');history.id='requestPortalHistory';history.className='panel';history.style.padding='20px';history.textContent='Loading your requests…';$('content').append(history);void renderRequestPortalHistory();
+  }
   bindDualRequestPortalTabs($("content"));
   document.querySelectorAll("[data-request-choice]").forEach((button) => {
     button.onclick = () => loadView(button.dataset.requestChoice);
@@ -41324,6 +41406,7 @@ async function saveEquipmentRequestModal() {
       status: editing?.status || "Requested",
       notes: read("notes") || null,
     };
+    if(requestPortalIdentity) return submitRequestPortal('equipment',record);
     await upsertOneWithOptionalColumns("equipment_requests", record, "request_no", ["location", "email_address", "asset_items", "customer_name"], "Saved the equipment request. Install the latest Equipment Request Customer SQL update so all request details can be stored.");
     if (!editing) await incrementSequence("equipment_request");
     for (const item of items) {
