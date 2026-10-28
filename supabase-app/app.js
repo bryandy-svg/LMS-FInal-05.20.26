@@ -4968,6 +4968,7 @@ function isPropertyMaintenanceRequestUser() {
 function dualRequestPortalTabs(activeView) {
   if (!requestPortalIdentity && !isDualRequestPortalUser()) return "";
   return `<nav class="request-portal-switcher" aria-label="Request type">
+    ${requestPortalIdentity ? '<button type="button" data-request-signout>Log out</button>' : ""}
     ${requestPortalIdentity?.mode==='company' ? '<button type="button" data-request-workspace>My workspace</button>' : ""}
     <button type="button" class="${activeView === "requestportal" ? "active" : ""}" data-request-portal-view="requestportal">Request choices</button>
     <button type="button" class="${activeView === "equipmentrequests" ? "active" : ""}" data-request-portal-view="equipmentrequests">Equipment Requests</button>
@@ -4978,6 +4979,7 @@ function dualRequestPortalTabs(activeView) {
 }
 
 function bindDualRequestPortalTabs(root = document) {
+  root.querySelectorAll('[data-request-signout]').forEach(button=>button.onclick=logout);
   root.querySelectorAll('[data-request-workspace]').forEach(button=>button.onclick=()=>loadView(defaultView()));
   root.querySelectorAll("[data-request-portal-view]").forEach((button) => {
     button.onclick = () => loadView(button.dataset.requestPortalView);
@@ -5216,7 +5218,7 @@ function updateAuthView() {
   $("sessionBox").innerHTML = session ? `Logged in as<br><strong>${esc(profile?.full_name || session.user.email)}</strong><br>${esc(profile?.role || "User")}` : "Not logged in";
   $("logoutBtn").style.display = session ? "inline-block" : "none";
   $("changePasswordBtn").style.display = session ? "inline-block" : "none";
-  $("mobileChangePasswordBtn").hidden = !session;
+  $("mobileChangePasswordBtn").hidden = !session || Boolean(requestPortalIdentity && requestPortalIdentity.mode!=='company');
   if ($("columnSettingsBtn")) $("columnSettingsBtn").style.display = session ? "inline-block" : "none";
   ["exportBtn", "cloneExportBtn", "offlineCloneBtn"].forEach((id) => {
     if ($(id)) $(id).style.display = session && isAdminUser() ? "" : "none";
