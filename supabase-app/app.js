@@ -31040,6 +31040,7 @@ function openEquipmentRepairRequestModal() {
       <div class="field"><label>Priority</label><select data-repair-request-field="priority"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
       <div class="field"><label>Operator</label><input data-repair-request-field="operator" placeholder="Operator using the equipment"></div>
       <div class="field"><label>Equipment location</label><input data-repair-request-field="location" placeholder="Defaults to current Fleet location"></div>
+      <div class="field"><label>Jobsite for charging *</label><input data-repair-request-field="jobsite_location" placeholder="Enter the jobsite to charge for this repair" required></div>
       <div class="field wide"><label>Repair issue / work requested *</label><textarea data-repair-request-field="issue" required placeholder="Describe the problem, symptoms, damage, or repair needed"></textarea></div>
       <div class="field wide"><label>Additional notes</label><textarea data-repair-request-field="notes" placeholder="Add timing, safety, access, or contact instructions"></textarea></div>
     </div>
@@ -31069,6 +31070,7 @@ async function saveEquipmentRepairRequestModal() {
   if (!values.requested_by) throw new Error("Requested by is required.");
   if (!values.email || !/^\S+@\S+\.\S+$/.test(values.email)) throw new Error("Enter a valid requestor email address.");
   if (!values.po_no) throw new Error("PO # is required for an equipment repair request.");
+  if (!values.jobsite_location) throw new Error("Jobsite for charging is required.");
   if (!values.issue) throw new Error("Repair issue / work requested is required.");
   const stamp = new Date().toLocaleString();
   const requestNote = [
@@ -31081,6 +31083,7 @@ async function saveEquipmentRepairRequestModal() {
     status: "Equipment Repair Request",
     requested_by: values.requested_by,
     repair_po_no: values.po_no,
+    repair_jobsite_location: values.jobsite_location,
     assigned_operator: values.operator || asset.assigned_operator || null,
     location: values.location || asset.location || null,
     last_update_date: localToday(),
@@ -41706,7 +41709,7 @@ function appendDatedNote(existing, note) {
 }
 
 function equipmentRepairQueueTable(rows) {
-  const heads = ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "PO File", "Status", "Issue / Request", "Assigned WO", ""];
+  const heads = ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Jobsite for Charging", "PO File", "Status", "Issue / Request", "Assigned WO", ""];
   return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map((asset) => `<tr>
     <td>${esc(asset.asset_tag || "")}</td>
     <td>${esc(asset.name || "")}</td>
@@ -41716,6 +41719,7 @@ function equipmentRepairQueueTable(rows) {
     <td>${esc(asset.requested_by || "")}</td>
     <td>${esc(asset.approved_by || "")}</td>
     <td>${esc(asset.repair_po_no || "")}</td>
+    <td>${esc(asset.repair_jobsite_location || "")}</td>
     <td><button type="button" class="rowbtn" data-repair-po-view="${esc(asset.id)}">View PO files</button></td>
     <td>${badge(asset.status || "")}</td>
     <td>${esc(asset._openWo?.description || repairRequestText(asset) || "")}</td>
@@ -41742,11 +41746,15 @@ function renderFilteredEquipmentRepairQueue() {
   bindEquipmentRepairQueue();
 }
 
+function repairRequestWorkOrderPrefill(asset = {}) {
+  return { assetTag: asset.asset_tag, requestedBy: asset.requested_by || '', customerPO: asset.repair_po_no || '', jobsiteLocation: asset.repair_jobsite_location || '', actualLocation: asset.location || '', operator: asset.assigned_operator || '', description: repairRequestText(asset) };
+}
+
 function bindEquipmentRepairQueue() {
   document.querySelectorAll('[data-edit-repair-request]').forEach(button => button.onclick = () => editPendingRepairRequest(button.dataset.editRepairRequest));
   document.querySelectorAll('[data-cancel-repair-request]').forEach(button => button.onclick = () => cancelPendingRepairRequest(button.dataset.cancelRepairRequest));
   document.querySelectorAll("[data-repair-po-view]").forEach(button => button.onclick = () => openRepairPoFiles(button.dataset.repairPoView));
-  document.querySelectorAll("[data-create-wo-asset]").forEach((b) => b.onclick = () => openNewWorkOrderModal({ assetTag: b.dataset.createWoAsset, description: repairRequestText(currentRows.find((a) => a.asset_tag === b.dataset.createWoAsset)) }));
+  document.querySelectorAll("[data-create-wo-asset]").forEach((b) => b.onclick = () => openNewWorkOrderModal(repairRequestWorkOrderPrefill(currentRows.find((a) => a.asset_tag === b.dataset.createWoAsset))));
   document.querySelectorAll("[data-asset-operational]").forEach((b) => b.onclick = () => markAssetOperational(b.dataset.assetOperational));
   document.querySelectorAll("[data-open-wo]").forEach((b) => b.onclick = () => {
     loadView("repairs").then(() => {
@@ -41772,7 +41780,7 @@ async function updatePendingRepairRequest(asset, changes) {
 function editPendingRepairRequest(assetTag) {
   const asset = currentRows.find(row => row.asset_tag === assetTag);
   if (!asset || asset._openWo || asset._completedWo) return;
-  const fields = [['requested_by','Requested by',asset.requested_by],['assigned_operator','Operator',asset.assigned_operator],['location','Location',asset.location],['repair_po_no','PO #',asset.repair_po_no]];
+  const fields = [['requested_by','Requested by',asset.requested_by],['assigned_operator','Operator',asset.assigned_operator],['location','Location',asset.location],['repair_po_no','PO #',asset.repair_po_no],['repair_jobsite_location','Jobsite for charging',asset.repair_jobsite_location]];
   editing = null;
   $('modalTitle').textContent = 'Edit repair request ' + asset.asset_tag;
   $('modalBody').innerHTML = '<div class="form-grid">' + fields.map(([key,label,value]) => '<div class="field"><label>' + label + '</label><input data-repair-edit="' + key + '" value="' + esc(value || '') + '"></div>').join('') + '<div class="field wide"><label>Issue / request</label><textarea data-repair-edit="issue">' + esc(repairRequestText(asset)) + '</textarea></div></div>';
@@ -42700,6 +42708,7 @@ function openAssetLocationModal(asset, options = {}) {
       ${productInput("Requested by", "requested_by", asset.requested_by || "")}
       ${productInput("Approved by", "approved_by", asset.approved_by || "")}
       ${productInput("PO # for repair request", "repair_po_no", asset.repair_po_no || "")}
+      ${productInput("Jobsite for charging (repair)", "repair_jobsite_location", asset.repair_jobsite_location || "")}
       ${repairPoUploadHtml()}
       <div class="field"><label>GPS stamp from phone</label><input data-product-field="gps_location" value="${esc(asset.gps_location || "")}" readonly placeholder="Capturing GPS..."></div>
       <div class="field"><label>Phone timestamp</label><input value="${esc(scannedAt.toLocaleString())}" readonly><input type="hidden" data-product-field="scanned_date" value="${esc(scannedAt.toISOString())}"><input type="hidden" data-product-field="last_update_date" value="${esc(localToday())}"></div>
@@ -42761,6 +42770,7 @@ async function saveAssetLocationModal() {
     return;
   }
   if (/repair/i.test(action)) {
+    if (!String(record.repair_jobsite_location || "").trim()) return alert("Jobsite for charging is required for a repair request.");
     if (!repairIssue) {
       alert("Please enter the repair issue so it can appear in Equipment Repair Requests.");
       return;
@@ -42773,6 +42783,7 @@ async function saveAssetLocationModal() {
     record.status = "Equipment Repair Request";
     record.notes = [record.notes || asset.notes || "", `Repair requested ${stamp}: ${repairIssue}`].filter(Boolean).join("\n");
   } else {
+    delete record.repair_jobsite_location;
     record.repair_po_no = null;
   }
   try {

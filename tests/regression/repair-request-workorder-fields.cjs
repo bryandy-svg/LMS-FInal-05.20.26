@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');const {source,functions}=require('../source.cjs');const c=vm.createContext({repairRequestText:a=>a.notes});vm.runInContext(functions(['repairRequestWorkOrderPrefill']),c);
+const p=c.repairRequestWorkOrderPrefill({asset_tag:'LMS-EX31',requested_by:'Gerald Diu',repair_po_no:'28659',repair_jobsite_location:'Charging site',location:'Equipment site',assigned_operator:'Operator',notes:'Repair issue'});
+assert.equal(p.requestedBy,'Gerald Diu');assert.equal(p.customerPO,'28659');assert.equal(p.jobsiteLocation,'Charging site');assert.equal(p.actualLocation,'Equipment site');assert.equal(p.assetTag,'LMS-EX31');
+assert.equal(c.repairRequestWorkOrderPrefill({}).jobsiteLocation,'');
+assert.match(functions(['bindEquipmentRepairQueue']),/openNewWorkOrderModal\(repairRequestWorkOrderPrefill/);
+assert.match(functions(['saveEquipmentRepairRequestModal']),/repair_jobsite_location: values.jobsite_location/);
+assert.match(functions(['openAssetLocationModal']),/"repair_jobsite_location"/);
+assert.match(functions(['saveAssetLocationModal']),/Jobsite for charging is required/);
+assert.match(fs.readFileSync('api/request-access.js','utf8'),/location,jobsite_location/);
+console.log('PASS request name, PO, charging jobsite, physical location, QR and portal field propagation');

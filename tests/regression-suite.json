@@ -138,5 +138,6 @@
   "repair-priority-sequence",
   "trucking-stable-filters",
   "request-portal-access",
-  "customer-po-stock-redirect"
+  "customer-po-stock-redirect",
+  "repair-request-workorder-fields"
 ]
