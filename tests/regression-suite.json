@@ -137,5 +137,6 @@
   "accrual-schedule-reconciliation",
   "repair-priority-sequence",
   "trucking-stable-filters",
-  "request-portal-access"
+  "request-portal-access",
+  "customer-po-stock-redirect"
 ]

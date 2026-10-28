@@ -16108,6 +16108,13 @@ function purchaseLineRows(lines) {
   return `<div class="table-wrap po-line-wrap"><table class="line-table po-line-table"><thead><tr><th>Product</th><th>WO #</th><th>UOM</th><th>On Hand</th><th>Ordered Qty</th><th class="po-destination-qty-column" data-po-destination-heading>${esc(destinationLabel)}</th><th class="po-destination-qty-column">To Stock</th><th>Weight</th><th>Foreign Cost</th><th>PO Cost / Unit</th><th>Landed Cost / Unit</th><th>Total Inv Cost / Unit</th><th>Vendor Amount</th></tr></thead><tbody id="poLineBody">${lines.map((line, i) => purchaseLineRowHtml(line, i)).join("")}</tbody><tfoot><tr><th colspan="10">Totals</th><th id="poLandedAddOnTotal">${money(0)}</th><th id="poInventoryTotal">${money(0)}</th><th id="poPartsTotal">${money(0)}</th></tr></tfoot></table></div><div class="actions table-actions"><button class="rowbtn" type="button" id="addPoLineBtn">Add row</button>${createPartButtonMarkup()}</div>`;
 }
 
+function customerPoStockRedirections(po, lines) {
+  const old=new Map(),next=new Map();
+  (po._lines||[]).forEach(line=>{const key=String(line.sku||'').trim().toLowerCase();old.set(key,(old.get(key)||0)+purchaseOrderLineDestinationQty(po,line));});
+  lines.forEach(line=>{const key=String(line.sku||'').trim().toLowerCase();next.set(key,(next.get(key)||0)+Number(line.destination_qty||0));});
+  return [...old].map(([sku,qty])=>({sku,qty:Math.max(0,qty-(next.get(sku)||0))})).filter(line=>line.qty>0);
+}
+
 function purchaseOrderDestinationQuantityLabel(po = {}) {
   const purpose = purchaseOrderPurpose(po);
   if (purpose === "Customer Order") return `Reserved for Customer${po.linked_sales_order_no ? ` (${po.linked_sales_order_no})` : ""}`;
@@ -16151,7 +16158,7 @@ function routePurchaseReceiptDestinationQuantities(po = {}, receiptRows = [], pr
     const key = keyFor(line);
     const receivedBefore = Number(priorReceived.get(key) || 0);
     const receivedNow = Math.max(0, Number(receipt.received_qty || 0));
-    const destinationTarget = isWorkOrderPurchaseOrder(po)
+    const destinationTarget = (isWorkOrderPurchaseOrder(po) || isCustomerPurchaseOrder(po))
       ? (po._lines || []).filter((candidate) => keyFor(candidate) === key).reduce((sum, candidate) => sum + purchaseOrderLineDestinationQty(po, candidate), 0)
       : purchaseOrderLineDestinationQty(po, line);
     const destinationReceivedQty = Math.max(0, Math.min(receivedNow, destinationTarget - receivedBefore));
@@ -16703,7 +16710,7 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
       record.jobsite_project = "General";
     }
     let lineRows = allocatePurchaseLandedCost(parsePurchaseLineRows(), record);
-    if (record.purchase_purpose !== "Inventory Stock" && record.purchase_purpose !== "Work Order") {
+    if (record.purchase_purpose !== "Inventory Stock" && record.purchase_purpose !== "Work Order" && record.purchase_purpose !== "Customer Order") {
       const missingDestinationQty = lineRows.find((line) => !(Number(line.destination_qty || 0) > 0));
       if (missingDestinationQty) {
         alert(`Enter the required ${purchaseOrderDestinationQuantityLabel(record)} quantity for ${missingDestinationQty.sku || missingDestinationQty.product_name}.`);
@@ -16761,6 +16768,8 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
       alert("This PO date is inside the closed accounting period.");
       return;
     }
+    const redirected = editing && isCustomerPurchaseOrder(record) && record.linked_sales_order_no ? customerPoStockRedirections(editing,lineRows) : [];
+    if(redirected.length && !confirm('Redirect to stock and reduce '+record.linked_sales_order_no+'?\n\n'+redirected.map(line=>line.sku+': '+line.qty).join('\n')+'\n\nOnly unshipped, uninvoiced quantities can be reduced.')) return;
     record.vendor_invoice_amount = Number(record.vendor_invoice_amount || 0);
     record.match_status = editing?.match_status || "Pending";
     if (closeBlanketAfterSave) record.status = "Closed PO";
@@ -16777,7 +16786,7 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
       await updateOneWithOptionalColumns("purchase_orders", record, "id", editing.id, optionalPoColumns, "PO saved, but run the Purchase Order Destination SQL update so its Customer/Work Order destination is stored.");
       saved = { ...editing, ...record, id: editing.id };
     }
-    await savePurchaseOrderLines(saved.id, lineRows, editing?._lines || []);
+    await savePurchaseOrderLines(saved.id, lineRows, editing?._lines || [], saved);
     await syncPurchaseOrderWorkOrderReservations(saved, lineRows);
     await writeAuditLog({ tableName: "purchase_orders", action: closeBlanketAfterSave ? "Blanket PO Closed" : wasNew ? "Created" : "Updated", beforeData: editing, afterData: { ...saved, lines: lineRows } });
     if (wasNew) await incrementSequence("po");
@@ -16825,7 +16834,12 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
   }
 }
 
-async function savePurchaseOrderLines(poId, lines, previousLines = []) {
+async function savePurchaseOrderLines(poId, lines, previousLines = [], po = {}) {
+  if (po.linked_sales_order_no && isCustomerPurchaseOrder(po)) {
+    const {error} = await supabase.rpc("save_customer_po_allocations", {p_po_id:poId,p_lines:lines.map(({_allocation_weight,amount,...line})=>line),p_expected:previousLines});
+    if(error) throw error;
+    return;
+  }
   // Keep row identities across saves and retries; never delete/reinsert the PO.
   const rows = lines.map(({ _allocation_weight, amount, ...line }) => ({ ...line, po_id: poId }));
   if (rows.some((line) => !line.id)) throw new Error("PO line identity is missing. Reopen the PO before saving.");
@@ -17952,7 +17966,7 @@ async function saveGoodsReceiptModalOnce() {
       if (missing.length) throw new Error(`Goods Receipt inventory posting is incomplete. Missing stock movement: ${missing.join(", ")}. The receipt must be reconciled before continuing.`);
     }
     if (isShopIssuancePurchaseOrder(po)) await postAutomaticPurchaseShopIssuance(po, routedReceiptRows, grNo, grDate);
-    if (isCustomerPurchaseOrder(po) && po.linked_sales_order_no) await refreshLinkedSalesOrderReservations(po.linked_sales_order_no);
+    if (isCustomerPurchaseOrder(po) && po.linked_sales_order_no) await refreshLinkedSalesOrderReservations(po.linked_sales_order_no, routedReceiptRows);
     await incrementSequence("gr");
     const invoiceSummary = receiptInvoiceSummary(rows, grDate);
     const receivedFreightTotal = purchaseReceiptFreightTotal([...activeReceipts(po), ...receiptRows]);
@@ -18232,22 +18246,26 @@ async function openSalesOrderFromPurchaseOrder(poNo) {
   }
 }
 
-async function refreshLinkedSalesOrderReservations(orderNo) {
+function customerReceiptReservationPlan(lines, availability, receipts) {
+  const key=row=>String(row.sku||'').trim().toLowerCase(),budget=new Map(),free=new Map();
+  availability.forEach(row=>free.set(key(row),Math.max(0,Number(row.available||0))));
+  lines.forEach(row=>free.set(key(row),Math.max(0,(free.get(key(row))||0)-Math.max(0,Number(row.issued_qty||0)-Number(row.shipped_qty||0)))));
+  receipts.forEach(row=>budget.set(key(row),(budget.get(key(row))||0)+Math.max(0,Number(row.destination_received_qty||0))));
+  return lines.map(row=>{const k=key(row),issued=Math.max(Number(row.shipped_qty||0),Number(row.issued_qty||0));const add=Math.min(Math.max(0,Number(row.qty||0)-issued),free.get(k)||0,budget.get(k)||0);free.set(k,(free.get(k)||0)-add);budget.set(k,(budget.get(k)||0)-add);return {...row,issued_qty:issued+add};});
+}
+
+async function refreshLinkedSalesOrderReservations(orderNo, receiptRows = []) {
   const [orders, lines] = await Promise.all([getAll("sales_orders"), getAll("sales_order_lines")]);
   const order = orders.find((row) => String(row.order_no || "") === String(orderNo || ""));
   if (!order || /fulfilled|delivered|paid|void|reversed|cancel/i.test(String(order.status || ""))) return;
   const orderLines = lines.filter((line) => String(line.order_id || "") === String(order.id || ""));
   if (!orderLines.length) return;
   const availability = await salesReservationAvailability(order.order_no, orderLines);
-  const availabilityBySku = new Map(availability.map((line) => [String(line.sku || "").trim().toLowerCase(), Number(line.available || 0)]));
-  for (const line of orderLines) {
-    const shipped = Number(line.shipped_qty || 0);
-    const remaining = Math.max(0, Number(line.qty || 0) - shipped);
-    const available = Math.max(0, Number(availabilityBySku.get(String(line.sku || "").trim().toLowerCase()) || 0));
-    const issuedQty = shipped + Math.min(remaining, available);
-    const { error } = await supabase.from("sales_order_lines").update({ issued_qty: issuedQty }).eq("id", line.id);
+  const updates = customerReceiptReservationPlan(orderLines,availability,receiptRows);
+  for (const line of updates) {
+    const { error } = await supabase.from("sales_order_lines").update({ issued_qty: line.issued_qty }).eq("id", line.id);
     if (error) throw error;
-    line.issued_qty = issuedQty;
+    orderLines.find(row=>row.id===line.id).issued_qty=line.issued_qty;
   }
   const fullyReserved = orderLines.every((line) => Number(line.issued_qty || 0) >= Number(line.qty || 0));
   const nextStatus = fullyReserved ? "Reserved" : "Backordered";
