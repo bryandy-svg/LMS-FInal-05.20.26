@@ -34169,6 +34169,12 @@ function truckingRowMatchesSearch(row, term = "") {
 }
 
 function truckingSimpleTable(rows, columns, options = {}) {
+  // Include actions in the column model so filtering indexes stay aligned.
+  if (options.actionsFirst && options.actions) {
+    const actions = options.actions;
+    options = { ...options, actions: null, labels: Array.isArray(options.labels) ? ['Actions', ...options.labels] : { ...options.labels, _actions: 'Actions' }, format: { ...options.format, _actions: (_value, row) => '<details class="row-action-menu"><summary>Actions</summary><div class="row-action-menu-panel">' + actions(row) + '</div></details>' } };
+    columns = ['_actions', ...columns];
+  }
   const jobsiteSubtotals = String(options.wrapClass || "").split(/\s+/).includes("trucking-jobsite-by-customer-table");
   const safeRows = Array.isArray(rows) ? rows : [];
   const filtersEnabled = options.filters !== false;
@@ -34194,6 +34200,7 @@ function truckingSimpleTable(rows, columns, options = {}) {
     return String(value);
   };
   const filterSelect = (col, index) => {
+    if (col === "_actions") return "";
     const values = [...new Set(safeRows.map((row) => filterValue(row?.[col])))]
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
     if (options.multiFilters || String(options.wrapClass || "").split(/\s+/).includes("repair-report-table")) {
@@ -34567,6 +34574,8 @@ function truckingRequestTable(rows) {
       </article>`).join("") || `<div class="empty">No move requests yet.</div>`}</div>`;
   }
   return truckingSimpleTable(filtered, ["request_no", "quote_no", "request_date", "customer", "project_jobsite", "contact_no", "needed_date", "assigned_driver", "delivery_period", "trip_type", "payment_mode", "po_no", "service_needed", "service_subcategory", "service_size", "service_reference", "material_description", "unit_of_measurement", "weight_lb", "dimensions", "materials_loaded", "number_of_loads", "cy_per_load", "total_cy", "tipping_fee", "roll_off_tons", "origin", "destination", "requested_by", "line_count", "move_description", "status", "cancellation_reason"], {
+    actionsFirst: true,
+    wrapClass: "trucking-compact-table",
     labels: ["Request #", "Quote #", "Date", "Customer", "Project / Jobsite", "Contact #", "Requested Delivery", "Assigned Driver", "AM / PM", "Trip Type", "Mode of Payment", "PO #", "Super Parent", "Move Type / Option", "Size / Capacity", "Reference #", "Material(s)", "Unit of Measurement", "Weight (lb)", "Dimensions", "Materials Loaded", "# of Loads", "CY / Load", "Total CY", "Tipping Fee", "Tons", "Origin", "Destination", "Requested By", "Lines", "Move Description", "Status", "Cancellation Reason"],
     format: { status: (value) => badge(value || "Requested") },
     actions: (row) => ["Cancelled", "Completed"].includes(row.status)
@@ -35273,6 +35282,7 @@ function truckingMoveTable(rows) {
       </article>`).join("") || `<div class="empty">No scheduled moves found.</div>`}</div>`;
   }
   return truckingSimpleTable(filtered, ["ticket_no", "move_date", "customer", "project", "jobsite", "driver_name", "helper_driver_name", "trip_type", "service", "requested_equipment_label", "equipment_label", "origin", "destination", "container_no", "start_time", "end_time", "amount", "discount_percent", "discount_amount", "amount_to_bill", "status"], {
+    wrapClass: "trucking-compact-table",
     multiFilters: true,
     labels: ["Ticket #", "Date", "Customer", "Project", "Jobsite", "Driver", "Helper Driver", "Trip Type", "Service", "Equipment Requested", "Equipment Used", "Origin", "Destination", "Container #", "Start", "End", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Status"],
     format: { amount: (value) => money(value || 0), discount_percent: (value, row) => `${truckingDiscountPercent(row).toFixed(2)}%`, discount_amount: (value) => money(value || 0), amount_to_bill: (_value, row) => money(truckingAmountToBill(row)), status: (value) => badge(value || "Scheduled") },
@@ -35846,7 +35856,7 @@ async function renderTruckingTicketsView() {
       : ["Ticket #", "Date", "Driver", "Service", "Customer", "Requested By", "PO #", "Origin", "Destination", "Time In", "Time Out", "Description", "Project", "Type of Debris", "CY/Ton", "Tipping Fee", "Original Charge", "Discount %", "Discount Amount", "Amount to Bill", "Billing Status", "External Billing Reference"];
     $("truckingTicketHost").innerHTML = truckingSimpleTable(filtered, heads, {
       excelFilters: true,
-      wrapClass: "trucking-ticket-multifilter",
+      wrapClass: "trucking-ticket-multifilter trucking-compact-table",
       labels,
       format: {
         billing_select: (_value, row) => !["ready to bill", "billed"].includes(String(row.billing_status || "Unbilled").toLowerCase())

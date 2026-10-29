@@ -3653,3 +3653,13 @@ body.trucking-requestor-mode #fullTourBtn {
   body.mechanic-mode .form-grid { grid-template-columns: minmax(0, 1fr); }
   body.mechanic-mode .modalfoot { flex-wrap: wrap; }
 }
+
+/* Compact trucking lists: wrap full details instead of stretching columns. */
+.trucking-compact-table table { table-layout: fixed; width: max-content; min-width: 100%; }
+.trucking-compact-table th, .trucking-compact-table td { box-sizing: border-box; width: 120px; min-width: 0; max-width: 120px; padding: 7px 8px; font-size: 12px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.trucking-compact-table [data-report-column="customer"], .trucking-compact-table [data-report-column="project_jobsite"], .trucking-compact-table [data-report-column="equipment_label"], .trucking-compact-table [data-report-column="requested_equipment_label"], .trucking-compact-table [data-report-column="move_description"] { width: 190px; max-width: 190px; }
+.trucking-compact-table [data-report-column="_actions"] { width: 100px; max-width: 100px; position: sticky; left: 0; background: var(--panel, #fff); z-index: 2; }
+.trucking-compact-table input, .trucking-compact-table select, .trucking-compact-table .report-multi-filter { width: 100%; min-width: 0; box-sizing: border-box; font-size: 12px; }
+.trucking-compact-table .truck-filter-row th { padding: 4px; }
+.trucking-compact-table .truck-visible-export-bar { padding: 5px 8px; }
+.trucking-compact-table .row-action-menu summary { padding: 6px 8px; font-size: 12px; }

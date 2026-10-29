@@ -11,7 +11,7 @@ const apply=()=>context.applyColumnFilters({target:{closest:()=>table}});
 apply();assert.deepEqual(rows.map(r=>r.hidden),[false,false,true,true]);assert.equal(visible,2);
 filters.forEach(f=>f.selected=[]);apply();assert.equal(visible,4);assert.ok(rows.every(r=>!r.hidden));
 filters[0].value='ed';apply();assert.equal(visible,1);assert.equal(rows[2].hidden,false);
-assert.match(source,/truckingSimpleTable\(filtered, heads, \{\s+excelFilters: true,\s+wrapClass: "trucking-ticket-multifilter"/);
+assert.match(source,/truckingSimpleTable\(filtered, heads, \{\s+excelFilters: true,\s+wrapClass: "trucking-ticket-multifilter trucking-compact-table"/);
 console.log('PASS multiple choices, cross-column intersection, clear filters, text search and visible selection state');
 
 // Dropdown choices cascade through other columns, but not their own selection.
@@ -33,3 +33,4 @@ const products=[{customer:'Hensel',destination:'Conleyus'},{customer:'Hensel',de
 const columns=[['customer'],['destination']];
 assert.deepEqual(Array.from(context.productRowsMatchingColumnFilters(products,columns,'destination')).map(p=>p.destination),['Conleyus','HP - AAFB']);
 console.log('PASS cascading dropdowns: other columns, own multi-select, text filters, empty results, clearing and product filters');
+
