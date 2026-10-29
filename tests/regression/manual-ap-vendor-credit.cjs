@@ -18,7 +18,7 @@ const c = vm.createContext({
   esc:x=>String(x||''),normalizeCheckRunDocumentKey:x=>String(x||'').toLowerCase(),
   checkRunPaymentForApRow:()=>null,assignedCheckRunDocumentKeys:()=>({poNumbers:new Set(),vendorInvoices:new Set()}),poSupportDetails:()=>({})
 });
-vm.runInContext(functions(['saveBalancedJournalModal','subledgerAccountMatches','normalizeGlRow','accountsPayableRows','accountsPayableRowsForTab','apRowActions','checkRunEligiblePayables','apAgingDetailRows','accountsPayableGlBalance','agingBucketRow','daysBetween','agingDocumentGlRows','reconcileAgingDocumentBalances','clearAgingCreditsByParty']),c);
+vm.runInContext(functions(['saveBalancedJournalModal','subledgerAccountMatches','normalizeGlRow','accountsPayableRows','accountsPayableRowsForTab','apRowActions','checkRunEligiblePayables','apAgingDetailRows','apPaymentsBeforePosting','accountsPayableGlBalance','agingBucketRow','daysBetween','agingDocumentGlRows','reconcileAgingDocumentBalances','clearAgingCreditsByParty']),c);
 (async()=>{
   await c.saveBalancedJournalModal();
   assert.deepEqual(alerts,[]);assert.equal(saved.length,2);

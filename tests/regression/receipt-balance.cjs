@@ -13,10 +13,11 @@ const receipt=(qty,unit,base)=>({gr_no:'TEST',po_no:'PO',received_qty:qty,unit_c
   let calls=[];
   ctx.purchaseOrderForReceipt=async()=>({_lines:[{unit_cost:999}]});
   ctx.supabase={rpc:async(name,args)=>{calls.push({name,args});return {error:null};}};
-  for(const gr of [receipt(2,55.68,0),receipt(3,20.44,0),receipt(3,1.3333,1.1111),receipt(1,0,0),receipt(4,62.2475,45.8)]) {
+  for(const gr of [receipt(10,15.859,15.859),receipt(2,55.68,0),receipt(3,20.44,0),receipt(3,1.3333,1.1111),receipt(1,0,0),receipt(4,62.2475,45.8)]) {
     await ctx.postGoodsReceiptLedger([gr]);
     const rows=calls.at(-1).args.p_rows;
     assert.ok(Math.abs(rows.reduce((n,r)=>n+r.debit-r.credit,0))<0.005);
+    if(gr.unit_cost===15.859) assert.equal(rows.find(r=>r.account==='Parts Inventory').debit,158.59);
     if(gr.base_unit_cost===0&&gr.unit_cost>0) assert.equal(rows.find(r=>r.account==='Parts Accrual').credit,0);
     if(gr.unit_cost>0) { await ctx.postGoodsReceiptReversalLedger(gr); assert.ok(Math.abs(calls.at(-1).args.p_rows.reduce((n,r)=>n+r.debit-r.credit,0))<0.005); }
   }
