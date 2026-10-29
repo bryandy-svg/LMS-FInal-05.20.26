@@ -17183,7 +17183,7 @@ async function openLandedCostInvoiceModal(sourcePo) {
     return;
   }
   const refNo = editingLandedPo?.po_no || "";
-  const sourceSet = new Set(editingLandedPo ? linkedSourceNos : primarySourcePo?.po_no ? [primarySourcePo.po_no] : []);
+  const sourceSet = new Set(editingLandedPo ? linkedSourceNos : primarySourcePo?.po_no && landedCostApTotalForSource(primarySourcePo.po_no) <= 0.004 ? [primarySourcePo.po_no] : []);
   const existingAllocations = editingLandedPo ? landedAllocationMap(editingLandedPo) : new Map();
   const estimatedRemaining = primarySourcePo ? Math.max(0, poLandedAddOn(primarySourcePo) - landedCostApTotalForSource(primarySourcePo.po_no)) : 0;
   const notes = String(editingLandedPo?.notes || "");
@@ -17210,6 +17210,7 @@ async function openLandedCostInvoiceModal(sourcePo) {
       ${productSelect("Payment status", "payment_status", ["Not Ready", "Ready to Pay", "Hold", "Paid"], editingLandedPo?.payment_status || "Not Ready")}
       <div class="field wide"><label for="landedPoSearch">Allocate to product POs — Search</label>
         <input id="landedPoSearch" type="search" placeholder="Search PO, waybill #, vendor, or jobsite / project" autocomplete="off" aria-describedby="landedPoSearchStatus">
+        <label><input id="landedShowApplied" type="checkbox"> Show POs with landed cost already applied (for additional charges)</label>
         <small id="landedPoSearchStatus" role="status" aria-live="polite"></small>
         ${landedCostAllocationRows(eligiblePos, sourceSet, existingAllocations, editingLandedPo?.po_no || "")}</div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes">${esc(visibleNotes)}</textarea></div>
@@ -17217,6 +17218,7 @@ async function openLandedCostInvoiceModal(sourcePo) {
     <p class="notice">Use this when one freight forwarder, broker, customs, or port invoice covers items from multiple product vendors. Tick the product POs included in the shipment, choose the allocation method, review the allocated amounts, then save. Accounting still posts AP later before check run.</p>`;
   const recalc = () => refreshLandedCostAllocationPreview();
   $("landedPoSearch").oninput = filterLandedCostAllocationRows;
+  $("landedShowApplied").onchange = filterLandedCostAllocationRows;
   filterLandedCostAllocationRows();
   document.querySelectorAll("[data-landed-source-open]").forEach((button) => button.onclick = () => openPurchaseOrderRecord(currentRows.find((po) => po.po_no === button.dataset.landedSourceOpen)));
   document.querySelectorAll("[data-landed-include]").forEach((input) => input.onchange = recalc);
@@ -17361,7 +17363,8 @@ function filterLandedCostAllocationRows() {
   let shown = 0;
   let hiddenSelected = 0;
   rows.forEach((row) => {
-    const matches = String(row.dataset.landedSearch || "").toLowerCase().includes(query);
+    const applied = row.dataset.landedApplied === "true";
+    const matches = String(row.dataset.landedSearch || "").toLowerCase().includes(query) && (!applied || $("landedShowApplied")?.checked || row.querySelector("[data-landed-include]")?.checked);
     // Hide only: retain all inputs for allocation, totals, and saving.
     row.style.display = matches ? "" : "none";
     if (matches) shown++;
@@ -17378,7 +17381,7 @@ function landedCostAllocationRows(pos, selectedPoNos = new Set(), existingAlloca
     const otherApAmount = Math.max(0, landedCostApTotalForSource(po.po_no) - currentAmount);
     const remaining = Math.max(0, poLandedAddOn(po) - otherApAmount);
     const checked = selectedPoNos.has(po.po_no) ? "checked" : "";
-    return `<tr data-landed-search="${esc([po.po_no, purchaseOrderWaybillNumbers(po), po.vendor, po.jobsite_project].filter(Boolean).join(" "))}" data-landed-po="${esc(po.po_no)}" data-landed-value="${esc(poPartsSubtotal(po))}" data-landed-qty="${esc((po._lines || []).reduce((sum, line) => sum + Number(line.qty || 0), 0))}">
+    return `<tr data-landed-applied="${landedCostApTotalForSource(po.po_no) > 0.004}" data-landed-search="${esc([po.po_no, purchaseOrderWaybillNumbers(po), po.vendor, po.jobsite_project].filter(Boolean).join(" "))}" data-landed-po="${esc(po.po_no)}" data-landed-value="${esc(poPartsSubtotal(po))}" data-landed-qty="${esc((po._lines || []).reduce((sum, line) => sum + Number(line.qty || 0), 0))}">
       <td><input type="checkbox" data-landed-include value="${esc(po.po_no)}" ${checked}></td>
       <td><button class="linkbtn" type="button" data-landed-source-open="${esc(po.po_no)}">${esc(po.po_no)}</button></td>
       <td>${esc(purchaseOrderWaybillNumbers(po) || "")}</td>
