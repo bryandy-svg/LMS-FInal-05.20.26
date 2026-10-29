@@ -34889,6 +34889,16 @@ function setTruckingRequestOutsideEquipment(row, enabled) {
   equipmentInput.focus();
 }
 
+async function persistTruckingRequestHeader(values, existingRequest = null) {
+  const table = supabase.from("trucking_requests");
+  const query = existingRequest
+    ? table.update(values).eq("id", existingRequest.id).eq("request_no", existingRequest.request_no)
+    : table.insert(values);
+  const result = await query.select().single();
+  if (result.error?.code === "23505") return { ...result, error: new Error("This request number is already in use. The existing move was not changed. Reopen New move request to obtain a new number.") };
+  return result;
+}
+
 async function saveTruckingRequest(previousNo = "") {
   if(previousNo) {
     const tickets=await truckingRequestTickets(previousNo);
@@ -34898,6 +34908,7 @@ async function saveTruckingRequest(previousNo = "") {
     .filter((el) => !el.name.startsWith("line_") && (!["radio", "checkbox"].includes(el.type) || el.checked))
     .map((el) => [el.name, el.value]));
   const existingRequest = previousNo ? (await getAll("trucking_requests")).find((row) => row.request_no === previousNo) : null;
+  if (previousNo && !existingRequest) return alert("This request no longer exists. Refresh before editing.");
   values.request_no = previousNo || values.request_no || truckingNextRequestNo(productMeta.truckingRequests || []);
   values.request_date = existingRequest?.request_date || truckingToday();
   values.status = existingRequest?.status || "Requested";
@@ -35047,7 +35058,7 @@ async function saveTruckingRequest(previousNo = "") {
     if (serviceError) return alert(serviceError.message || "Could not create the new service.");
   }
   const savedLocations = [...new Set([isOutsideCustomerJobsite ? "" : values.project_jobsite, values.origin, values.destination].map((place) => String(place || "").trim()).filter(Boolean))];
-  const requestSave = supabase.from("trucking_requests").upsert(values, { onConflict: "request_no" }).select().single();
+  const requestSave = persistTruckingRequestHeader(values, existingRequest);
   const locationSaves = savedLocations.map((name) => supabase.from("locations").upsert({ name }, { onConflict: "name" }));
   const [{ data: savedRequest, error }] = await Promise.all([requestSave, ...locationSaves]);
   if (error) return alert(error.message || "Could not save the request.");

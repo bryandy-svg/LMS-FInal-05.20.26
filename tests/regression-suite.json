@@ -139,5 +139,6 @@
   "trucking-stable-filters",
   "request-portal-access",
   "customer-po-stock-redirect",
-  "repair-request-workorder-fields"
+  "repair-request-workorder-fields",
+  "trucking-request-collision"
 ]
