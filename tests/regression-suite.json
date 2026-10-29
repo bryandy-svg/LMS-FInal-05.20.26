@@ -140,5 +140,6 @@
   "request-portal-access",
   "customer-po-stock-redirect",
   "repair-request-workorder-fields",
-  "trucking-request-collision"
+  "trucking-request-collision",
+  "partial-dispatch-unscheduled"
 ]
