@@ -6289,6 +6289,33 @@ function accountsReceivableGlBalance(gl = [], asOf = today()) {
   }).reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0));
 }
 
+function apPaymentsBeforePosting(asOf, gl = [], checkRuns = []) {
+  const key = value => String(value || '').trim().toLowerCase();
+  const ledger = gl.map(normalizeGlRow).filter(line => subledgerAccountMatches(line.account, 'Accounts Payable') && !/void|draft|unposted/i.test(line.status || ''));
+  const result = [];
+  for (const run of checkRuns) {
+    const date = String(run.posting_date || run.payment_date || '').slice(0, 10);
+    if (!date || date > asOf || !/printed|cleared/i.test(run.status || '') || /void|revers|cancel/i.test(run.status || '')) continue;
+    const invoices = parseCheckRunNotes(run.notes).invoices || [];
+    const payments = ledger.filter(line => key(line.reference) === key(run.check_run_no) && key(line.vendor) === key(run.vendor) && line.posting_date <= asOf && line.source === 'Check Run');
+    const paid = roundCurrency(payments.reduce((sum, line) => sum + Number(line.debit || 0) - Number(line.credit || 0), 0));
+    const allocated = roundCurrency(invoices.reduce((sum, item) => sum + Number(item.amount || 0), 0));
+    // Only explicit, fully reconciled payment allocations can supply historical credits.
+    if (!invoices.length || paid <= 0 || Math.abs(paid - allocated) > 0.004) continue;
+    for (const item of invoices) {
+      const vendor = item.vendor || run.vendor;
+      const invoice = key(item.invoice_no);
+      const reference = key(item.reference || item.po_no);
+      const charges = ledger.filter(line => key(line.vendor) === key(vendor) && Number(line.credit || 0) > 0 && !/check run/i.test(line.source || '') && (invoice ? key(line.invoice_no) === invoice : key(line.reference) === reference));
+      if (!charges.some(line => line.posting_date > asOf) || charges.some(line => !line.posting_date || line.posting_date <= asOf)) continue;
+      const amount = roundCurrency(Number(item.amount || 0));
+      if (amount <= 0) continue;
+      result.push(agingBucketRow({name: vendor, vendor, reference: run.check_run_no, invoice_no: item.invoice_no || item.reference, invoice_date: date, due_date: date, balance: -amount, status: 'Payment before payable posting', unapplied_vendor_credit: true, _aging_type: 'ap', _payment_before_posting: true}, asOf));
+    }
+  }
+  return result;
+}
+
 function apAgingDetailRows(asOf, source = productMeta.aging || {}) {
   const { purchaseOrders = [], poLines = [], receipts = [], gl = [], checkRuns = [] } = source;
   const cutoffGl = (gl || []).map(normalizeGlRow).filter((row) => !row.posting_date || row.posting_date <= asOf);
@@ -6328,6 +6355,7 @@ function apAgingDetailRows(asOf, source = productMeta.aging || {}) {
   const excluded = rows.filter((row) => !hasControlPosting(row));
   rows = rows.filter(hasControlPosting);
   rows = clearAgingCreditsByParty(reconcileAgingDocumentBalances(rows, cutoffGl, "ap", asOf));
+  rows.push(...apPaymentsBeforePosting(asOf, gl, checkRuns));
   const subledgerBalance = rows.reduce((sum, row) => sum + Number(row.balance || 0), 0);
   const glBalance = accountsPayableGlBalance(gl, asOf);
   const difference = roundCurrency(glBalance - subledgerBalance);

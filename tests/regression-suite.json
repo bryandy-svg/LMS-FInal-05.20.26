@@ -141,5 +141,6 @@
   "customer-po-stock-redirect",
   "repair-request-workorder-fields",
   "trucking-request-collision",
-  "partial-dispatch-unscheduled"
+  "partial-dispatch-unscheduled",
+  "ap-preposting-payments"
 ]
