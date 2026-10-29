@@ -34486,6 +34486,7 @@ async function renderTruckingRequestsView() {
       .map((move) => String(move.driver_name || "").trim())
       .filter(Boolean))].join(", "),
     line_count: lines.filter((line) => line.request_no === row.request_no).length,
+    ...truckingRequestLineProgress(row, lines),
   }))
     .sort((a, b) => String(b.request_date || "").localeCompare(String(a.request_date || "")) || String(b.request_no || "").localeCompare(String(a.request_no || "")));
   if (usesTruckingRequestMobileView()) {
@@ -34537,6 +34538,13 @@ async function renderTruckingRequestsView() {
   $("newTruckRequestBtn").onclick = () => openTruckingRequestForm();
   renderFilteredTruckingRequests();
   truckingEnhanceSuggestInputs($("content"));
+}
+
+function truckingRequestLineProgress(request, lines) {
+  const own = lines.filter(line => line.request_no === request.request_no);
+  const pending = own.filter(line => !line.ticket_no && !/^(dispatched|scheduled|completed|finalized|cancelled|canceled|void|reversed)$/i.test(String(line.status || '').trim()));
+  if (/cancel|void|revers/i.test(String(request.status || '')) || !pending.length) return { status: request.status, remaining_count: pending.length };
+  return { status: pending.length < own.length ? 'Partially Dispatched' : 'Requested', remaining_count: pending.length };
 }
 
 function truckingRequestStatusTab(row) {
@@ -39239,7 +39247,7 @@ async function openTruckingDispatchFromRequest(requestNo) {
     if (requestResult.error) throw requestResult.error;
     if (linesResult.error) throw linesResult.error;
     const req = (requestResult.data || [])[0];
-    const reqLines = (linesResult.data || []).filter(line => !line.ticket_no);
+    const reqLines = (linesResult.data || []).filter(line => !line.ticket_no && !/cancel|void|revers|completed|finalized/i.test(String(line.status || "")));
     if (req?.status === "Cancelled") throw new Error("This move request has been cancelled and cannot be dispatched.");
     if (!req || !reqLines.length) throw new Error("No undispatched request lines found. This request may already have been dispatched.");
   modalTitle.textContent = `Dispatch ${requestNo}`;
@@ -39509,7 +39517,11 @@ async function saveTruckingDispatch(req, reqLines) {
     const savedMove = moveRows.find(move=>move.ticket_no===update.ticketNo);
     await supabase.from("trucking_request_lines").update({ status: "Dispatched", ticket_no: update.ticketNo, container_no:savedMove?.container_no || null, equipment_label:savedMove?.requested_equipment_label || '' }).eq("request_no", req.request_no).eq("line_no", update.lineNo);
   }
-  await supabase.from("trucking_requests").update({ status: "Dispatched" }).eq("request_no", req.request_no);
+  const {data:dispatchLines,error:dispatchLinesError} = await supabase.from("trucking_request_lines").select("request_no,line_no,status,ticket_no").eq("request_no",req.request_no);
+  if (dispatchLinesError) throw dispatchLinesError;
+  const dispatchProgress = truckingRequestLineProgress({...req,status:"Dispatched"},dispatchLines || []);
+  const {error:requestStatusError} = await supabase.from("trucking_requests").update({status:dispatchProgress.status}).eq("request_no",req.request_no);
+  if (requestStatusError) throw requestStatusError;
   closeModal();
   productMeta.truckingLoaded = false;
   if (fleetUpdateErrors.length) alert(`The move was dispatched, but these Fleet & Equipment records could not be updated:\n${fleetUpdateErrors.join("\n")}`);
