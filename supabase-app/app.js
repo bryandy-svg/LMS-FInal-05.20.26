@@ -12615,10 +12615,25 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
   const beforePeriod = (date) => String(date || "") < from;
   const bankName = String(bank || "").toLowerCase();
   const accountSign = reconciliationAccountKind(bank) === "Credit Card Statement" ? -1 : 1;
-  const bookRows = gl.filter((r) => String(r.account || "").toLowerCase() === bankName);
+  const accountRows = gl.filter((r) => String(r.account || "").toLowerCase() === bankName);
+  // Fully cancelled checks are removed from the management report's opening
+  // balance and activity together. Keep ledger dates and entries unchanged.
+  // This preserves the prior report closing balance without adding the same
+  // cancellation again as a receipt in the following month.
+  const fullCancellationRows = new Set();
+  for (const reversal of accountRows.filter(r => /check run void/i.test(r.source || '') && /full cancellation/i.test(r.description || ''))) {
+    const base = String(reversal.reference || '').replace(/[-_ ]?void(?:ed)?$/i, '').trim().toLowerCase();
+    const originals = accountRows.filter(r => String(r.reference || '').trim().toLowerCase() === base && /check run/i.test(r.source || ''));
+    const reversals = accountRows.filter(r => String(r.reference || '').trim().toLowerCase() === String(reversal.reference || '').trim().toLowerCase());
+    const pair = [...originals, ...reversals];
+    if (originals.length && Math.abs(pair.reduce((sum,r) => sum + Number(r.debit || 0) - Number(r.credit || 0),0)) < 0.005) {
+      pair.forEach(r => fullCancellationRows.add(r));
+    }
+  }
+  const bookRows = accountRows.filter(r => !fullCancellationRows.has(r));
   const isOpeningBalanceRow = (row) => /beginning balance|trial balance/i.test(`${row.source || ""} ${row.description || ""} ${row.reference || ""}`);
-  const voidedReferenceBases = new Set(bookRows
-    .filter((r) => String(r.posting_date || "") <= to && /\bvoid(?:ed)?\b/i.test(`${r.reference || ""} ${r.description || ""} ${r.source || ""}`))
+  const voidedReferenceBases = new Set(accountRows
+    .filter((r) => (String(r.posting_date || "") <= to || fullCancellationRows.has(r)) && /\bvoid(?:ed)?\b/i.test(`${r.reference || ""} ${r.description || ""} ${r.source || ""}`))
     .map((r) => String(r.reference || "").replace(/[-_ ]?void(?:ed)?$/i, "").trim().toLowerCase())
     .filter(Boolean));
   const openingBookRows = bookRows.filter((row) => beforePeriod(row.posting_date)
@@ -12767,6 +12782,7 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
   return {
     beginningBalance,
     bookBeginning: registerBalance,
+    fullCancellationAdjusted: fullCancellationRows.size > 0,
     registerBalance,
     checksReleased,
     collections,
@@ -13039,6 +13055,7 @@ function bankStatementHtml(statement, bank, from, to, accountKind = "Bank Statem
       <small>Unaudited — For management use</small>
     </div>
     <p class="bank-report-help no-print">Click a category to view its supporting transactions.</p>
+    ${statement.fullCancellationAdjusted ? '<p class="bank-report-help">Balances exclude fully cancelled checks and their reversals. Related reversals are already reflected in the opening balance and are not added again.</p>' : ''}
     <table class="bank-rec-table bank-summary-table">
       <thead><tr><th>Book Activity</th><th class="num">Amount</th></tr></thead>
       <tbody>
@@ -13132,6 +13149,7 @@ function exportBankStatementExcel(statement, bank, from, to, accountKind = "Bank
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     body{font-family:Arial,sans-serif;color:#172033}.report{width:620px;border-collapse:collapse;table-layout:fixed}.report td,.report th{padding:3px 4px;vertical-align:top}.title{text-align:center;font-size:15px}.title strong{font-size:17px}.main-head th{border-top:2px solid #111;text-align:left}.main-head th:last-child{text-align:right}.section td{font-weight:700;padding-top:8px}.total td{font-weight:700;border-top:1px solid #222}.grand td{font-weight:700;border-top:2px solid #111}.difference td{font-weight:700;border-top:2px solid #087080}.detail-count td{color:#075e69;font-size:10px;font-weight:700}.detail-head th{font-size:10px;text-decoration:underline;text-align:left}.detail-head th:nth-child(1){width:68px}.detail-head th:nth-child(2){width:76px}.detail-head th:nth-child(3){width:94px}.detail-head th:nth-child(4){width:220px}.detail-head th:nth-child(5){width:80px;text-align:right}.detail-head th:nth-child(6){width:82px}.detail-row td{font-size:9px}.detail-row .description{white-space:normal}.amount{text-align:right;mso-number-format:'#,##0.00;[Red](#,##0.00)'}.text{mso-number-format:'\\@'}</style></head><body><table class="report">
     <tr><td colspan="6" class="title"><strong>LMS IMPORTS</strong><br>${isCreditCard ? "Credit Card Reconciliation Statement" : isIntercompany ? "Intercompany Reconciliation Statement" : "Bank Reconciliation Statement"}<br>${esc(bank)}<br>For the month ended ${esc(formatDisplayDate(to))}<br><small>Unaudited — For management use</small></td></tr>
+    ${statement.fullCancellationAdjusted ? '<tr><td colspan="6">Balances exclude fully cancelled checks and their reversals. Related reversals are included in opening balance and are not added again.</td></tr>' : ''}
     <tr><td colspan="6">&nbsp;</td></tr><tr class="main-head"><th colspan="5">Book Activity</th><th>Amount</th></tr>
     <tr class="section"><td colspan="5">${isCreditCard ? "Beginning Credit Card Balance for the Month" : "Beginning Book Balance for the Month"}</td><td class="amount">${statement.bookBeginning}</td></tr>
     ${reportRows}

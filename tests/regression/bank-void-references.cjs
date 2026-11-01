@@ -48,3 +48,18 @@ assert.equal(report('2026-10-01','2026-10-20').otherReceiptsTotal,0);
 monthly[1].debit=7000;
 assert.equal(report('2026-09-01','2026-10-31').bookEnding,42777.19,'Unbalanced cancellation must not disappear');
 console.log('PASS: cross-month cancellations preserve September closing, October opening, and one dated reversal.');
+
+monthly[1].debit=7500;
+monthly[1].description='Full cancellation of CHK-PRIOR: Unusable';
+const adjustedSeptember=report('2026-09-01','2026-09-30');
+const adjustedOctober=report('2026-10-01','2026-10-31');
+assert.equal(adjustedSeptember.bookEnding,43277.19);
+assert.equal(adjustedOctober.bookBeginning,43277.19);
+assert.equal(adjustedOctober.bookBeginning,adjustedSeptember.bookEnding);
+assert.equal(adjustedOctober.otherReceiptsTotal,0,'Cancellation already included in opening must not be added again');
+assert.equal(adjustedOctober.bookEnding,43277.19);
+assert.equal(report('2026-11-01','2026-11-30').bookBeginning,adjustedOctober.bookEnding);
+assert.equal(monthly[1].posting_date,'2026-10-21','Ledger date remains unchanged');
+monthly[1].debit=7000;
+assert.equal(report('2026-09-01','2026-10-31').bookEnding,42777.19,'Unbalanced full cancellations stay visible');
+console.log('PASS: full cancellations are included once in adjusted opening and prior closing balances.');
