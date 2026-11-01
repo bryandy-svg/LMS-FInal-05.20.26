@@ -12618,15 +12618,27 @@ function buildBankStatement(gl, bankRows, bank, from, to, beginningBalance, stat
   const bookRows = gl.filter((r) => String(r.account || "").toLowerCase() === bankName);
   const isOpeningBalanceRow = (row) => /beginning balance|trial balance/i.test(`${row.source || ""} ${row.description || ""} ${row.reference || ""}`);
   const voidedReferenceBases = new Set(bookRows
-    .filter((r) => /\bvoid(?:ed)?\b/i.test(`${r.reference || ""} ${r.description || ""} ${r.source || ""} ${r.status || ""}`))
+    .filter((r) => String(r.posting_date || "") <= to && /\bvoid(?:ed)?\b/i.test(`${r.reference || ""} ${r.description || ""} ${r.source || ""}`))
     .map((r) => String(r.reference || "").replace(/[-_ ]?void(?:ed)?$/i, "").trim().toLowerCase())
     .filter(Boolean));
   const openingBookRows = bookRows.filter((row) => beforePeriod(row.posting_date)
     || (String(row.posting_date || "") <= from && isOpeningBalanceRow(row)));
   const bookPrior = openingBookRows.reduce((sum, r) => sum + accountSign * (Number(r.debit || 0) - Number(r.credit || 0)), 0);
-  const isVoidedBookRow = (r) => /\bvoid(?:ed)?\b/i.test(`${r.reference || ""} ${r.description || ""} ${r.source || ""} ${r.status || ""}`);
-  const bookPeriod = bookRows.filter((r) => inPeriod(r.posting_date) && !openingBookRows.includes(r) && !isVoidedBookRow(r)
-    && !voidedReferenceBases.has(String(r.reference || "").trim().toLowerCase())).map((r) => ({
+  // Suppress only balanced cancellation pairs inside this reporting period.
+  // A later cancellation cannot erase a prior month's check, and a prior
+  // check's cancellation must restore cash in the month it was posted.
+  const cancelledPeriodRows = new Set();
+  for (const base of voidedReferenceBases) {
+    const originals = bookRows.filter(r => String(r.reference || '').trim().toLowerCase() === base);
+    const reversals = bookRows.filter(r => String(r.reference || '').replace(/[-_ ]?void(?:ed)?$/i, '').trim().toLowerCase() === base && !originals.includes(r));
+    const pair = [...originals, ...reversals];
+    if (originals.length && reversals.length && pair.every(r => inPeriod(r.posting_date) && !openingBookRows.includes(r))
+      && Math.abs(pair.reduce((sum, r) => sum + Number(r.debit || 0) - Number(r.credit || 0), 0)) < 0.005) {
+      pair.forEach(r => cancelledPeriodRows.add(r));
+    }
+  }
+  const bookPeriod = bookRows.filter((r) => inPeriod(r.posting_date) && !openingBookRows.includes(r)
+    && !cancelledPeriodRows.has(r)).map((r) => ({
     type: accountSign * (Number(r.debit || 0) - Number(r.credit || 0)) >= 0 ? (accountSign < 0 ? "Charge" : "Deposit") : (accountSign < 0 ? "Payment" : "Check"),
     date: r.posting_date,
     num: r.reference,
