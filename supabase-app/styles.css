@@ -3659,6 +3659,8 @@ body.trucking-requestor-mode #fullTourBtn {
 .trucking-compact-table th, .trucking-compact-table td { box-sizing: border-box; width: 120px; min-width: 0; max-width: 120px; padding: 7px 8px; font-size: 12px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
 .trucking-compact-table [data-report-column="customer"], .trucking-compact-table [data-report-column="project_jobsite"], .trucking-compact-table [data-report-column="equipment_label"], .trucking-compact-table [data-report-column="requested_equipment_label"], .trucking-compact-table [data-report-column="move_description"] { width: 190px; max-width: 190px; }
 .trucking-compact-table [data-report-column="_actions"] { width: 100px; max-width: 100px; position: sticky; left: 0; background: var(--panel, #fff); z-index: 2; }
+/* Raise the sticky cell itself: a fixed menu cannot escape its stacking context. */
+.trucking-compact-table [data-report-column="_actions"]:has(.row-action-menu[open]) { z-index: 46; }
 .trucking-compact-table input, .trucking-compact-table select, .trucking-compact-table .report-multi-filter { width: 100%; min-width: 0; box-sizing: border-box; font-size: 12px; }
 .trucking-compact-table .truck-filter-row th { padding: 4px; }
 .trucking-compact-table .truck-visible-export-bar { padding: 5px 8px; }
