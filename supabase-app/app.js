@@ -39623,7 +39623,7 @@ async function openTruckingMoveForm(ticketNo = "") {
     : null;
   if (normalizedTicketNo && !existing) throw new Error(`Ticket ${normalizedTicketNo} could not be loaded.`);
   if (loadingNode && (modalBody.firstElementChild !== loadingNode || $('modal').style.display === 'none')) return;
-  if (!productMeta.truckingLoaded) await loadTruckingLookups({ useCache: true, formOnly: Boolean(existing), ticket: existing, requestNo: existing?.request_no || '' });
+  if (!productMeta.truckingLoaded || !productMeta.truckingAssets?.length) await loadTruckingLookups({ useCache: true, formOnly: Boolean(existing), ticket: existing, requestNo: existing?.request_no || '' });
   if(existing) productMeta.truckingMoves=(productMeta.truckingMoves || []).filter(row=>row.ticket_no!==existing.ticket_no).concat(existing);
   let requestedEquipment = existing?.requested_equipment_label || "";
   if (!requestedEquipment && existing?.request_no) {
@@ -39652,7 +39652,7 @@ async function openTruckingMoveForm(ticketNo = "") {
       <label>Helper Driver (optional)<input name="helper_driver_name" class="suggest-input" data-suggest-source="trucking_drivers" value="${esc(existing?.helper_driver_name || "")}" placeholder="Select helper driver"><small>Uses main ticket times; does not own the ticket.</small></label>
       <label>Trip type<select name="trip_type"><option>One-Way</option><option>Round Trip</option></select></label>
       <label>Service<input name="service" list="truckServiceOptions" value="${esc(existing?.service || "")}"></label>
-      <label>Equipment Requested<input value="${esc(requestedEquipment)}" readonly><small>Equipment listed on the original move request.</small></label>
+      <label>Equipment Requested<input class="suggest-input" name="requested_equipment_label" data-suggest-source="equipment" data-equipment-source="trucking" value="${esc(requestedEquipment)}" placeholder="Search asset #, equipment, plate, serial or VIN" autocomplete="off" inputmode="search"><small>Equipment to be moved. Search and select a replacement for this ticket.</small></label>
       <label>Equipment<input class="suggest-input" name="equipment_label" data-suggest-source="equipment" data-equipment-source="trucking" value="${esc(existing?.equipment_label || "")}" placeholder="Type asset #, equipment, plate, serial, VIN, type, or location" autocomplete="off" inputmode="search"></label>
       <label>Origin<input name="origin" value="${esc(existing?.origin || "")}"></label>
       <label>Destination<input name="destination" value="${esc(existing?.destination || "")}"></label>
@@ -39771,10 +39771,13 @@ async function saveTruckingMove() {
   }
   const asset = truckingFindAsset(payload.equipment_label);
   if (isTruckingContainerEquipment(asset, payload.equipment_label)) return alert("Containers can be moved, but cannot be selected as Equipment Used. Choose the truck or operating equipment that performed the move.");
+  if (payload.equipment_label !== existingMove?.equipment_label && !asset.asset_tag) return alert("Select the actual equipment from the search results.");
+  const requestedAsset = truckingFindAsset(payload.requested_equipment_label);
+  if (requestedAsset.label) payload.requested_equipment_label = requestedAsset.label;
   if (asset.label) payload.equipment_label = asset.label;
   if(asset.asset_tag && asset.asset_tag!==existingMove?.asset_tag) payload.truck_license=asset.plate || '';
-  payload.asset_source = payload.asset_source || asset.source || "";
-  payload.asset_tag = payload.asset_tag || asset.asset_tag || "";
+  payload.asset_source = asset.source || existingMove?.asset_source || "";
+  payload.asset_tag = asset.asset_tag || existingMove?.asset_tag || "";
   const rate = (productMeta.truckingRates || []).find((item) => item.service === payload.service);
   if (rate) {
     payload.rate = Number(rate.rate || 0);
