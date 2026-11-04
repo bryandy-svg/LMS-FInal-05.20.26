@@ -4659,6 +4659,7 @@ function scheduleSystemSearch() {
 }
 
 const systemSearchProviders = [
+  { view: "quotes", table: "quotations", columns: "id,quote_no,customer,status,sales_order_no", fields: ["quote_no", "customer", "sales_order_no"], ref: "quote_no", name: "Quotation", detail: (r) => [r.customer, r.status, r.sales_order_no] },
   { view: "repairs", table: "work_orders", columns: "id,wo_no,asset_tag,bill_to_customer,description,status", fields: ["wo_no", "asset_tag", "bill_to_customer", "description", "customer_po", "operator", "requested_by"], ref: "wo_no", name: "Work Order", detail: (r) => [r.asset_tag, r.bill_to_customer, r.status] },
   { view: "purchasing", table: "purchase_orders", columns: "id,po_no,vendor,jobsite_project,vendor_invoice_no,status", fields: ["po_no", "vendor", "jobsite_project", "vendor_invoice_no", "notes"], ref: "po_no", name: "Purchase Order", detail: (r) => [r.vendor, r.vendor_invoice_no, r.status] },
   { view: "receipts", table: "goods_receipts", columns: "id,gr_no,po_no,vendor,vendor_invoice_no,product_name,status", fields: ["gr_no", "po_no", "vendor", "vendor_invoice_no", "sku", "product_name"], ref: "gr_no", name: "Goods Receipt", detail: (r) => [r.po_no, r.vendor, r.product_name] },
@@ -4745,8 +4746,9 @@ async function openSystemSearchResult(result) {
   await loadView(result.view);
   if (result.kind === "module") return;
   const ref = result.reference;
-  if (result.view === "purchasing" || result.view === "orders" || result.view === "repairs") {
+  if (result.view === "purchasing" || result.view === "orders" || result.view === "repairs" || result.view === "quotes") {
     const config = {
+      quotes: { table: "quotations", column: "quote_no", open: openQuotationModal },
       purchasing: { table: "purchase_orders", column: "po_no", open: openPurchaseOrderModal },
       orders: { table: "sales_orders", column: "order_no", open: openSalesOrderModal },
       repairs: { table: "work_orders", column: "wo_no", open: openWorkOrderEditModal },
