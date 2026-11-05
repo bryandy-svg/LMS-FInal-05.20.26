@@ -8539,6 +8539,25 @@ function balanceSheetScheduleRows(data, schedule) {
     });
 }
 
+function customerSalesSchedulesHtml(data, asOf) {
+  const from = sessionStorage.getItem("lms.accountingReportFrom") || monthStart(asOf);
+  return ["Parts Sales", "LMS Service - Sales"].map((account) => {
+    const customers = new Map();
+    for (const row of data.gl || []) {
+      const date = String(row.posting_date || row.entry_date || "").slice(0, 10);
+      if (date < from || date > asOf || String(row.account || "").trim().toLowerCase() !== account.toLowerCase()) continue;
+      const name = String(row.customer || "").trim() || "Customer unspecified";
+      const key = name.toLowerCase();
+      const group = customers.get(key) || { name, cents: 0 };
+      group.cents += Math.round(Number(row.credit || 0) * 100) - Math.round(Number(row.debit || 0) * 100);
+      customers.set(key, group);
+    }
+    const rows = [...customers.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const total = rows.reduce((sum, row) => sum + row.cents, 0);
+    return `<section class="balance-sheet-schedule schedule new-page"><table class="financial-statement-table"><thead><tr><th colspan="2">${esc(account)} per Customer</th></tr><tr><th colspan="2">${esc(formatDisplayDate(from))} through ${esc(formatDisplayDate(asOf))}</th></tr><tr><th>Customer</th><th class="num">Net Sales</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.name)}</td><td class="num">${money(row.cents / 100)}</td></tr>`).join("") || '<tr><td colspan="2">No sales for this period.</td></tr>'}</tbody><tfoot><tr><th>Total ${esc(account)}</th><th class="num">${money(total / 100)}</th></tr></tfoot></table></section>`;
+  }).join("");
+}
+
 function balanceSheetSchedulesHtml(data) {
   const asOf = sessionStorage.getItem("lms.accountingReportTo") || today();
   const sections = BALANCE_SHEET_SCHEDULES.map((schedule) => {
@@ -8546,7 +8565,7 @@ function balanceSheetSchedulesHtml(data) {
     const total = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
     return `<section class="balance-sheet-schedule"><h3>${esc(schedule.title)}</h3><p class="financial-report-help">Open balances only. Cleared references with a zero net balance are excluded.</p><div class="table-wrap"><table class="balance-sheet-schedule-table"><thead><tr><th>Date</th><th class="schedule-reference-column">Reference</th><th>Description</th><th>Customer / Vendor</th><th>Source</th><th class="num">Open Balance</th></tr></thead><tbody>${rows.length ? rows.map((row) => `<tr><td>${row.posting_date ? esc(formatDisplayDate(row.posting_date)) : ""}</td><td class="schedule-reference-column"><strong>${esc(row.reference)}</strong></td><td>${esc(row.description)}</td><td>${esc(row.party)}</td><td>${esc(row.source)}</td><td class="num">${money(row.amount)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">No open balance as of ${esc(formatDisplayDate(asOf))}.</td></tr>`}</tbody><tfoot><tr><th class="schedule-total-label" colspan="5">Schedule Total</th><th class="num">${money(total)}</th></tr></tfoot></table></div></section>`;
   }).join("");
-  return `<article class="financial-report balance-sheet-schedules-report">${financialReportHeader("Balance Sheet Schedules", `As of ${formatDisplayDate(asOf)}`)}<p class="financial-report-help">Schedules reconcile document-level activity to their Balance Sheet control accounts. Standalone balanced-journal entries are included in Beginning Balance unless their reference matches source activity.</p>${sections}</article>`;
+  return `<article class="financial-report balance-sheet-schedules-report">${financialReportHeader("Balance Sheet Schedules", `As of ${formatDisplayDate(asOf)}`)}<p class="financial-report-help">Schedules reconcile document-level activity to their Balance Sheet control accounts. Standalone balanced-journal entries are included in Beginning Balance unless their reference matches source activity.</p>${sections}${customerSalesSchedulesHtml(data, asOf)}</article>`;
 }
 
 function printBalanceSheetSchedules(data) {
@@ -8558,7 +8577,7 @@ function printBalanceSheetSchedules(data) {
   }).join("");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Balance Sheet Schedules</title><style>
     @page{size:Letter landscape;margin:.35in}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}html,body{margin:0;padding:0;background:#fff;color:#172638;font-family:Arial,Helvetica,sans-serif;font-size:9px}.report-head{text-align:center;border-bottom:3px solid #075d73;padding:0 0 10px;margin:0 0 14px}.report-head strong,.report-head span,.report-head small{display:block}.report-head strong{color:#075d73;font-size:15px;letter-spacing:.1em}.report-head span{margin:3px 0;font-size:24px;font-weight:800}.report-head small{color:#526579;font-size:10px}.schedule{break-inside:auto}.schedule.new-page{break-before:page;page-break-before:always}.section-title{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:0 0 8px;padding-bottom:6px;border-bottom:2px solid #075d73}.section-title h2{margin:0;color:#075d73;font-size:17px}.section-title p{margin:3px 0 0;color:#526579}.section-total{text-align:right}.section-total span,.section-total strong{display:block}.section-total span{color:#526579;text-transform:uppercase;font-size:8px}.section-total strong{font-size:15px}table{width:100%;border-collapse:collapse;table-layout:fixed}thead{display:table-header-group}tfoot{display:table-footer-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{padding:6px 7px;border-bottom:1px solid #d2dce4;text-align:left;vertical-align:top;line-height:1.25;overflow-wrap:anywhere}th{background:#e8f0f5;color:#19334c;font-size:8px;text-transform:uppercase;letter-spacing:.025em}td{font-size:9px}th:nth-child(1),td:nth-child(1){width:10%;white-space:nowrap}th:nth-child(2),td:nth-child(2){width:43%}th:nth-child(3),td:nth-child(3){width:22%}th:nth-child(4),td:nth-child(4){width:15%}th:nth-child(5),td:nth-child(5){width:10%;white-space:nowrap}.num{text-align:right}tfoot th{border-top:2px solid #40586a;background:#eaf1f5;font-size:10px}.empty{padding:18px;color:#667;text-align:center}
-  </style></head><body><header class="report-head"><strong>LMS IMPORTS</strong><span>Balance Sheet Schedules</span><small>As of ${esc(formatDisplayDate(asOf))} · Unaudited · For management use</small></header>${sections}</body></html>`;
+  </style></head><body><header class="report-head"><strong>LMS IMPORTS</strong><span>Balance Sheet Schedules</span><small>As of ${esc(formatDisplayDate(asOf))} · Unaudited · For management use</small></header>${sections}${customerSalesSchedulesHtml(data, asOf)}</body></html>`;
   openPrintWindow(html, `Balance Sheet Schedules - ${asOf}`);
 }
 
