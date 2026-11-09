@@ -31,8 +31,12 @@ export async function openEmailSettings(fetcher) {
       const data = await api(fetcher, 'status'); error.textContent = '';
       dialog.querySelector('[data-accounts]').innerHTML = data.providers.map(p => {
         const account = data.accounts.find(a => a.provider === p.provider);
-        return `<p><strong>${name(p.provider)}</strong> — ${account ? escape(account.email) : p.configured ? 'Not connected' : 'Administrator setup needed'}<br><button data-connect="${p.provider}" ${p.configured ? '' : 'disabled'}>${account ? 'Reconnect' : 'Connect'}</button> ${account ? `<button data-disconnect="${p.provider}">Disconnect</button>` : ''}</p>`;
+        return `<p><strong>${name(p.provider)}</strong> — ${account ? escape(account.email) : p.configured ? 'Not connected' : 'Administrator setup needed'}<br><button type="button" ${p.configured ? 'data-connect' : 'data-setup'}="${p.provider}">${p.configured ? (account ? 'Reconnect' : 'Connect') : 'Setup details'}</button> ${account ? `<button data-disconnect="${p.provider}">Disconnect</button>` : ''}</p>`;
       }).join('');
+      dialog.querySelectorAll('[data-setup]').forEach(button => button.onclick = () => {
+        error.textContent = name(button.dataset.setup) + ' is not enabled for LMS yet. An administrator must configure the email app credentials and secure token storage on the server. After setup, select Refresh connections, then Connect to sign in to your own mailbox. For now, select “Email app (open draft)” when preparing an email.';
+        error.scrollIntoView({block:'nearest'});
+      });
       dialog.querySelectorAll('[data-connect]').forEach(button => button.onclick = async () => { try { await connect(fetcher, button.dataset.connect); error.textContent = 'Complete sign-in in the new tab, then select Refresh connections.'; } catch(e) { error.textContent = e.message; } });
       dialog.querySelectorAll('[data-disconnect]').forEach(button => button.onclick = async () => {
         if (!confirm('Disconnect this mailbox from LMS? You can reconnect later.')) return;
