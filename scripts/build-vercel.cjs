@@ -6,6 +6,7 @@ const root = path.resolve(__dirname, '..');
 process.chdir(root);
 execFileSync(process.execPath, ['--check', 'supabase-app/app.js'], { stdio: 'inherit' });
 execFileSync(process.execPath, ['scripts/test-regressions.cjs'], { stdio: 'inherit' });
+execFileSync(process.execPath, ['scripts/test-trucking-dates.mjs'], { stdio: 'inherit' });
 const { sourceHash } = verify();
 let commit = process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA;
 if (!commit) {

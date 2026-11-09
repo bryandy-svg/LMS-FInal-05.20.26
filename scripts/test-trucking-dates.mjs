@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { truckingDeliveryDates as dates } from '../supabase-app/trucking-dates.mjs';
+assert.deepEqual(dates('single','2026-11-09'),['2026-11-09']);
+assert.deepEqual(dates('multiple','2026-11-11',['2026-11-09','2026-11-11']),['2026-11-09','2026-11-11']);
+assert.deepEqual(dates('weekly','2026-11-09',[],'2026-11-18',[1,3]),['2026-11-09','2026-11-11','2026-11-16','2026-11-18']);
+assert.deepEqual(dates('weekly','2026-12-30',[],'2027-01-04',[1,3]),['2026-12-30','2027-01-04']);
+assert.throws(()=>dates('single','2026-02-30'));
+assert.throws(()=>dates('multiple','2026-11-09',['']));
+assert.throws(()=>dates('weekly','2026-11-09',[],'2026-11-01',[1]));
+assert.throws(()=>dates('weekly','2026-11-09',[],'2026-11-18',[]));
+assert.throws(()=>dates('weekly','2026-11-09',[],'2027-11-18',[1,3]));
+console.log('Delivery date checks passed');
