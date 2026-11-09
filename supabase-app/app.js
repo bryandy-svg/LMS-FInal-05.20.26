@@ -34669,6 +34669,7 @@ function truckingRequestTable(rows) {
 
 function bindTruckingRequestActions(host) {
   if (!host) return;
+  bindBulkMoveRequests(host);
   host.onclick = async (event) => {
     const button = event.target.closest("[data-trucking-request-action]");
     if (!button || !host.contains(button)) return;
@@ -34689,6 +34690,71 @@ function bindTruckingRequestActions(host) {
       if (button.isConnected) button.disabled = false;
     }
   };
+}
+
+function bindBulkMoveRequests(host) {
+  if (usesTruckingRequestMobileView() || truckingRequestTab !== "unscheduled") return;
+  const rows = [...host.querySelectorAll('tbody tr')];
+  rows.forEach(row => {
+    const action = row.querySelector('[data-trucking-request-action="dispatch"]');
+    if (!action) return;
+    const box = document.createElement('input');
+    box.type = 'checkbox'; box.dataset.bulkMove = action.dataset.requestNo;
+    box.setAttribute('aria-label', 'Select ' + action.dataset.requestNo);
+    box.style.marginRight = '10px';
+    row.cells[0].prepend(box);
+  });
+  const bar = document.createElement('div');
+  bar.className = 'toolbar no-print';
+  bar.innerHTML = '<label><input type="checkbox" data-bulk-all> Select all visible</label> <span data-bulk-count>0 selected</span> <button type="button" data-bulk-dispatch>Dispatch selected</button> <button type="button" class="danger" data-bulk-cancel>Cancel selected</button>';
+  host.prepend(bar);
+  const visible = () => [...host.querySelectorAll('[data-bulk-move]')].filter(box => box.closest('tr').getClientRects().length);
+  const selected = () => visible().filter(box => box.checked).map(box => box.dataset.bulkMove);
+  const update = () => {
+    const boxes=visible(), count=selected().length;
+    bar.querySelector('[data-bulk-count]').textContent=count+' selected';
+    const all=bar.querySelector('[data-bulk-all]');
+    all.checked=boxes.length>0 && count===boxes.length; all.indeterminate=count>0 && count<boxes.length;
+  };
+  bar.querySelector('[data-bulk-all]').onchange=event=>{visible().forEach(box=>box.checked=event.target.checked);update();};
+  host.addEventListener('change',update);
+  bar.querySelector('[data-bulk-dispatch]').onclick=()=>dispatchSelectedMoveRequests(selected());
+  bar.querySelector('[data-bulk-cancel]').onclick=async event=>{
+    const numbers=selected();
+    if(!numbers.length)return alert('Select the requests to cancel.');
+    const reason=prompt('Cancellation reason for '+numbers.length+' requests:', 'Duplicate request');
+    if(reason===null)return;
+    if(!reason.trim())return alert('Enter a cancellation reason.');
+    if(!confirm('Move these '+numbers.length+' requests to Cancelled?\n\n'+numbers.join(', ')+'\n\nReason: '+reason.trim()))return;
+    const button=event.currentTarget; button.disabled=true;
+    try {
+      const {error}=await supabase.rpc('cancel_unused_move_requests',{p_requests:numbers,p_reason:reason.trim()});
+      if(error)throw error;
+      const cancelled=new Set(numbers);
+      currentRows=currentRows.map(row=>cancelled.has(row.request_no)?{...row,status:'Cancelled',cancellation_reason:reason.trim()}:row);
+      productMeta.truckingRequests=currentRows;
+      productMeta.truckingLoaded=false; invalidateViewReads();
+      renderFilteredTruckingRequests();
+      alert(numbers.length+' requests moved to Cancelled.');
+    } catch(error) {alert(error.message || 'Could not cancel the selected requests.');}
+    finally {button.disabled=false;}
+  };
+}
+
+async function dispatchSelectedMoveRequests(numbers, index=0) {
+  if(!numbers.length)return alert('Select the requests to dispatch.');
+  if(index>=numbers.length)return alert('Selected dispatch requests processed.');
+  try {
+    await openTruckingDispatchFromRequest(numbers[index]);
+    if($('modal').style.display==='none')return;
+    const originalSave=modalSave.onclick;
+    modalTitle.textContent += ' — '+(index+1)+' of '+numbers.length;
+    modalSave.textContent=index+1<numbers.length?'Dispatch & next':'Dispatch';
+    modalSave.onclick=async()=>{
+      await originalSave();
+      if($('modal').style.display==='none')await dispatchSelectedMoveRequests(numbers,index+1);
+    };
+  } catch(error) {alert(error.message || 'Could not open the selected request.');}
 }
 
 function renderFilteredTruckingRequests() {
