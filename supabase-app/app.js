@@ -39355,8 +39355,8 @@ async function openTruckingDispatchFromRequest(requestNo) {
       <div class="mini-grid truck-line-head truck-dispatch-head"><strong>Include</strong><strong>Requested Item</strong><strong>Service</strong><strong>Actual Truck / Equipment</strong><strong>Discount %</strong><strong>Origin</strong><strong>Destination</strong></div>
       ${reqLines.map((line) => `<div class="mini-grid truck-dispatch-line" data-line="${esc(line.line_no)}">
         <input type="checkbox" checked>
-        ${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea></label>' : '<span>'+esc(line.equipment_label || req.service_needed || "Move item")+'</span>'}
-        <input list="truckServiceOptions" value="${esc(line.service || "")}">
+        ${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea></label>' : '<input name="dispatch_requested_item" class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="'+esc(line.equipment_label || req.service_needed || '')+'" placeholder="Search equipment or enter requested item" autocomplete="off">'}
+        <input class="suggest-input" data-suggest-source="trucking_rate_equipment" list="truckServiceOptions" value="${esc(line.service || "")}" placeholder="Search service" autocomplete="off">
         <input class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" placeholder="Type actual equipment, asset #, plate, serial, VIN, or location" autocomplete="off" inputmode="search">
         <input type="number" min="0" max="100" step="0.01" value="0" placeholder="Discount %">
         <input value="${esc(line.origin || "")}">
@@ -39483,7 +39483,8 @@ async function saveTruckingDispatch(req, reqLines) {
     const original = reqLines.find((line) => Number(line.line_no) === lineNo) || {};
     const containerNo = row.querySelector('[name=dispatch_container_no]')?.value.trim() || original.container_no || '';
     if (isContainerMoveService({service:req.service_needed}) && !containerNo) return alert('Enter a container number or To follow for each selected container.');
-    const inputs = row.querySelectorAll("input");
+    const inputs = row.querySelectorAll("input:not([name=dispatch_requested_item])");
+    const requestedItem = row.querySelector("[name=dispatch_requested_item]")?.value.trim() || original.equipment_label || "";
     const service = inputs[1]?.value.trim() || original.service || "";
     const actualEquipmentInput = inputs[2]?.value.trim() || "";
     const actualAsset = truckingFindAsset(actualEquipmentInput);
@@ -39513,7 +39514,7 @@ async function saveTruckingDispatch(req, reqLines) {
       requested_by: req.requested_by,
       po_no: req.po_no,
       move_description: req.move_description || req.notes || "",
-      requested_equipment_label: containerNo ? [req.service_subcategory,req.service_size,containerNo].filter(Boolean).join(' | ') : original.equipment_label || "",
+      requested_equipment_label: containerNo ? [req.service_subcategory,req.service_size,containerNo].filter(Boolean).join(' | ') : requestedItem,
       container_no: containerNo,
       helper_driver_name: helper?.name || null,
       helper_driver_email: helper?.email || null,
