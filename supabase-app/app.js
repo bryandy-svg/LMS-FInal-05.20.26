@@ -35612,6 +35612,7 @@ async function openAssignedDriverTask(ticketNo) {
   if (isTruckingDriverUser() && !truckingMoveBelongsToCurrentDriver(row)) return alert("This task is assigned to another driver.");
   modalTitle.textContent = `Complete assigned task ${ticketNo}`;
   modalBody.innerHTML = `
+    <label class="field">Actual work / ticket date<input type="date" name="move_date" value="${esc(row.move_date || truckingToday())}" required><small>Entering the ticket late? Keep the date the work was done. Carried the move to another day? Choose that day. Your hours and printed ticket use this date.</small></label>
     <div class="assigned-task-summary">
       <div><strong>Ticket #</strong><span>${esc(row.ticket_no || "")}</span></div>
       <div><strong>Request #</strong><span>${esc(row.request_no || "")}</span></div>
@@ -35629,7 +35630,6 @@ async function openAssignedDriverTask(ticketNo) {
       <div><strong>Actual equipment</strong><span>${esc(row.equipment_label || "")}</span></div>
     </div>
     <div class="form-grid">
-      <label class="field">Ticket date<input type="date" name="move_date" value="${esc(row.move_date || truckingToday())}" required><small>This becomes the final date printed on the ticket.</small></label>
       <label class="field">Origin<input name="origin" value="${esc(row.origin || "")}"></label>
       <label class="field">Destination<input name="destination" value="${esc(row.destination || "")}"></label>
       <label class="field">Container / Trailer #<input name="container_no" value="${esc(row.container_no || "")}" ${isContainerMoveService(row) ? "required" : ""}></label>
@@ -35700,6 +35700,10 @@ async function openAssignedDriverTask(ticketNo) {
   modalSave.textContent = "Finalize ticket";
   modalSave.onclick = () => finalizeAssignedDriverTask(row, driverCanvas, customerCanvas);
   $("modal").style.display = "flex";
+  if (row.move_date && row.move_date !== truckingToday()) {
+    alert(`This move is dated ${formatDisplayDate(row.move_date)}.\n\nIf you are entering the ticket late, keep the date the work was done. If you carried the move to another day, change Actual work / ticket date at the top of this form.\n\nYour hours and printed ticket will use the date you choose.`);
+    modalBody.querySelector('[name="move_date"]')?.focus();
+  }
 }
 
 function assignedDriverOperationalUpdate() {
