@@ -63,6 +63,10 @@ async function submit(person,input){
  if(kind==='property'){record.requestor_email=person.email;if(!uuid(src.property_id)||!src.issue_description)throw fail('Choose a property and describe the issue.');const property=(await db('property_maintenance_properties?id=eq.'+src.property_id+'&select=property_no,property_name&limit=1'))[0];if(!property)throw fail('Choose a saved property.');Object.assign(record,property);}
  if(kind==='repair'){record.email=person.email;if(!uuid(src.asset_id)||!src.issue||!src.po_no||!clean(src.jobsite_location))throw fail('Equipment, issue, PO number and charging jobsite are required.');}
  const lines=(input.lines||[]).map((line,index)=>({...pick(line,'asset_source,asset_tag,equipment_label,service,origin,destination,notes,container_no'),line_no:index+1}));
+ if(kind==='trucking' && input.dates != null) {
+  if(!Array.isArray(input.dates)||!input.dates.length||input.dates.length>100||input.dates.some(date=>typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date))||new Date(date).toISOString().slice(0,10)!==date))throw fail('Choose between 1 and 100 valid delivery dates.');
+  return db('rpc/create_trucking_request_series','POST',{p_owner:person.owner_id,p_series:input.submission,p_record:record,p_lines:lines,p_dates:input.dates});
+ }
  return db('rpc/request_portal_submit','POST',{p_owner:person.owner_id,p_submission:input.submission,p_kind:kind,p_record:record,p_lines:lines,p_po:kind==='repair'?validateFile(input.po):null});
 }
 async function history(person){

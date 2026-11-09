@@ -1,3 +1,4 @@
+import { truckingDeliveryDates } from "./trucking-dates.mjs";
 import { mountInsights } from "./module-insights.mjs";
 import { mountEmailDelivery, openEmailSettings, rememberEmailPdf } from "./connected-email.mjs";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -22,12 +23,12 @@ function prepareRequestPortalForm() {
   fields.forEach(field => {field.value = field.type === 'email' ? requestPortalIdentity.email : requestPortalIdentity.full_name;if(field.type==='email')field.readOnly=true;});
   $('pmRequestStatus')?.closest('.field')?.setAttribute('hidden','');
 }
-async function submitRequestPortal(kind, record, lines = [], po = null) {
+async function submitRequestPortal(kind, record, lines = [], po = null, dates = null) {
   const button=$('modalSave');if(button.dataset.portalBusy==='1')return;
   button.dataset.portalBusy='1';button.disabled=true;
   try {
-    const result=await requestPortalApi('submit',{kind,record,lines,po,submission:$('modal').dataset.portalSubmission});
-    closeModal();invalidateViewReads();alert('Submitted successfully. Request '+result.data.request_no+'. You can check its status under My requests.');
+    const result=await requestPortalApi('submit',{kind,record,lines,po,dates,submission:$('modal').dataset.portalSubmission});
+    closeModal();invalidateViewReads();alert('Submitted successfully. Request '+(Array.isArray(result.data) ? result.data.map(row=>row.request_no).join(', ') : result.data.request_no)+'. You can check its status under My requests.');
     await loadView('requestportal');
   } catch(error) {alert(error.message || 'Could not submit the request. Please retry.');}
   finally {button.disabled=false;delete button.dataset.portalBusy;}
@@ -34695,6 +34696,7 @@ function renderFilteredTruckingRequests() {
   const search = $("truckRequestSearch")?.value || "";
   const shown = tabRows.filter((row) => truckingRowMatchesSearch(row, search));
   const host = $("truckRequestHost");
+  host.querySelectorAll(".table-wrap").forEach(rememberTransientTableState);
   host.innerHTML = truckingRequestTable(tabRows);
   bindTruckingRequestActions(host);
   const count = $("truckRequestCount");
@@ -34807,6 +34809,8 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
       <label>Project / Jobsite<input class="suggest-input" name="project_jobsite" ${outsideCustomerJobsite ? "" : 'data-suggest-source="trucking_jobsites"'} value="${esc(projectJobsite)}" placeholder="${outsideCustomerJobsite ? "Enter outside customer's project or jobsite" : "Type jobsite, project, or location"}" autocomplete="off" inputmode="search" required><span class="outside-customer-jobsite-control"><input type="checkbox" id="truckOutsideCustomerJobsite" ${outsideCustomerJobsite ? "checked" : ""}> Outside customer jobsite</span><small id="truckProjectJobsiteHelp">${outsideCustomerJobsite ? "Free text is allowed; this jobsite does not need to be in the LMS location list." : "Type to search, then select a result from the Jobsite and Source columns."}</small></label>
       <label>Contact #<input type="tel" name="contact_no" value="${esc(existing?.contact_no || "")}" placeholder="Contact phone number"></label>
       <label>Requested delivery date<input type="date" name="needed_date" value="${esc(existing?.needed_date || "")}" required></label>
+      ${(!existing || copyMode) ? '<fieldset id="truckRepeat"><legend>Delivery schedule</legend><select id="truckRepeatMode" aria-label="Delivery schedule"><option value="single">One date</option><option value="multiple">Multiple dates</option><option value="weekly">Repeat weekly</option></select><div id="truckExtraDates" hidden><div id="truckDateRows"></div><button type="button" id="truckAddDate">Add date</button></div><div id="truckWeekly" hidden><label>Repeat through<input type="date" id="truckRepeatEnd"></label>'+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((day,index)=>'<label style="display:inline-flex;margin:8px"><input type="checkbox" data-repeat-day="'+index+'">'+day+'</label>').join('')+'</div><p id="truckDatePreview" aria-live="polite">One request will be created per date.</p></fieldset>' : ''}
+
       <fieldset class="delivery-period-field"><legend>Delivery time</legend>
         <label><input type="radio" name="delivery_period" value="AM" ${deliveryPeriod === "AM" ? "checked" : ""}> AM</label>
         <label><input type="radio" name="delivery_period" value="PM" ${deliveryPeriod === "PM" ? "checked" : ""}> PM</label>
@@ -34856,6 +34860,7 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
     </div>`;
   modalSave.textContent = copyMode ? "Save New Request" : "Save";
   modalSave.onclick = () => saveTruckingRequest(copyMode ? "" : (existing?.request_no || ""));
+  bindTruckingDeliveryDates();
   $("truckRequestFormTutorialBtn").onclick = () => startMobileRequestTutorial("trucking");
   $("addTruckRequestLineBtn").onclick = () => {
     $("truckRequestLines").insertAdjacentHTML("beforeend", truckingRequestLineHtml({}));
@@ -34996,6 +35001,34 @@ async function persistTruckingRequestHeader(values, existingRequest = null) {
   const result = await query.select().single();
   if (result.error?.code === "23505") return { ...result, error: new Error("This request number is already in use. The existing move was not changed. Reopen New move request to obtain a new number.") };
   return result;
+}
+
+
+function readTruckingDeliveryDates() {
+  return truckingDeliveryDates($('truckRepeatMode')?.value || 'single',
+    modalBody.querySelector('[name="needed_date"]').value,
+    [...modalBody.querySelectorAll('[data-extra-date]')].map(input=>input.value),
+    $('truckRepeatEnd')?.value || '',
+    [...modalBody.querySelectorAll('[data-repeat-day]:checked')].map(input=>Number(input.dataset.repeatDay)));
+}
+function bindTruckingDeliveryDates() {
+  const host=$('truckRepeat'); if(!host)return;
+  host.dataset.series=crypto.randomUUID();
+  const preview=()=>{
+    $('truckExtraDates').hidden=$('truckRepeatMode').value!=='multiple';
+    $('truckWeekly').hidden=$('truckRepeatMode').value!=='weekly';
+    try {const dates=readTruckingDeliveryDates();$('truckDatePreview').textContent=dates.length+' request(s): '+dates.map(formatDisplayDate).join(', ');}
+    catch(error){$('truckDatePreview').textContent=error.message;}
+  };
+  host.addEventListener('change',preview);
+  modalBody.querySelector('[name="needed_date"]').addEventListener('change',preview);
+  $('truckAddDate').onclick=()=>{
+    const row=document.createElement('div');
+    row.innerHTML='<input type="date" data-extra-date aria-label="Additional delivery date"><button type="button">Remove date</button>';
+    row.querySelector('button').onclick=()=>{row.remove();preview();};
+    $('truckDateRows').append(row);preview();
+  };
+  preview();
 }
 
 async function saveTruckingRequest(previousNo = "") {
@@ -35143,7 +35176,31 @@ async function saveTruckingRequest(previousNo = "") {
       status: "Requested",
     });
   }
-  if(requestPortalIdentity) return submitRequestPortal('trucking',values,lines);
+
+  let deliveryDates;
+  try { deliveryDates = readTruckingDeliveryDates(); } catch(error) { return alert(error.message); }
+  if(requestPortalIdentity) return submitRequestPortal('trucking',values,lines,null,$('truckRepeatMode')?.value !== 'single' && $('truckRepeatMode') ? deliveryDates : null);
+  if (!previousNo && $('truckRepeatMode')?.value && $('truckRepeatMode').value !== 'single') {
+    const button=$('modalSave');
+    if(button.dataset.seriesBusy) return;
+    button.dataset.seriesBusy='1'; button.disabled=true;
+    try {
+      const {data:requests,error}=await supabase.rpc('create_trucking_request_series',{
+        p_series:$('truckRepeat').dataset.series,p_record:values,p_lines:lines,p_dates:deliveryDates
+      });
+      if(error) throw error;
+      closeModal(); invalidateViewReads(); productMeta.truckingLoaded=false;
+      if(usesTruckingRequestMobileView()) { alert(requests.length+' move requests submitted.'); return; }
+      truckingRequestTab='unscheduled';
+      currentRows=(currentRows || []).concat(requests.map(row=>({...row,line_count:lines.length})));
+      productMeta.truckingRequests=currentRows;
+      productMeta.truckingRequestLines=(productMeta.truckingRequestLines || []).concat(requests.flatMap(row=>lines.map(line=>({...line,request_no:row.request_no}))));
+      renderFilteredTruckingRequests();
+      alert(requests.length+' separate move requests created.');
+    } catch(error) { alert(error.message || 'Could not create the requests. Please retry.'); }
+    finally {button.disabled=false;delete button.dataset.seriesBusy;}
+    return;
+  }
   if (!existingService && isAdminUser()) {
     const { error: serviceError } = await supabase.from("trucking_rates").upsert({
       service: values.service_needed.trim(),
@@ -39618,7 +39675,19 @@ async function saveTruckingDispatch(req, reqLines) {
   closeModal();
   productMeta.truckingLoaded = false;
   if (fleetUpdateErrors.length) alert(`The move was dispatched, but these Fleet & Equipment records could not be updated:\n${fleetUpdateErrors.join("\n")}`);
-  await loadView("trucking");
+
+  invalidateViewReads();
+  if(currentView === "truckingrequests") {
+    currentRows=(currentRows || []).map(row=>row.request_no === req.request_no ? {...row,status:dispatchProgress.status} : row);
+    productMeta.truckingRequests=currentRows;
+    productMeta.truckingMoves=(productMeta.truckingMoves || []).concat(moveRows);
+    productMeta.truckingRequestLines=(productMeta.truckingRequestLines || []).map(line=>{
+      const latest=(dispatchLines || []).find(item=>item.request_no===line.request_no && item.line_no===line.line_no);
+      return latest ? {...line,...latest} : line;
+    });
+    renderFilteredTruckingRequests();
+  } else await loadView(currentView);
+
 }
 
 async function readTruckingTicket(ticketNo) {

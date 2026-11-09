@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build-vercel.cjs",
-    "test": "node scripts/test-regressions.cjs",
+    "test": "node scripts/test-regressions.cjs && node scripts/test-trucking-dates.mjs",
     "release:prepare": "npm test && node scripts/release-manifest.cjs --write"
   },
   "dependencies": {
