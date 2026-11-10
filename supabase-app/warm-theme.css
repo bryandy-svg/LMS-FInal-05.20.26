@@ -1,0 +1,58 @@
+/* Screen-only light theme. Reports retain their existing print styling. */
+@media screen {
+  :root:not([data-theme="dark"]) {
+    --bg: #f8f5ed;
+    --panel: #fffdf8;
+    --line: #dedfd5;
+    --head: #f1f2e9;
+    --text: #28464a;
+    --ink: #193f46;
+    --muted: #60787a;
+    --teal: #245d62;
+    --green: #245d62;
+    --soft: #e5eee5;
+    --shadow: 0 8px 24px rgba(46,65,51,.045);
+  }
+  :root:not([data-theme="dark"]) body { background: var(--bg); font-family: "Segoe UI", Arial, sans-serif; }
+  :root:not([data-theme="dark"]) .side { background: #edf1e8; color: var(--text); border-right: 1px solid var(--line); box-shadow: none; }
+  :root:not([data-theme="dark"]) .brand { color: var(--ink); font: 700 27px/1.15 Georgia, serif; padding: 10px 4px 18px; border-bottom: 1px solid var(--line); }
+  :root:not([data-theme="dark"]) .brand span { color: var(--muted); font: 12px/1.5 "Segoe UI", Arial, sans-serif; letter-spacing: .035em; margin-top: 10px; }
+  :root:not([data-theme="dark"]) .session { color: var(--muted); padding-top: 16px; border-top: 1px solid var(--line); }
+  :root:not([data-theme="dark"]) .nav-major { background: transparent; border-color: #d7dfd3; }
+  :root:not([data-theme="dark"]) .nav-title,
+  :root:not([data-theme="dark"]) .nav-major-title { color: var(--teal); }
+  :root:not([data-theme="dark"]) .nav-major-title::after { color: var(--teal); }
+  :root:not([data-theme="dark"]) .nav-major-count { background: #dde7da; color: #345b59; }
+  :root:not([data-theme="dark"]) .nav-segments { border-color: var(--line); }
+  :root:not([data-theme="dark"]) .nav-btn { background: transparent; border-color: transparent; color: var(--teal); font-weight: 600; }
+  :root:not([data-theme="dark"]) .nav-btn:hover { background: #e0e9dc; }
+  :root:not([data-theme="dark"]) .nav-btn.active { background: var(--teal); color: #fff; border-color: var(--teal); }
+  :root:not([data-theme="dark"]) .top { background: #fffdf8; box-shadow: none; border-color: var(--line); }
+  :root:not([data-theme="dark"]) .top h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 600; color: var(--ink); letter-spacing: -.025em; }
+  :root:not([data-theme="dark"]) .top-actions { background: transparent; border-color: transparent; padding: 0; }
+  :root:not([data-theme="dark"]) button:not(.primary):not(.danger):not(.nav-btn),
+  :root:not([data-theme="dark"]) .action-menu > summary { background: #fffdf8; color: var(--teal); border-color: #d7ded5; }
+  :root:not([data-theme="dark"]) button.primary { background: var(--teal); border-color: var(--teal); color: #fff; }
+  :root:not([data-theme="dark"]) button.primary:hover { background: #194c51; }
+  :root:not([data-theme="dark"]) .tabbtn.active { background: #e4ece0 !important; border-color: #b9cbb5 !important; color: #204f50 !important; }
+  :root:not([data-theme="dark"]) .panel,
+  :root:not([data-theme="dark"]) .stat { border-color: var(--line); box-shadow: var(--shadow); border-radius: 12px; }
+  :root:not([data-theme="dark"]) .stat strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+  :root:not([data-theme="dark"]) input,
+  :root:not([data-theme="dark"]) select,
+  :root:not([data-theme="dark"]) textarea { border-color: #cdd8cd; background-color: #fffefa; color: #243d42; }
+  :root:not([data-theme="dark"]) input:focus,
+  :root:not([data-theme="dark"]) select:focus,
+  :root:not([data-theme="dark"]) textarea:focus { outline-color: #2d6b6d; border-color: #2d6b6d; }
+  :root:not([data-theme="dark"]) input[type="checkbox"],
+  :root:not([data-theme="dark"]) input[type="radio"] { accent-color: #245d62; }
+  :root:not([data-theme="dark"]) .modalbox { background: #fffdf8; }
+  :root:not([data-theme="dark"]) .panel thead th { background-color: #f1f2e9; color: #466064; }
+  :root:not([data-theme="dark"]) .panel tbody td { border-color: #e5e6dc; }
+  :root:not([data-theme="dark"]) button:disabled { opacity: .55; cursor: not-allowed; }
+  @media (max-width: 720px) {
+    :root:not([data-theme="dark"]) .top h1 { font-size: 26px; }
+    :root:not([data-theme="dark"]) .brand { font-size: 24px; }
+  }
+}
+
