@@ -63,7 +63,7 @@
     "supabase-app/tutorials/system-quick-overview.html": "951d14aeb86ceb71939667cf24ea761be47cdbb778502ed60e72dc31133b777e",
     "supabase-app/vendor/html2pdf.bundle.min.js": "603aa7917180619f9ea2c5fc555169dd9e59f9461d3e67e1142f274cf02b30be",
     "supabase-app/vendor/pdf-lib.min.js": "0f9a5cad07941f0826586c94e089d89b918c46e5c17cf2d5a3c6f666e3bc694f",
-    "supabase-app/warm-theme.css": "1f9e099dd5095e7d3e69fd7f3f93546181a597ecd853540cf55f6f59a8c19174",
+    "supabase-app/warm-theme.css": "60e72599c9458213360fc39df5404712d92ef6ac9da4e70350c220c75310c001",
     "tests/integration/invoice-customer-transfer.cjs": "e7dbd05c80631c1633dd1f8667c0aa57bd75a8a64b082a1942a4526603ce95c1",
     "tests/regression-suite.json": "7c608e485fb851f0a2398a3affe34363e3487fcaac4c18ba5a9077db3ef8b3d2",
     "tests/regression/accounting-initial-load.cjs": "e73771d2093785b3a9217c274a96ba8ab37161b5a47d434221aa9bb6af75d139",
