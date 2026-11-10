@@ -181,7 +181,7 @@
     "tests/regression/save-feedback-recovery.cjs": "815d4d621cc2ce2862016371233cdab6b98fada780e4e70feca85c5eb4e41bd6",
     "tests/regression/schedule-date-loading.cjs": "b7454b8b374dab4b549624624aeb61472d3915c92cdcba25825ce3367ea6859e",
     "tests/regression/schedule-report-button.cjs": "b14caac979b38f27cbc9c6078c3f4e40478563caad96dfe2428b786dda979a3d",
-    "tests/regression/scheduled-driver-sync.cjs": "f752421b63d6502d83d61f70652bb96aae0d4a40e8fef6873ed396bbbb03856e",
+    "tests/regression/scheduled-driver-sync.cjs": "e77a86370bc38a2660d92b6dc8b584616d097c915377ac5e91560502171fcc40",
     "tests/regression/seamless-tabs.cjs": "9a2da84640c5e44cb66d430888d01e9b598d7829e8d364c0879ad01005549376",
     "tests/regression/session-retention.cjs": "9e82aa042fd94ac8f769cc58259412f573a48c212603ac3e57f73f8259e781c7",
     "tests/regression/sidebar-flyout.cjs": "c7ec44a949c7371d6ad71cae504353185b2f81c76c582efc4be61e10145cda09",
