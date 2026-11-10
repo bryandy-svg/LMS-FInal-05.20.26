@@ -142,5 +142,6 @@
   "repair-request-workorder-fields",
   "trucking-request-collision",
   "partial-dispatch-unscheduled",
-  "ap-preposting-payments"
+  "ap-preposting-payments",
+  "dashboard-summary-loading"
 ]
