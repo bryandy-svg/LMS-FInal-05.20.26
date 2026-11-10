@@ -7,7 +7,7 @@
     --head: #f1f2e9;
     --text: #28464a;
     --ink: #193f46;
-    --muted: #60787a;
+    --muted: #425b5d;
     --teal: #245d62;
     --green: #245d62;
     --soft: #e5eee5;
@@ -25,8 +25,17 @@
   :root:not([data-theme="dark"]) .nav-major-count { background: #dde7da; color: #345b59; }
   :root:not([data-theme="dark"]) .nav-segments { border-color: var(--line); }
   :root:not([data-theme="dark"]) .nav-btn { background: transparent; border-color: transparent; color: var(--teal); font-weight: 600; }
-  :root:not([data-theme="dark"]) .nav-btn:hover { background: #e0e9dc; }
-  :root:not([data-theme="dark"]) .nav-btn.active { background: var(--teal); color: #fff; border-color: var(--teal); }
+  :root:not([data-theme="dark"]) #nav .nav-btn:hover { background: #e0e9dc; color: #245d62; }
+  :root:not([data-theme="dark"]) #nav .nav-btn.active { background: #245d62; color: #fff; border-color: #245d62; }
+  /* Override the legacy dark flyout and active-group colors together. */
+  :root:not([data-theme="dark"]) #nav .nav-segments { background: #fffdf8; border-color: #b8c8bd; color: #28464a; box-shadow: 0 8px 28px rgba(34,55,45,.16); }
+  :root:not([data-theme="dark"]) #nav .nav-description { color: #425b5d; }
+  :root:not([data-theme="dark"]) .module-search-wrap > small { color: #425b5d; }
+  :root:not([data-theme="dark"]) #nav .has-active-module > summary { background: #245d62; color: #fff; }
+  :root:not([data-theme="dark"]) #nav .has-active-module > summary::after { color: #fff; }
+  :root:not([data-theme="dark"]) #nav .nav-btn.active .nav-description { color: #fff; }
+  :root:not([data-theme="dark"]) #nav summary:focus-visible,
+  :root:not([data-theme="dark"]) #nav .nav-btn:focus-visible { outline-color: #245d62; }
   :root:not([data-theme="dark"]) .top { background: #fffdf8; box-shadow: none; border-color: var(--line); }
   :root:not([data-theme="dark"]) .top h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 600; color: var(--ink); letter-spacing: -.025em; }
   :root:not([data-theme="dark"]) .top-actions { background: transparent; border-color: transparent; padding: 0; }
