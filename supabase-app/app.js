@@ -5298,7 +5298,7 @@ async function loadView(view, listOptions = {}) {
   try {
     if (view === "truckinglabor") return await renderTruckingLaborDetailsView();
     if (view === "truckingassigned") return await renderAssignedDriverView();
-    void ensurePartyMasterSuggestRows().catch(error => console.warn("Party suggestions unavailable", error));
+    if (view !== "dashboard") void ensurePartyMasterSuggestRows().catch(error => console.warn("Party suggestions unavailable", error));
     if (view === "requestportal") return await renderRequestPortalHome();
     if (view === "dashboard") return await renderDashboard();
     if (view === "products") return await renderProductsView();
@@ -5447,14 +5447,14 @@ function attachModuleInsights(view) {
 }
 
 async function renderDashboard() {
+  const dashboardScope = moduleListScope;
   $("viewTitle").textContent = "Dashboard";
   $("viewSub").textContent = "A clear view of stock, value, alerts, and movement.";
   $("content").innerHTML = `<section class="panel"><div class="empty">Loading live dashboard summary...</div></section>`;
   const [products, sales, po, assets, repairs, rentals, invoices, gl, stockMovements] = await Promise.all([
-    // Product Master commonly exceeds Supabase's 1,000-row response limit.
-    // Use the paginated loader so Dashboard value/quantity exactly matches
-    // the complete live Product Master instead of only its first page.
-    getViewRows("products"),
+    // Read every summary row, without downloading product descriptions/photos
+    // or loading aliases that are only needed by product searches.
+    getDashboardRows("products", "qty,reorder_point"),
     getDashboardRows("sales_orders", "status"),
     getDashboardRows("purchase_orders", "payment_status,match_status"),
     getDashboardRows("assets", "id,status"),
@@ -5462,8 +5462,9 @@ async function renderDashboard() {
     getDashboardRows("rentals", "status"),
     getDashboardRows("invoices", "status"),
     getDashboardRows("general_ledger", "debit,credit"),
-    getViewRows("stock_movements")
+    getDashboardRows("stock_movements", "movement_date,type,from_warehouse,to_warehouse,qty,unit_fifo_cost")
   ]);
+  if (currentView !== "dashboard" || moduleListScope !== dashboardScope) return;
   const inventoryValue = stockMovementLedgerValue(stockMovements, today());
   const inventoryQty = stockMovementLedgerQty(stockMovements, today());
   const low = products.filter((p) => Number(p.qty || 0) <= Number(p.reorder_point || 0)).length;
@@ -5510,7 +5511,7 @@ async function renderDashboard() {
 }
 
 async function getDashboardRows(table, columns = "*") {
-  return getAll(table, { strict: true, columns });
+  return getAll(table, { strict: true, columns, summaryRead: columns !== "*" });
 }
 
 function stat(label, value, note) {
@@ -45843,11 +45844,11 @@ async function deactivateMasterRow(key) {
   loadView(currentView);
 }
 
-async function getAll(table, { strict = false, signal, columns = "*", beforePage } = {}) {
-  const pageSize = ["fuel_logs", "trucking_moves"].includes(table) ? 50 : 250;
+async function getAll(table, { strict = false, signal, columns = "*", beforePage, summaryRead = false } = {}) {
+  const pageSize = summaryRead ? 1000 : ["fuel_logs", "trucking_moves"].includes(table) ? 50 : 250;
   const required = strict || ["fuel_logs", "trucking_moves", "products", "product_alternates", "product_cross_references", "work_orders", "purchase_orders", "purchase_order_lines", "goods_receipts"].includes(table);
   const rows = [];
-  for (let offset = 0; ; offset += pageSize) {
+  for (let offset = 0; ;) {
     if (signal?.aborted) throw new Error("Record loading was cancelled.");
     if (beforePage) await beforePage(signal);
     let result;
@@ -45858,9 +45859,11 @@ async function getAll(table, { strict = false, signal, columns = "*", beforePage
       return [];
     }
     rows.push(...(result.data || []).map(row => canonicalizePartyFields(row, table)));
-    if ((result.data || []).length < pageSize) break;
+    const received = (result.data || []).length;
+    if (!received || (!summaryRead && received < pageSize)) break;
+    offset += received;
   }
-  return table === "products" ? decorateProductsWithLookupAliases(rows, signal) : rows;
+  return table === "products" && !summaryRead ? decorateProductsWithLookupAliases(rows, signal) : rows;
 }
 
 async function decorateProductsWithLookupAliases(products = [], signal) {
