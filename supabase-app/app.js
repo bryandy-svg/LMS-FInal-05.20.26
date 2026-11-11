@@ -34955,8 +34955,8 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
       <label data-dump-field hidden>Total CY<input type="number" name="total_cy" value="${esc(existing?.total_cy || "")}" readonly><small>Calculated automatically: Number of Loads × CY / Load.</small></label>
       <input type="hidden" name="service_option" value="${esc(selectedServiceOption)}">
       ${isAdminUser() ? `<label id="newTruckServiceField" hidden>New service name<input name="service_new" placeholder="Enter the new service name"></label>` : ""}
-      <label>Requested by<input name="requested_by" value="${esc(existing && !copyMode ? existing.requested_by || "" : "")}" placeholder="Name of the person making this request" required></label>
-      <label>Email<input type="email" name="requestor_email" value="${esc(existing && !copyMode ? existing.requestor_email || "" : "")}" placeholder="Email of the person making this request" required><small>Notifications use this email, not the shared login account.</small></label>
+      <label>Requested by<input name="requested_by" value="${esc(existing?.requested_by || "")}" placeholder="Name of the person making this request" required></label>
+      <label>Email<input type="email" name="requestor_email" value="${esc(existing?.requestor_email || "")}" placeholder="Email of the person making this request" required><small>Notifications use this email, not the shared login account.</small></label>
       <label>Mode of payment<select name="payment_mode" required><option value="">Select payment mode</option><option>Cash</option><option>Credit Card</option><option>PO</option></select></label>
       <label id="truckPoNumberField" hidden>PO #<input name="po_no" value="${esc(existing?.po_no || "")}" placeholder="Required for PO payment"></label>
       <input type="hidden" name="status" value="${esc(copyMode ? "Requested" : (existing?.status || "Requested"))}">
@@ -34976,7 +34976,10 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
     <label class="move-request-description">Move description<textarea name="move_description" placeholder="Describe what needs to be moved, timing, and special instructions." required>${esc(existing?.move_description || existing?.notes || "")}</textarea></label>
     ${truckingDatalists()}
     </div>`;
-  modalSave.textContent = copyMode ? "Save New Request" : "Save";
+  const copyDispatchAllowed = copyMode && !requestPortalIdentity && !usesTruckingRequestMobileView() && canAccess("trucking");
+  if (copyDispatchAllowed) modalBody.insertAdjacentHTML("beforeend", '<label>After saving this copy<select id="truckCopyNextAction"><option value="unscheduled">Save as Unscheduled</option><option value="dispatch">Save &amp; Dispatch</option></select><small>Dispatch opens driver and equipment selection. If you close it, the saved request stays Unscheduled.</small></label>');
+  modalSave.textContent = copyMode ? "Save as Unscheduled" : "Save";
+  if (copyDispatchAllowed) $("truckCopyNextAction").onchange = () => { modalSave.textContent = $("truckCopyNextAction").value === "dispatch" ? "Save & Dispatch" : "Save as Unscheduled"; };
   modalSave.onclick = () => saveTruckingRequest(copyMode ? "" : (existing?.request_no || ""));
   bindTruckingDeliveryDates();
   $("truckRequestFormTutorialBtn").onclick = () => startMobileRequestTutorial("trucking");
@@ -35150,6 +35153,7 @@ function bindTruckingDeliveryDates() {
 }
 
 async function saveTruckingRequest(previousNo = "") {
+  const dispatchAfterSave = !previousNo && $("truckCopyNextAction")?.value === "dispatch" && !requestPortalIdentity && !usesTruckingRequestMobileView() && canAccess("trucking");
   if(previousNo) {
     const tickets=await truckingRequestTickets(previousNo);
     if(tickets.length) return alert('This request has assigned tickets. Edit the linked assignment from Scheduled so the driver receives the change. The original request has not been overwritten.');
@@ -35316,7 +35320,8 @@ async function saveTruckingRequest(previousNo = "") {
       productMeta.truckingRequests=currentRows;
       productMeta.truckingRequestLines=(productMeta.truckingRequestLines || []).concat(requests.flatMap(row=>lines.map(line=>({...line,request_no:row.request_no}))));
       renderFilteredTruckingRequests();
-      alert(requests.length+' separate move requests created.');
+      if (dispatchAfterSave) await dispatchSelectedMoveRequests(requests.map(row => row.request_no));
+      else alert(requests.length+' separate move requests created.');
     } catch(error) { alert(error.message || 'Could not create the requests. Please retry.'); }
     finally {button.disabled=false;delete button.dataset.seriesBusy;}
     return;
@@ -35358,6 +35363,7 @@ async function saveTruckingRequest(previousNo = "") {
     .filter((line) => ![previousNo, values.request_no].filter(Boolean).includes(String(line.request_no || "")))
     .concat(lines);
   renderFilteredTruckingRequests();
+  if (dispatchAfterSave) await openTruckingDispatchFromRequest(values.request_no);
 }
 
 function truckingScheduleGroups(rows, date, assets = []) {
