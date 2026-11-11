@@ -144,5 +144,6 @@
   "partial-dispatch-unscheduled",
   "ap-preposting-payments",
   "dashboard-summary-loading",
-  "request-ticket-view-search"
+  "request-ticket-view-search",
+  "container-move-count"
 ]
