@@ -341,6 +341,7 @@ function applyModuleListFilters(query,state,tab=state.tab) {
 function installModulePeriodControls(state,bar) {
   if(!moduleDateFields[state.view]) return;
   if(state.view==='trucking' && $('modulePeriodControls')) return;
+  if(state.view==='truckingrequests' && $('modulePeriodControls')) return;
   const controls=document.createElement('div');controls.className='toolbar';controls.id='modulePeriodControls';
   controls.innerHTML='<label>Period <select data-list-period><option value="outstanding">All dates / outstanding</option><option value="month">This month</option><option value="previous">Previous month</option><option value="custom">Custom range</option><option value="all">All dates</option></select></label><label>From <input type="date" data-list-from></label><label>To <input type="date" data-list-to></label><button type="button" data-list-apply>Apply dates</button>';
   $('modulePeriodControls')?.remove();
@@ -5402,14 +5403,14 @@ async function loadView(view, listOptions = {}) {
       }
       if(retainedPeriodControls && currentView===view) {
         if($('modulePeriodControls')!==retainedPeriodControls) $('modulePeriodControls')?.replaceWith(retainedPeriodControls);
-        if(listOptions.period!=null) {
+        if(listOptions.period!=null && !['trucking','truckingrequests'].includes(view)) {
           retainedPeriodControls.querySelector('[data-list-period]').value=pageScope.period;
           retainedPeriodControls.querySelector('[data-list-from]').value=pageScope.from;
           retainedPeriodControls.querySelector('[data-list-to]').value=pageScope.to;
         }
       }
       if(retainedScroll && currentView===view)window.scrollTo(retainedScroll.x,retainedScroll.y);
-      if (listOptions.focusSearch && currentView === view) $("content").querySelector("input.searchbox")?.focus();
+      if (listOptions.focusSearch && currentView === view && !document.activeElement?.closest('#modulePeriodControls, .truck-filter-row')) $("content").querySelector("input.searchbox")?.focus();
     } else if (moduleListScope === pageScope) moduleListScope = null;
     if (!pageFailed && currentView === view) attachModuleInsights(view);
     foregroundViewLoads = Math.max(0, foregroundViewLoads - 1);
@@ -34610,6 +34611,15 @@ async function renderTruckingRequestsView() {
     scheduled: currentRows.filter((row) => truckingRequestStatusTab(row) === "scheduled").length,
     cancelled: currentRows.filter((row) => truckingRequestStatusTab(row) === "cancelled").length,
   };
+  // Keep date fields and filter menus attached while background reads finish.
+  if ($("truckRequestHost")) {
+    document.querySelectorAll('[data-trucking-request-tab]').forEach(button => {
+      const badge = button.querySelector('.badge');
+      if (badge) badge.textContent = tabCounts[button.dataset.truckingRequestTab];
+    });
+    renderFilteredTruckingRequests();
+    return;
+  }
   $("content").innerHTML = `
     ${dualRequestPortalTabs("truckingrequests")}
     <div class="toolbar ${usesTruckingRequestMobileView() ? "truck-mobile-toolbar" : ""}">
@@ -34712,6 +34722,8 @@ function bindTruckingRequestActions(host) {
 }
 
 function bindBulkMoveRequests(host) {
+  host.querySelector('[data-bulk-all]')?.closest('.toolbar')?.remove();
+  host.querySelectorAll('[data-bulk-move]').forEach(box => box.remove());
   if (usesTruckingRequestMobileView() || truckingRequestTab !== "unscheduled") return;
   const rows = [...host.querySelectorAll('tbody tr')];
   rows.forEach(row => {
@@ -34736,7 +34748,7 @@ function bindBulkMoveRequests(host) {
     all.checked=boxes.length>0 && count===boxes.length; all.indeterminate=count>0 && count<boxes.length;
   };
   bar.querySelector('[data-bulk-all]').onchange=event=>{visible().forEach(box=>box.checked=event.target.checked);update();};
-  host.addEventListener('change',update);
+  host.onchange=update;
   bar.querySelector('[data-bulk-dispatch]').onclick=()=>dispatchSelectedMoveRequests(selected());
   bar.querySelector('[data-bulk-cancel]').onclick=async event=>{
     const numbers=selected();
@@ -34782,7 +34794,7 @@ function renderFilteredTruckingRequests() {
   const shown = tabRows.filter((row) => truckingRequestMatchesSearch(row, search));
   const host = $("truckRequestHost");
   host.querySelectorAll(".table-wrap").forEach(rememberTransientTableState);
-  host.innerHTML = truckingRequestTable(tabRows);
+  updateTruckingSchedulerTable(host, truckingRequestTable(tabRows));
   bindTruckingRequestActions(host);
   const count = $("truckRequestCount");
   if (count) count.textContent = `${shown.length} request${shown.length === 1 ? "" : "s"} shown in ${truckingRequestTab}.`;
@@ -35561,6 +35573,7 @@ function updateTruckingSchedulerTable(host, html) {
   template.innerHTML = html;
   const existing = host.querySelector('.tablewrap');
   const incoming = template.content.querySelector('.tablewrap');
+  if (existing && !incoming) { existing.querySelector('tbody').replaceChildren(); return; }
   if (!existing || !incoming) { host.replaceChildren(template.content); return; }
   existing.querySelectorAll('.report-multi-filter').forEach(details => {
     const fresh = incoming.querySelector('[data-column-index="' + details.dataset.columnIndex + '"]');
@@ -35577,8 +35590,15 @@ function updateTruckingSchedulerTable(host, html) {
     });
     searchReportMultiFilter(details.querySelector('input[type="search"]'));
   });
+  existing.querySelectorAll('.truck-column-filter').forEach(select => {
+    const fresh = incoming.querySelector('.truck-column-filter[data-column-index="' + select.dataset.columnIndex + '"]');
+    if (!fresh) return;
+    const known = new Set([...select.options].map(option => option.value));
+    [...fresh.options].forEach(option => { if (!known.has(option.value)) select.append(option); });
+  });
   existing.querySelector('tbody').replaceWith(incoming.querySelector('tbody'));
-  applyReportMultiFilters(existing);
+  if (existing.querySelector('.truck-column-filter')) applyTruckingTableFilters(existing);
+  else applyReportMultiFilters(existing);
   if(existing.dataset.sortColumn != null) sortTruckingSchedulerRows(existing);
 }
 
