@@ -2,11 +2,12 @@ const assert=require('node:assert/strict');const vm=require('node:vm');const {fu
 const alerts=[];let result,queries=[],opened=[];
 const ctx=vm.createContext({alert:m=>alerts.push(m),readTruckingTicket:async()=>result,openTruckingMoveForm:async n=>opened.push(n),supabase:{from:table=>({select:cols=>({eq:async(key,value)=>{queries.push({table,key,value});return {data:result,error:null};}})})}});
 vm.runInContext(functions(['truckingRequestTickets','openScheduledRequestTickets','assignedDriverSnapshotIsCurrent']),ctx);
+ctx.modalTitle={};ctx.modalSave={style:{}};ctx.modalBody={querySelectorAll:()=>[]};ctx.$=()=>({style:{}});ctx.esc=String;ctx.printTruckingTicket=async n=>opened.push('view:'+n);
 (async()=>{
  result=[{ticket_no:'T1',status:'Scheduled'},{ticket_no:'T2',status:'Cancelled'},{ticket_no:'T3',status:'Finalized'}];
  const tickets=await ctx.truckingRequestTickets('R1');assert.equal(tickets.length,2);assert.deepEqual(queries,[{table:'trucking_moves',key:'request_no',value:'R1'}]);
- await ctx.openScheduledRequestTickets('R1',tickets);assert.deepEqual(opened,['T1']);
- await ctx.openScheduledRequestTickets('R1',[{status:'Finalized'}]);assert.match(alerts.pop(),/completed/);
+ await ctx.openScheduledRequestTickets('R1',tickets);assert(ctx.modalBody.innerHTML.includes('Edit assignment T1'));assert(ctx.modalBody.innerHTML.includes('View ticket T3'));
+ await ctx.openScheduledRequestTickets('R1',[{ticket_no:'T3',status:'Finalized'}]);assert.deepEqual(opened,['view:T3']);
  const stale={ticket_no:'T1',status:'Scheduled',equipment_label:'Old truck',service:'Flatbed'};
  result={...stale};assert.equal(await ctx.assignedDriverSnapshotIsCurrent(stale),true);
  result={...stale,equipment_label:'2235CV',service:'Equipment Move'};assert.equal(await ctx.assignedDriverSnapshotIsCurrent(stale),false);assert.match(alerts.pop(),/Dispatch has changed/);

@@ -540,6 +540,17 @@ async function hydrateLineProducts(lines) {
 }
 async function loadListPartMatches(state) {
   if(!state.query || state.relatedSearch)return;
+  if (state.view === 'truckingrequests') {
+    ['trucking_requests','trucking_request_lines','trucking_moves'].forEach(table => state.dependencies.add(table));
+    const ids = await getViewData('request-column-search:'+state.query, async signal => {
+      const {data,error} = await supabase.rpc('search_trucking_request_ids',{search_text:state.query}).abortSignal(signal);
+      if(error) throw error;
+      if((data || []).length > 500) throw new Error('More than 500 requests match. Enter a more specific search.');
+      return (data || []).map(row => row.request_no);
+    });
+    state.relatedSearch = {field:'request_no',ids};
+    return;
+  }
   const configs={purchasing:['purchase_order_lines','po_id',['sku','product_name'],'id'],orders:['sales_order_lines','order_id',['sku','product_name','description'],'id'],quotes:['quotation_lines','quote_id',['sku','product_name'],'id'],invoices:['invoice_lines','invoice_id',['sku','product_name','description'],'id'],repairs:['work_order_parts','wo_id',['sku','product_name','issue'],'id'],partsissues:['work_order_parts','wo_id',['sku','product_name','issue'],'id'],truckingrequests:['trucking_request_lines','request_no',['asset_tag','equipment_label','service','notes'],'request_no']};
   const cfg=configs[state.view];if(!cfg)return;
   state.dependencies.add(cfg[0]);
@@ -34645,8 +34656,15 @@ function truckingRequestStatusTab(row) {
   return "unscheduled";
 }
 
+function truckingRequestMatchesSearch(row, term = '') {
+  const scope = moduleListScope;
+  if (scope?.view === 'truckingrequests' && String(scope.query || '').trim().toLowerCase() === String(term).trim().toLowerCase()
+      && scope.relatedSearch?.ids.includes(row.request_no)) return true;
+  return truckingRowMatchesSearch(row, term);
+}
+
 function truckingRequestTable(rows) {
-  const filtered = rows.filter((row) => truckingRowMatchesSearch(row, $("truckRequestSearch")?.value || ""));
+  const filtered = rows.filter((row) => truckingRequestMatchesSearch(row, $("truckRequestSearch")?.value || ""));
   if (usesTruckingRequestMobileView()) {
     return `<div class="truck-mobile-list">${filtered.map((row) => `
       <article class="truck-mobile-card">
@@ -34761,7 +34779,7 @@ async function dispatchSelectedMoveRequests(numbers, index=0) {
 function renderFilteredTruckingRequests() {
   const tabRows = (currentRows || []).filter((row) => truckingRequestStatusTab(row) === truckingRequestTab);
   const search = $("truckRequestSearch")?.value || "";
-  const shown = tabRows.filter((row) => truckingRowMatchesSearch(row, search));
+  const shown = tabRows.filter((row) => truckingRequestMatchesSearch(row, search));
   const host = $("truckRequestHost");
   host.querySelectorAll(".table-wrap").forEach(rememberTransientTableState);
   host.innerHTML = truckingRequestTable(tabRows);
@@ -34801,14 +34819,16 @@ async function truckingRequestTickets(requestNo) {
 }
 
 async function openScheduledRequestTickets(requestNo, tickets) {
-  const editable=tickets.filter(row=>! /^(completed|finalized)$/i.test(String(row.status || '')));
-  if(!editable.length) return alert('These assignments are completed. Use Finalized Tickets to review them.');
-  tickets=editable;
-  if(tickets.length===1) return openTruckingMoveForm(tickets[0].ticket_no);
+  const completed = row => /^(completed|finalized)$/i.test(String(row.status || '').trim());
+  const open = row => completed(row) ? printTruckingTicket(row.ticket_no) : openTruckingMoveForm(row.ticket_no);
+  if(tickets.length===1) {
+    if(completed(tickets[0])) $('modal').style.display='none';
+    return open(tickets[0]);
+  }
   modalTitle.textContent='Scheduled assignments for '+requestNo;
   modalSave.style.display='none';
-  modalBody.innerHTML='<p>This request has assigned tickets. Choose the assignment to update the details seen by its driver.</p>'+tickets.map(row=>'<p><button type="button" data-edit-linked-ticket="'+esc(row.ticket_no)+'">'+esc(row.ticket_no)+' — '+esc(row.driver_name || 'Unassigned')+'</button> '+esc(row.equipment_label || '')+'</p>').join('');
-  modalBody.querySelectorAll('[data-edit-linked-ticket]').forEach(button=>button.onclick=()=>openTruckingMoveForm(button.dataset.editLinkedTicket));
+  modalBody.innerHTML='<p>Choose an assignment. Completed tickets open for viewing; active assignments can be edited.</p>'+tickets.map(row=>'<p><button type="button" data-edit-linked-ticket="'+esc(row.ticket_no)+'">'+(completed(row)?'View ticket ':'Edit assignment ')+esc(row.ticket_no)+' — '+esc(row.driver_name || 'Unassigned')+'</button> '+esc(row.status || '')+' · '+esc(row.equipment_label || '')+'</p>').join('');
+  modalBody.querySelectorAll('[data-edit-linked-ticket]').forEach(button=>button.onclick=()=>open(tickets.find(row=>row.ticket_no===button.dataset.editLinkedTicket)));
   $('modal').style.display='flex';
 }
 

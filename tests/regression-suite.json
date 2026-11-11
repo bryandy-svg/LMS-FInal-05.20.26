@@ -143,5 +143,6 @@
   "trucking-request-collision",
   "partial-dispatch-unscheduled",
   "ap-preposting-payments",
-  "dashboard-summary-loading"
+  "dashboard-summary-loading",
+  "request-ticket-view-search"
 ]
