@@ -34847,6 +34847,27 @@ async function truckingRequestTickets(requestNo) {
   return (data || []).filter(row=>! /^(cancelled|canceled|void|voided|reversed)$/i.test(String(row.status || '')));
 }
 
+function truckingCopiedDispatchDefaults(tickets, lines, previous = null) {
+  const usable = (tickets || []).filter(row => !/^(cancelled|canceled|void|voided|reversed)$/i.test(String(row.status || '').trim()))
+    .slice().sort((a,b) => String(b.move_date || '').localeCompare(String(a.move_date || '')) || String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+  if (!usable.length) return previous || null;
+  return {
+    driver_name: usable[0].driver_name || '', driver_email: usable[0].driver_email || '',
+    lines: lines.map(line => {
+      const ticket = usable.find(row => (row.request_line_no != null && Number(row.request_line_no) === Number(line.line_no)) || (line.ticket_no && row.ticket_no === line.ticket_no));
+      return {requested_equipment: line.equipment_label || '', container_no: line.container_no || '', equipment_label: ticket?.equipment_label || '', asset_tag: ticket?.asset_tag || ''};
+    })
+  };
+}
+
+function truckingCopiedEquipment(defaults, line) {
+  const matches = (defaults?.lines || []).filter(item => line.container_no
+    ? item.container_no === line.container_no
+    : item.requested_equipment === (line.equipment_label || ''));
+  const labels = [...new Set(matches.map(item => item.equipment_label).filter(Boolean))];
+  return labels.length === 1 ? labels[0] : '';
+}
+
 async function openScheduledRequestTickets(requestNo, tickets) {
   const completed = row => /^(completed|finalized)$/i.test(String(row.status || '').trim());
   const open = row => completed(row) ? printTruckingTicket(row.ticket_no) : openTruckingMoveForm(row.ticket_no);
@@ -34902,6 +34923,9 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
   const number = copyMode ? truckingNextRequestNo(liveRequests) : (existing?.request_no || truckingNextRequestNo(liveRequests));
   const entryDate = copyMode ? truckingToday() : (existing?.request_date || truckingToday());
   const lineRows = existingLines.length ? existingLines : [{}];
+  const dispatchDefaults = copyMode && !requestPortalIdentity && !usesTruckingRequestMobileView() && canAccess("trucking")
+    ? truckingCopiedDispatchDefaults(await truckingRequestTickets(requestNo), existingLines, existing?.dispatch_defaults)
+    : existing?.dispatch_defaults || null;
   const projectJobsite = existing?.project_jobsite || existing?.jobsite || existing?.project || "";
   const projectJobsiteSource = (productMeta.truckingJobsiteRows || []).find((row) => String(row.name || "").trim().toLowerCase() === String(projectJobsite || "").trim().toLowerCase())?.source || "";
   const outsideCustomerJobsite = Boolean(projectJobsite) && !/(?:Fleet & Equipment|Jobsite Master|Location Master)/i.test(projectJobsiteSource);
@@ -34977,6 +35001,7 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
     ${truckingDatalists()}
     </div>`;
   const copyDispatchAllowed = copyMode && !requestPortalIdentity && !usesTruckingRequestMobileView() && canAccess("trucking");
+  modalBody.querySelector('.move-request-form').dispatchDefaults = dispatchDefaults;
   if (copyDispatchAllowed) modalBody.insertAdjacentHTML("beforeend", '<label>After saving this copy<select id="truckCopyNextAction"><option value="unscheduled">Save as Unscheduled</option><option value="dispatch">Save &amp; Dispatch</option></select><small>Dispatch opens driver and equipment selection. If you close it, the saved request stays Unscheduled.</small></label>');
   modalSave.textContent = copyMode ? "Save as Unscheduled" : "Save";
   if (copyDispatchAllowed) $("truckCopyNextAction").onchange = () => { modalSave.textContent = $("truckCopyNextAction").value === "dispatch" ? "Save & Dispatch" : "Save as Unscheduled"; };
@@ -35162,6 +35187,8 @@ async function saveTruckingRequest(previousNo = "") {
     .filter((el) => !el.name.startsWith("line_") && (!["radio", "checkbox"].includes(el.type) || el.checked))
     .map((el) => [el.name, el.value]));
   const existingRequest = previousNo ? (await getAll("trucking_requests")).find((row) => row.request_no === previousNo) : null;
+  const dispatchDefaults = modalBody.querySelector('.move-request-form')?.dispatchDefaults;
+  if (dispatchDefaults) values.dispatch_defaults = dispatchDefaults;
   if (previousNo && !existingRequest) return alert("This request no longer exists. Refresh before editing.");
   values.request_no = previousNo || values.request_no || truckingNextRequestNo(productMeta.truckingRequests || []);
   values.request_date = existingRequest?.request_date || truckingToday();
@@ -39547,10 +39574,13 @@ async function openTruckingDispatchFromRequest(requestNo) {
     if (req?.status === "Cancelled") throw new Error("This move request has been cancelled and cannot be dispatched.");
     if (!req || !reqLines.length) throw new Error("No undispatched request lines found. This request may already have been dispatched.");
   modalTitle.textContent = `Dispatch ${requestNo}`;
+  const defaultDriver = (productMeta.truckingDrivers || []).find(driver => req.dispatch_defaults?.driver_email
+    ? String(driver.email || '').toLowerCase() === String(req.dispatch_defaults.driver_email).toLowerCase()
+    : driver.name === req.dispatch_defaults?.driver_name);
   modalBody.innerHTML = `
     <div class="dispatch-request-form">
     <div class="form-grid">
-      <label>Trucking Driver<input name="driver_name" class="suggest-input" data-suggest-source="trucking_drivers" autocomplete="off" list="truckDriverOptions" placeholder="Search Trucking Driver" required><small>Select a user configured as Trucking Driver.</small></label>
+      <label>Trucking Driver<input name="driver_name" value="${esc(defaultDriver?.name || '')}" class="suggest-input" data-suggest-source="trucking_drivers" autocomplete="off" list="truckDriverOptions" placeholder="Search Trucking Driver" required><small>Select a user configured as Trucking Driver. Copied defaults can be changed.</small></label>
       <label>Helper Driver (optional)<input name="helper_driver_name" class="suggest-input" data-suggest-source="trucking_drivers" autocomplete="off" list="truckDriverOptions" placeholder="Select helper driver"><small>Hours follow the main driver's ticket times. Only the main driver completes the ticket.</small></label>
       <label>Dispatch Date<input type="date" name="move_date" value="${esc(truckingToday())}" required></label>
     </div>
@@ -39562,7 +39592,7 @@ async function openTruckingDispatchFromRequest(requestNo) {
         <div>${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea><span>Number of Container / Bin Moves</span><input name="container_move_count" type="number" min="1" step="1" value="'+esc(req.container_move_count ?? 1)+'"><small>One ticket for this row. Service charge × quantity; hours counted once.</small></label>' : '<input name="dispatch_requested_item" class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="'+esc(line.equipment_label || req.service_needed || '')+'" placeholder="Search equipment or enter requested item" autocomplete="off">'}
         ${isRollOffTruckingService({service:req.service_needed}) ? `<label>Number of Bin Moves<input name="container_move_count" type="number" min="1" step="1" value="${esc(req.container_move_count ?? 1)}">Tipping Fee Multiplier<input name="tipping_fee_multiplier" type="number" min="1" step="1" value="${esc(req.tipping_fee_multiplier ?? 1)}"></label>` : ""}
         </div><input class="suggest-input" data-suggest-source="trucking_rate_equipment" list="truckServiceOptions" value="${esc(line.service || "")}" placeholder="Search service" autocomplete="off">
-        <input class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" placeholder="Type actual equipment, asset #, plate, serial, VIN, or location" autocomplete="off" inputmode="search">
+        <input class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="${esc(truckingCopiedEquipment(req.dispatch_defaults, line))}" placeholder="Type actual equipment, asset #, plate, serial, VIN, or location" autocomplete="off" inputmode="search">
         <input type="number" min="0" max="100" step="0.01" value="0" placeholder="Discount %">
         <input value="${esc(line.origin || "")}">
         <input value="${esc(line.destination || "")}">
