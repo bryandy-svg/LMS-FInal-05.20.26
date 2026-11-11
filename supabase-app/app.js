@@ -293,7 +293,7 @@ async function getPagedViewRows(table, { columns = "*", beforePage, onEntry } = 
 
 const moduleListPreferences = new Map();
 const moduleDateFields = {fuel:'fuel_date',purchasing:'po_date',orders:'order_date',repairs:'wo_date',partsissues:'wo_date',invoices:'invoice_date',quotes:'quote_date',receipts:'gr_date',payments:'payment_date',customerforms:'form_date',rentalbids:'bid_date',rentals:'start_date',truckingrequests:'request_date',truckingtickets:'move_date',truckingticketentry:'move_date',trucking:'move_date',truckingquotes:'quote_date',propertyrequests:'request_date',propertyworkorders:'opened_date',equipmentrepairquotes:'quote_date',equipmentrequests:'request_date'};
-const truckingListColumns = 'id,ticket_no,request_no,request_line_no,move_date,customer,project,jobsite,requested_by,po_no,asset_source,asset_tag,equipment_label,service,rate,rate_type,amount,origin,destination,driver_name,driver_email,helper_driver_name,helper_driver_email,start_time,end_time,container_no,seal_no,vessel_voyage,bl_no,truck_license,chassis_no,bin_status,customer_print,driver_print,notes,status,created_at,updated_at,trip_type,material_description,unit_of_measurement,weight_lb,dimensions,materials_loaded,number_of_loads,cy_per_load,total_cy,requested_equipment_label,dispatched_at,driver_signed_at,customer_signed_at,finalized_at,accepted_at,payment_mode,cancellation_reason,cancelled_at,discount_amount,amount_to_bill,billing_status,billed_at,move_description,billing_reference,billing_batch,service_size,tipping_fee,roll_off_tons,tipping_rate,tipping_rate_type,tipping_charge,discount_percent,actual_hours,debris_type,cy_ton,imported_final_ticket,import_batch,import_source,standby_hours,standby_notes';
+const truckingListColumns = 'container_move_count,tipping_fee_multiplier,id,ticket_no,request_no,request_line_no,move_date,customer,project,jobsite,requested_by,po_no,asset_source,asset_tag,equipment_label,service,rate,rate_type,amount,origin,destination,driver_name,driver_email,helper_driver_name,helper_driver_email,start_time,end_time,container_no,seal_no,vessel_voyage,bl_no,truck_license,chassis_no,bin_status,customer_print,driver_print,notes,status,created_at,updated_at,trip_type,material_description,unit_of_measurement,weight_lb,dimensions,materials_loaded,number_of_loads,cy_per_load,total_cy,requested_equipment_label,dispatched_at,driver_signed_at,customer_signed_at,finalized_at,accepted_at,payment_mode,cancellation_reason,cancelled_at,discount_amount,amount_to_bill,billing_status,billed_at,move_description,billing_reference,billing_batch,service_size,tipping_fee,roll_off_tons,tipping_rate,tipping_rate_type,tipping_charge,discount_percent,actual_hours,debris_type,cy_ton,imported_final_ticket,import_batch,import_source,standby_hours,standby_notes';
 function moduleActiveTab(view) {
   return ({repairs:repairListTab,partsissues:repairListTab,truckingtickets:truckingTicketBillingTab,truckingticketentry:truckingTicketEntryTab,truckingrequests:truckingRequestTab,trucking:truckingSchedulerTab,purchasing:purchasingTab,orders:salesOrderTab,quotes:quotationTab,equipmentrepairquotes:equipmentRepairQuoteTab,equipmentrequests:equipmentRequestTab})[view] || '';
 }
@@ -33556,8 +33556,14 @@ function isRollOffTruckingService(row = {}) {
   return /roll[\s-]*off/i.test(service);
 }
 
+function truckingTippingMultiplier(row = {}) {
+  const count = Number(row.tipping_fee_multiplier ?? 1);
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('Tipping fee multiplier must be a whole number of at least 1.');
+  return count;
+}
+
 function truckingContainerMoveCount(row = {}) {
-  if (!isContainerMoveService(row)) return 1;
+  if (!isContainerMoveService(row) && !isRollOffTruckingService(row)) return 1;
   const count = Number(row.container_move_count ?? 1);
   if (!Number.isSafeInteger(count) || count < 1) throw new Error('Number of container moves must be a whole number of at least 1.');
   return count;
@@ -34212,6 +34218,10 @@ function updateTruckingPatternFields(root, service, selected = {}) {
     || rowsForSubcategory.some((row) => row.requires_equipment === true || String(row.requires_equipment) === "true");
   if (equipmentSection) equipmentSection.hidden = !requiresEquipment;
   const containers = root.querySelector('#moveRequestContainerSection');
+  const multiplierField = root.querySelector('#truckMoveMultiplierField');
+  if (multiplierField) multiplierField.hidden = !isContainerMoveService({service}) && !isRollOffTruckingService({service});
+  const tippingMultiplierField = root.querySelector('#truckTippingMultiplierField');
+  if (tippingMultiplierField) tippingMultiplierField.hidden = !isRollOffTruckingService({service});
   if (containers) containers.hidden = !isContainerMoveService({service});
   if (isContainerMoveService({service}) && referenceField) referenceField.hidden = true;
   if (!requiresEquipment && equipmentSection) {
@@ -34931,6 +34941,8 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
       <label id="truckServiceSubcategoryField" hidden>Move type / option<select name="service_subcategory"></select><small>Choices come from the Rate Sheet pattern.</small></label>
       <label id="truckServiceSizeField" hidden><span>Size / capacity</span><select name="service_size"></select></label>
       <label id="truckServiceReferenceField" hidden><span>Reference number</span><input name="service_reference" value="${esc(existing?.service_reference || "")}"></label>
+      <label id="truckMoveMultiplierField" hidden>Number of Container / Bin Moves<input type="number" name="container_move_count" min="1" step="1" value="${esc(existing?.container_move_count ?? 1)}"><small>Service multiplier per ticket. Use one row below to consolidate several moves into one ticket.</small></label>
+      <label id="truckTippingMultiplierField" hidden>Tipping Fee Multiplier<input type="number" name="tipping_fee_multiplier" min="1" step="1" value="${esc(existing?.tipping_fee_multiplier ?? 1)}"><small>Multiplies the calculated tipping fee separately. Hours are counted once.</small></label>
       <label id="truckTippingFeeField" hidden>Tipping fee<select name="tipping_fee">${truckingTippingFeeOptions(existing?.tipping_fee || "")}</select><small>Fee choices come from Rate Sheet → Tipping Fee.</small></label>
       <label id="truckRollOffTonsField" hidden>Tons (optional)<input type="number" min="0.01" step="0.01" name="roll_off_tons" value="${esc(existing?.roll_off_tons || "")}" placeholder="Actual or estimated tons"><small>If blank, Bin Size/Capacity × tipping rate will be used.</small></label>
       <label data-high-deck-field hidden>Material(s)<input name="material_description" value="${esc(existing?.material_description || "")}" placeholder="Describe the material being transported"></label>
@@ -34959,7 +34971,7 @@ async function loadTruckingRequestForm(requestNo, copyMode, loadingNode, signal)
         ${lineRows.map((line) => truckingRequestLineHtml(line)).join("")}
       </div>
     </section>
-    <section id="moveRequestContainerSection" hidden><h3>Containers / trailers to move</h3><p>Add one row per container. Each selected row creates its own ticket when dispatched.</p><div id="truckContainerLines">
+    <section id="moveRequestContainerSection" hidden><h3>Containers / trailers to move</h3><p>Use one row for a consolidated ticket and enter the Number of Container / Bin Moves above. Separate rows create separate tickets.</p><div id="truckContainerLines">
     ${(lineRows.filter(line=>line.container_no).length ? lineRows.filter(line=>line.container_no) : [{container_no:existing?.service_reference || ''}]).map(truckingContainerLineHtml).join('')}</div><button type="button" id="addTruckContainerBtn">Add container</button></section>
     <label class="move-request-description">Move description<textarea name="move_description" placeholder="Describe what needs to be moved, timing, and special instructions." required>${esc(existing?.move_description || existing?.notes || "")}</textarea></label>
     ${truckingDatalists()}
@@ -35151,6 +35163,8 @@ async function saveTruckingRequest(previousNo = "") {
   values.request_date = existingRequest?.request_date || truckingToday();
   values.status = existingRequest?.status || "Requested";
   values.service_needed = values.service_choice === "__new__" ? String(values.service_new || "").trim() : String(values.service_choice || "").trim();
+  values.container_move_count = truckingContainerMoveCount({service: values.service_needed, container_move_count: values.container_move_count});
+  values.tipping_fee_multiplier = truckingTippingMultiplier(values);
   values.move_description = String(values.move_description || values.notes || "").trim();
   values.notes = values.move_description;
   values.service_option = String(values.service_option || "").trim();
@@ -35741,7 +35755,8 @@ async function openAssignedDriverTask(ticketNo) {
       <div><strong>Service</strong><span>${esc(row.service || "")}</span></div>
       <div><strong>Size / Capacity</strong><span>${esc(row.service_size || "")}</span></div>
       <div><strong>Requested equipment</strong><span>${esc(row.requested_equipment_label || "")}</span></div>
-      ${isContainerMoveService(row) ? `<div><strong>Number of Container Moves</strong><span>${truckingContainerMoveCount(row)} — service charge multiplied; hours counted once</span></div>` : ""}
+      ${(isContainerMoveService(row) || isRollOffTruckingService(row)) ? `<div><strong>Number of Container / Bin Moves</strong><span>${truckingContainerMoveCount(row)} — service charge multiplied; hours counted once</span></div>` : ""}
+      <div><strong>Tipping Fee Multiplier</strong><span>${truckingTippingMultiplier(row)}×</span></div>
       <div><strong>Actual equipment</strong><span>${esc(row.equipment_label || "")}</span></div>
     </div>
     <div class="form-grid">
@@ -35947,13 +35962,13 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const billedHours = isHourlyRate ? truckingBillableHours(startTime, endTime, 2) : null;
   const { quantity, unit } = truckingQuantity(operational.cy_ton);
   const debrisRate = truckingRateForUnit(truckingDebrisRates(operational.debris_type, row), unit);
-  const tippingCharge = Number(debrisRate?.rate || 0) * (truckingRateUnit(debrisRate?.rate_type) ? quantity : 1);
+  const tippingCharge = Number(debrisRate?.rate || 0) * (truckingRateUnit(debrisRate?.rate_type) ? quantity : 1) * truckingTippingMultiplier(row);
   const tripMultiplier = row.trip_type === "Round Trip" ? 2 : 1;
   const quantityRate = truckingRateUnit(row.rate_type) && quantity > 0 && unit ? manualTruckingRate(row.service, unit) : null;
   if (isRollOffTruckingService(row) && truckingRateUnit(row.rate_type) && !quantityRate) return alert(`No active service rate for ${unit}. Select the correct unit or update the rate sheet.`);
   const originalCharge = isHourlyRate
     ? Number(row.rate || 0) * billedHours * truckingContainerMoveCount(row)
-    : quantityRate ? Number(quantityRate.rate || 0) * quantity * tripMultiplier : Number(row.amount || 0);
+    : quantityRate ? Number(quantityRate.rate || 0) * quantity * tripMultiplier * truckingContainerMoveCount(row) : Number(row.amount || 0);
   const discountPercent = truckingDiscountPercent(row);
   const discountAmount = truckingDiscountAmount(originalCharge, tippingCharge, discountPercent);
   const { error } = await supabase.from("trucking_moves").update({
@@ -38494,7 +38509,7 @@ function manualFinalTicketCalculation(root = modalBody) {
   const serviceAmount = Number((Number(rate?.rate || 0) * multiplier * containerCount).toFixed(2));
   const debrisKey = String(field("debris_type")?.value || "").trim().toLowerCase();
   const debrisRate = truckingRateForUnit(truckingDebrisRates(debrisKey, { service }), unit);
-  const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1)).toFixed(2)) : 0;
+  const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1) * truckingTippingMultiplier({tipping_fee_multiplier: field("tipping_fee_multiplier")?.value ?? 1})).toFixed(2)) : 0;
   const total = Number((serviceAmount + tippingCharge).toFixed(2));
   if (field("worked_hours")) {
     field("worked_hours").readOnly = hasCompleteTime;
@@ -38579,7 +38594,8 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
     <label class="field">Time In (optional)<input type="time" name="start_time" value="${esc(value("start_time"))}"></label>
     <label class="field">Time Out (optional)<input type="time" name="end_time" value="${esc(value("end_time"))}"></label>
     <label class="field">Project<input class="suggest-input" data-suggest-source="locations" name="project" value="${esc(value("project", value("jobsite")))}" placeholder="Search project or jobsite" autocomplete="off"></label>
-    <label class="field">Number of Container Moves<input name="container_move_count" type="number" min="1" step="1" value="${esc(value("container_move_count") || 1)}"><small>Applies to container service charges only.</small></label>
+    <label class="field">Tipping Fee Multiplier<input name="tipping_fee_multiplier" type="number" min="1" step="1" value="${esc(value("tipping_fee_multiplier") || 1)}"></label>
+    <label class="field">Number of Container / Bin Moves<input name="container_move_count" type="number" min="1" step="1" value="${esc(value("container_move_count") || 1)}"><small>Applies to container and roll-off bin service charges only.</small></label>
     <label class="field">Container / Trailer #<input name="container_no" value="${esc(value("container_no"))}" placeholder="Enter container or trailer number"></label>
     ${truckingTicketMaterialFields(existingTicket || {})}
     <label class="field">Actual Hours<input type="number" name="worked_hours" min="0" step="0.01" value="${esc(value("actual_hours"))}" placeholder="Enter when ticket has no times"></label>
@@ -38594,7 +38610,7 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
     updateManualRollOffFields(modalBody);
     manualFinalTicketCalculation(modalBody);
   };
-  ["service", "equipment_label", "start_time", "end_time", "worked_hours", "debris_type", "debris_quantity", "debris_unit", "container_move_count"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", recalculate));
+  ["service", "equipment_label", "start_time", "end_time", "worked_hours", "debris_type", "debris_quantity", "debris_unit", "container_move_count", "tipping_fee_multiplier"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", recalculate));
   document.getElementById("manualTruckingDraftBtn")?.remove();
   const draftButton = document.createElement("button");
   draftButton.type = "button"; draftButton.id = "manualTruckingDraftBtn"; draftButton.textContent = isDraft ? "Save Draft Changes" : "Save Draft";
@@ -38663,6 +38679,7 @@ async function saveManualFinalTruckingTicket() {
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: calculation.workedHours, move_description: values.move_description || null, notes: values.move_description || null,
     container_no: String(values.container_no || "").trim() || null,
     container_move_count: truckingContainerMoveCount(values),
+    tipping_fee_multiplier: truckingTippingMultiplier(values),
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
     rate: Number(calculation.rate?.rate || 0), rate_type: trainingEntry ? "Training / Non-billable" : (calculation.rate?.rate_type || ""), amount: trainingEntry ? 0 : calculation.serviceAmount, tipping_fee: trainingEntry ? null : (calculation.debrisRate?.service || null),
     tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: calculation.tippingCharge, amount_to_bill: calculation.total,
@@ -38710,6 +38727,7 @@ async function saveManualTruckingTicketDraft() {
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: nullableNumber(values.worked_hours), move_description: values.move_description || null, notes: values.move_description || null,
     container_no: String(values.container_no || "").trim() || null,
     container_move_count: truckingContainerMoveCount(values),
+    tipping_fee_multiplier: truckingTippingMultiplier(values),
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
     rate: Number(calculation.rate?.rate || 0), rate_type: calculation.rate?.rate_type || null, amount: Number(calculation.serviceAmount || 0), tipping_fee: calculation.debrisRate?.service || null, tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: Number(calculation.tippingCharge || 0), amount_to_bill: Number(calculation.total || 0),
     status: "Draft", billing_status: "Non-billable", finalized_at: null, accepted_at: null, driver_signature: null, customer_signature: null, driver_signed_at: null, customer_signed_at: null,
@@ -39535,8 +39553,9 @@ async function openTruckingDispatchFromRequest(requestNo) {
       <div class="mini-grid truck-line-head truck-dispatch-head"><strong>Include</strong><strong>Requested Item</strong><strong>Service</strong><strong>Actual Truck / Equipment</strong><strong>Discount %</strong><strong>Origin</strong><strong>Destination</strong></div>
       ${reqLines.map((line) => `<div class="mini-grid truck-dispatch-line" data-line="${esc(line.line_no)}">
         <input type="checkbox" checked>
-        ${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea><span>Number of Container Moves</span><input name="container_move_count" type="number" min="1" step="1" value="1"><small>One ticket for this row. Service charge × quantity; hours counted once.</small></label>' : '<input name="dispatch_requested_item" class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="'+esc(line.equipment_label || req.service_needed || '')+'" placeholder="Search equipment or enter requested item" autocomplete="off">'}
-        <input class="suggest-input" data-suggest-source="trucking_rate_equipment" list="truckServiceOptions" value="${esc(line.service || "")}" placeholder="Search service" autocomplete="off">
+        <div>${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea><span>Number of Container / Bin Moves</span><input name="container_move_count" type="number" min="1" step="1" value="'+esc(req.container_move_count ?? 1)+'"><small>One ticket for this row. Service charge × quantity; hours counted once.</small></label>' : '<input name="dispatch_requested_item" class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="'+esc(line.equipment_label || req.service_needed || '')+'" placeholder="Search equipment or enter requested item" autocomplete="off">'}
+        ${isRollOffTruckingService({service:req.service_needed}) ? `<label>Number of Bin Moves<input name="container_move_count" type="number" min="1" step="1" value="${esc(req.container_move_count ?? 1)}">Tipping Fee Multiplier<input name="tipping_fee_multiplier" type="number" min="1" step="1" value="${esc(req.tipping_fee_multiplier ?? 1)}"></label>` : ""}
+        </div><input class="suggest-input" data-suggest-source="trucking_rate_equipment" list="truckServiceOptions" value="${esc(line.service || "")}" placeholder="Search service" autocomplete="off">
         <input class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" placeholder="Type actual equipment, asset #, plate, serial, VIN, or location" autocomplete="off" inputmode="search">
         <input type="number" min="0" max="100" step="0.01" value="0" placeholder="Discount %">
         <input value="${esc(line.origin || "")}">
@@ -39663,7 +39682,7 @@ async function saveTruckingDispatch(req, reqLines) {
     const original = reqLines.find((line) => Number(line.line_no) === lineNo) || {};
     const containerNo = row.querySelector('[name=dispatch_container_no]')?.value.trim() || original.container_no || '';
     if (isContainerMoveService({service:req.service_needed}) && !containerNo) return alert('Enter a container number or To follow for each selected container.');
-    const inputs = row.querySelectorAll("input:not([name=dispatch_requested_item]):not([name=container_move_count])");
+    const inputs = row.querySelectorAll("input:not([name=dispatch_requested_item]):not([name=container_move_count]):not([name=tipping_fee_multiplier])");
     const requestedItem = row.querySelector("[name=dispatch_requested_item]")?.value.trim() || original.equipment_label || "";
     const service = inputs[1]?.value.trim() || original.service || "";
     const actualEquipmentInput = inputs[2]?.value.trim() || "";
@@ -39676,7 +39695,8 @@ async function saveTruckingDispatch(req, reqLines) {
     const isHourlyRate = /hour/i.test(String(rate.rate_type || ""));
     const tripMultiplier = tripType === "Round Trip" && !isHourlyRate ? 2 : 1;
     const tippingMultiplier = Number(req.roll_off_tons || 0) || Number.parseFloat(String(req.service_size || "")) || 0;
-    const tippingCharge = req.service_needed === "Roll Off Service" ? Number(tippingRate.rate || 0) * tippingMultiplier : 0;
+    const tippingFeeMultiplier = truckingTippingMultiplier({tipping_fee_multiplier: row.querySelector("[name=tipping_fee_multiplier]")?.value ?? req.tipping_fee_multiplier ?? 1});
+    const tippingCharge = req.service_needed === "Roll Off Service" ? Number(tippingRate.rate || 0) * tippingMultiplier * tippingFeeMultiplier : 0;
     const containerCount = truckingContainerMoveCount({service, container_move_count: row.querySelector('[name=container_move_count]')?.value ?? 1});
     const serviceCharge = Number((Number(rate.rate || 0) * (isHourlyRate ? 2 : volumeMultiplier * tripMultiplier) * containerCount).toFixed(2));
     const originalCharge = serviceCharge;
@@ -39698,6 +39718,7 @@ async function saveTruckingDispatch(req, reqLines) {
       requested_equipment_label: containerNo ? [req.service_subcategory,req.service_size,containerNo].filter(Boolean).join(' | ') : requestedItem,
       container_no: containerNo,
       container_move_count: containerCount,
+      tipping_fee_multiplier: tippingFeeMultiplier,
       helper_driver_name: helper?.name || null,
       helper_driver_email: helper?.email || null,
       asset_source: actualAsset.source || "",
@@ -39854,6 +39875,7 @@ async function openTruckingMoveForm(ticketNo = "") {
   }
   const number = existing?.ticket_no || String(Math.max(100000, ...((productMeta.truckingMoves || []).map((row) => Number(String(row.ticket_no || "").replace(/\D/g, ""))).filter(Boolean))) + 1).padStart(6, "0");
   if (loadingNode && (modalBody.firstElementChild !== loadingNode || $("modal").style.display === "none")) return;
+  modalBody.dataset.tippingFeeMultiplier = String(existing?.tipping_fee_multiplier ?? 1);
   modalTitle.textContent = existing ? `Edit ticket ${number}` : `New trucking ticket ${number}`;
   modalBody.innerHTML = `
     <div class="trucking-ticket-form">
@@ -39873,7 +39895,7 @@ async function openTruckingMoveForm(ticketNo = "") {
       <label>Origin<input name="origin" value="${esc(existing?.origin || "")}"></label>
       <label>Destination<input name="destination" value="${esc(existing?.destination || "")}"></label>
       <label>Container #<input name="container_no" value="${esc(existing?.container_no || "")}"></label>
-      ${isContainerMoveService(existing || {}) ? `<label>Number of Container Moves<input name="container_move_count" type="number" min="1" step="1" value="${truckingContainerMoveCount(existing)}"><small>Service charge only; driver hours counted once.</small></label>` : ""}
+      ${(isContainerMoveService(existing || {}) || isRollOffTruckingService(existing || {})) ? `<label>Number of Container / Bin Moves<input name="container_move_count" type="number" min="1" step="1" value="${truckingContainerMoveCount(existing)}"><small>Service charge only; driver hours counted once.</small></label>` : ""}
       <label>Seal #<input name="seal_no" value="${esc(existing?.seal_no || "")}"></label>
       <label>Vessel / Voyage<input name="vessel_voyage" value="${esc(existing?.vessel_voyage || "")}"></label>
       <label>BL #<input name="bl_no" value="${esc(existing?.bl_no || "")}"></label>
@@ -39882,6 +39904,7 @@ async function openTruckingMoveForm(ticketNo = "") {
       <label>Start time<input type="time" name="start_time" value="${esc(existing?.start_time || "")}"></label>
       <label>End time<input type="time" name="end_time" value="${esc(existing?.end_time || "")}"></label>
       <label>Amount<input type="number" step="0.01" name="amount" value="${esc(existing?.amount || 0)}"></label>
+      <label>Tipping Fee Multiplier<input type="number" name="tipping_fee_multiplier" min="1" step="1" value="${truckingTippingMultiplier(existing || {})}"></label>
       <input type="hidden" name="tipping_charge" value="${esc(existing?.tipping_charge || 0)}">
       <label>Discount %<input type="number" min="0" max="100" step="0.01" name="discount_percent" value="${esc(truckingDiscountPercent(existing || {}))}"><small>Tipping fee is excluded from the discount.</small></label>
       <label>Discount amount<input type="number" name="discount_amount" value="${esc(existing?.discount_amount || 0)}" readonly></label>
@@ -39902,11 +39925,21 @@ async function openTruckingMoveForm(ticketNo = "") {
   modalBody.querySelector("[name=trip_type]").value = existing?.trip_type || "One-Way";
   const updateBilledAmount = () => {
     const amount = Number(modalBody.querySelector('[name="amount"]')?.value || 0);
-    const tippingCharge = Number(existing?.tipping_charge || 0);
+    const tippingCharge = Number(modalBody.querySelector('[name="tipping_charge"]')?.value || 0);
     const discountPercent = Number(modalBody.querySelector('[name="discount_percent"]')?.value || 0);
     const discount = truckingDiscountAmount(amount, tippingCharge, discountPercent);
     modalBody.querySelector('[name="discount_amount"]').value = String(discount);
     modalBody.querySelector('[name="amount_to_bill"]').value = String(Math.max(0, amount - discount + tippingCharge));
+  };
+  const tippingMultiplierInput = modalBody.querySelector('[name="tipping_fee_multiplier"]');
+  let previousTippingMultiplier = truckingTippingMultiplier(existing || {});
+  tippingMultiplierInput.oninput = () => {
+    const next = Number(tippingMultiplierInput.value);
+    if (!Number.isSafeInteger(next) || next < 1) return;
+    const charge = modalBody.querySelector('[name="tipping_charge"]');
+    charge.value = (Number(charge.value || 0) / previousTippingMultiplier * next).toFixed(2);
+    previousTippingMultiplier = next;
+    updateBilledAmount();
   };
   const containerCountInput = modalBody.querySelector('[name="container_move_count"]');
   let previousContainerCount = truckingContainerMoveCount(existing || {});
@@ -39970,6 +40003,7 @@ async function saveTruckingMove() {
   const timeError = truckingTimeOrderError(payload.start_time, payload.end_time);
   if (timeError) return alert(timeError);
   payload.container_move_count = truckingContainerMoveCount(payload);
+  payload.tipping_fee_multiplier = truckingTippingMultiplier(payload);
   if (!payload.ticket_no) return alert("Ticket # is required.");
   if (!payload.driver_name) return alert("Driver is required.");
   if (!payload.equipment_label) return alert("Equipment is required.");
@@ -40086,7 +40120,7 @@ async function printTruckingTicket(ticketNo) {
         <div class="field"><span class="field-label">Destination</span><div class="field-value">${esc(row.destination || "")}</div></div><div class="field"><span class="field-label">Time</span><div class="field-value field-time-trio"><span>In: ${esc(row.start_time || "")}</span><span>Out: ${esc(row.end_time || "")}</span><span>Standby: ${Number(row.standby_hours || 0).toFixed(2)} hr</span></div></div>
         <div class="field"><span class="field-label">Jobsite / Project</span><div class="field-value">${esc(row.project || row.jobsite || "")}</div></div><div class="field"><span class="field-label">Equipment Requested</span><div class="field-value">${esc(requestedEquipment)}</div></div>
         <div class="field"><span class="field-label">Service / Equipment Used</span><div class="field-value">${esc(row.equipment_label || row.service || "")}</div></div><div class="field"><span class="field-label">Requested By / PO #</span><div class="field-value field-pair"><span>${esc(row.requested_by || "")}</span><span>${esc(row.po_no || "")}</span></div></div>
-        <div class="field"><span class="field-label">${isContainerMoveService(row) ? "Seal # / Vessel / Voyage" : "Type of Debris / CY or Ton"}</span><div class="field-value field-pair"><span>${esc(isContainerMoveService(row) ? row.seal_no || "" : row.debris_type || "")}</span><span>${esc(isContainerMoveService(row) ? row.vessel_voyage || "" : row.cy_ton || "")}</span></div></div><div class="field"><span class="field-label">Container / Trailer #</span><div class="field-value">${esc(row.container_no || "")}${isContainerMoveService(row) ? `<br>Number of Container Moves: ${truckingContainerMoveCount(row)}` : ""}</div></div>
+        <div class="field"><span class="field-label">${isContainerMoveService(row) ? "Seal # / Vessel / Voyage" : "Type of Debris / CY or Ton"}</span><div class="field-value field-pair"><span>${esc(isContainerMoveService(row) ? row.seal_no || "" : row.debris_type || "")}</span><span>${esc(isContainerMoveService(row) ? row.vessel_voyage || "" : row.cy_ton || "")}</span></div></div><div class="field"><span class="field-label">Container / Trailer #</span><div class="field-value">${esc(row.container_no || "")}${(isContainerMoveService(row) || isRollOffTruckingService(row)) ? `<br>Number of Container / Bin Moves: ${truckingContainerMoveCount(row)}<br>Tipping Fee Multiplier: ${truckingTippingMultiplier(row)}×` : ""}</div></div>
         <div class="field wide"><span class="field-label">Move Description</span><div class="field-value">${esc(row.move_description || row.notes || "")}</div>${Number(row.standby_hours || 0) > 0 ? `<div class="standby-ticket-notes"><span class="field-label">Standby Notes</span><div class="field-value">${esc(row.standby_notes || "")}</div></div>` : ""}</div>
       </div>
       <div class="signatures"><div class="signatory"><div class="signatory-name" style="padding:0 2px 5px;font-size:10px;font-weight:800;color:#17212b"><span style="display:block;margin-bottom:2px;font-size:8px;text-transform:uppercase;letter-spacing:.04em;color:#536273">Customer Print</span>${esc(row.customer_print || row.customer || "")}</div><div class="signature-box"><div class="signature-head"><span>Customer Signature</span><span>Date: __________</span></div><div class="signature-content">${signatureHtml(row.customer_signature)}</div><div class="signature-note">Customer acknowledgement</div></div></div><div class="signatory"><div class="signatory-name" style="padding:0 2px 5px;font-size:10px;font-weight:800;color:#17212b"><span style="display:block;margin-bottom:2px;font-size:8px;text-transform:uppercase;letter-spacing:.04em;color:#536273">Driver Print</span>${esc(row.driver_print || row.driver_name || "")}</div><div class="signature-box"><div class="signature-head"><span>Driver Signature</span><span>Date: __________</span></div><div class="signature-content">${signatureHtml(row.driver_signature)}</div><div class="signature-note">Driver certification</div></div></div></div>
