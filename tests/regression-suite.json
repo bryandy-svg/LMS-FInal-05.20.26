@@ -145,5 +145,6 @@
   "ap-preposting-payments",
   "dashboard-summary-loading",
   "request-ticket-view-search",
-  "container-move-count"
+  "container-move-count",
+  "copy-request-dispatch"
 ]
