@@ -33556,6 +33556,13 @@ function isRollOffTruckingService(row = {}) {
   return /roll[\s-]*off/i.test(service);
 }
 
+function truckingContainerMoveCount(row = {}) {
+  if (!isContainerMoveService(row)) return 1;
+  const count = Number(row.container_move_count ?? 1);
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('Number of container moves must be a whole number of at least 1.');
+  return count;
+}
+
 function isContainerMoveService(row = {}) {
   return /container|sidelift|trailer[\s/-]*move/i.test(String(row.service || row.requested_equipment_label || "")) && !isRollOffTruckingService(row);
 }
@@ -35734,6 +35741,7 @@ async function openAssignedDriverTask(ticketNo) {
       <div><strong>Service</strong><span>${esc(row.service || "")}</span></div>
       <div><strong>Size / Capacity</strong><span>${esc(row.service_size || "")}</span></div>
       <div><strong>Requested equipment</strong><span>${esc(row.requested_equipment_label || "")}</span></div>
+      ${isContainerMoveService(row) ? `<div><strong>Number of Container Moves</strong><span>${truckingContainerMoveCount(row)} — service charge multiplied; hours counted once</span></div>` : ""}
       <div><strong>Actual equipment</strong><span>${esc(row.equipment_label || "")}</span></div>
     </div>
     <div class="form-grid">
@@ -35944,7 +35952,7 @@ async function finalizeAssignedDriverTask(row, driverCanvas, customerCanvas) {
   const quantityRate = truckingRateUnit(row.rate_type) && quantity > 0 && unit ? manualTruckingRate(row.service, unit) : null;
   if (isRollOffTruckingService(row) && truckingRateUnit(row.rate_type) && !quantityRate) return alert(`No active service rate for ${unit}. Select the correct unit or update the rate sheet.`);
   const originalCharge = isHourlyRate
-    ? Number(row.rate || 0) * billedHours
+    ? Number(row.rate || 0) * billedHours * truckingContainerMoveCount(row)
     : quantityRate ? Number(quantityRate.rate || 0) * quantity * tripMultiplier : Number(row.amount || 0);
   const discountPercent = truckingDiscountPercent(row);
   const discountAmount = truckingDiscountAmount(originalCharge, tippingCharge, discountPercent);
@@ -38482,7 +38490,8 @@ function manualFinalTicketCalculation(root = modalBody) {
   let multiplier = 1;
   if (/hour/i.test(rateType)) multiplier = billableHours;
   else if (truckingRateUnit(rateType)) multiplier = quantity;
-  const serviceAmount = Number((Number(rate?.rate || 0) * multiplier).toFixed(2));
+  const containerCount = truckingContainerMoveCount({service, container_move_count: field("container_move_count")?.value ?? 1});
+  const serviceAmount = Number((Number(rate?.rate || 0) * multiplier * containerCount).toFixed(2));
   const debrisKey = String(field("debris_type")?.value || "").trim().toLowerCase();
   const debrisRate = truckingRateForUnit(truckingDebrisRates(debrisKey, { service }), unit);
   const tippingCharge = debrisRate ? Number((Number(debrisRate.rate || 0) * (truckingRateUnit(debrisRate.rate_type) ? quantity : 1)).toFixed(2)) : 0;
@@ -38570,6 +38579,7 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
     <label class="field">Time In (optional)<input type="time" name="start_time" value="${esc(value("start_time"))}"></label>
     <label class="field">Time Out (optional)<input type="time" name="end_time" value="${esc(value("end_time"))}"></label>
     <label class="field">Project<input class="suggest-input" data-suggest-source="locations" name="project" value="${esc(value("project", value("jobsite")))}" placeholder="Search project or jobsite" autocomplete="off"></label>
+    <label class="field">Number of Container Moves<input name="container_move_count" type="number" min="1" step="1" value="${esc(value("container_move_count") || 1)}"><small>Applies to container service charges only.</small></label>
     <label class="field">Container / Trailer #<input name="container_no" value="${esc(value("container_no"))}" placeholder="Enter container or trailer number"></label>
     ${truckingTicketMaterialFields(existingTicket || {})}
     <label class="field">Actual Hours<input type="number" name="worked_hours" min="0" step="0.01" value="${esc(value("actual_hours"))}" placeholder="Enter when ticket has no times"></label>
@@ -38584,7 +38594,7 @@ async function openManualFinalTruckingTicket(existingTicket = null) {
     updateManualRollOffFields(modalBody);
     manualFinalTicketCalculation(modalBody);
   };
-  ["service", "equipment_label", "start_time", "end_time", "worked_hours", "debris_type", "debris_quantity", "debris_unit"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", recalculate));
+  ["service", "equipment_label", "start_time", "end_time", "worked_hours", "debris_type", "debris_quantity", "debris_unit", "container_move_count"].forEach((name) => modalBody.querySelector(`[name="${name}"]`)?.addEventListener("input", recalculate));
   document.getElementById("manualTruckingDraftBtn")?.remove();
   const draftButton = document.createElement("button");
   draftButton.type = "button"; draftButton.id = "manualTruckingDraftBtn"; draftButton.textContent = isDraft ? "Save Draft Changes" : "Save Draft";
@@ -38652,6 +38662,7 @@ async function saveManualFinalTruckingTicket() {
     requested_by: values.requested_by || null, po_no: values.po_no || null, origin: values.origin || null, destination: values.destination || null,
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: calculation.workedHours, move_description: values.move_description || null, notes: values.move_description || null,
     container_no: String(values.container_no || "").trim() || null,
+    container_move_count: truckingContainerMoveCount(values),
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
     rate: Number(calculation.rate?.rate || 0), rate_type: trainingEntry ? "Training / Non-billable" : (calculation.rate?.rate_type || ""), amount: trainingEntry ? 0 : calculation.serviceAmount, tipping_fee: trainingEntry ? null : (calculation.debrisRate?.service || null),
     tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: calculation.tippingCharge, amount_to_bill: calculation.total,
@@ -38698,6 +38709,7 @@ async function saveManualTruckingTicketDraft() {
     requested_by: values.requested_by || null, po_no: values.po_no || null, origin: values.origin || null, destination: values.destination || null,
     start_time: values.start_time || null, end_time: values.end_time || null, actual_hours: nullableNumber(values.worked_hours), move_description: values.move_description || null, notes: values.move_description || null,
     container_no: String(values.container_no || "").trim() || null,
+    container_move_count: truckingContainerMoveCount(values),
     project: values.project || null, jobsite: values.project || null, debris_type: values.debris_type || null, cy_ton: values.cy_ton || null,
     rate: Number(calculation.rate?.rate || 0), rate_type: calculation.rate?.rate_type || null, amount: Number(calculation.serviceAmount || 0), tipping_fee: calculation.debrisRate?.service || null, tipping_rate: Number(calculation.debrisRate?.rate || 0), tipping_rate_type: calculation.debrisRate?.rate_type || null, tipping_charge: Number(calculation.tippingCharge || 0), amount_to_bill: Number(calculation.total || 0),
     status: "Draft", billing_status: "Non-billable", finalized_at: null, accepted_at: null, driver_signature: null, customer_signature: null, driver_signed_at: null, customer_signed_at: null,
@@ -39523,7 +39535,7 @@ async function openTruckingDispatchFromRequest(requestNo) {
       <div class="mini-grid truck-line-head truck-dispatch-head"><strong>Include</strong><strong>Requested Item</strong><strong>Service</strong><strong>Actual Truck / Equipment</strong><strong>Discount %</strong><strong>Origin</strong><strong>Destination</strong></div>
       ${reqLines.map((line) => `<div class="mini-grid truck-dispatch-line" data-line="${esc(line.line_no)}">
         <input type="checkbox" checked>
-        ${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea></label>' : '<input name="dispatch_requested_item" class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="'+esc(line.equipment_label || req.service_needed || '')+'" placeholder="Search equipment or enter requested item" autocomplete="off">'}
+        ${isContainerMoveService({service:req.service_needed}) ? '<label>Container / Trailer #<textarea name="dispatch_container_no" rows="2">'+esc(line.container_no || req.service_reference || '')+'</textarea><span>Number of Container Moves</span><input name="container_move_count" type="number" min="1" step="1" value="1"><small>One ticket for this row. Service charge × quantity; hours counted once.</small></label>' : '<input name="dispatch_requested_item" class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" value="'+esc(line.equipment_label || req.service_needed || '')+'" placeholder="Search equipment or enter requested item" autocomplete="off">'}
         <input class="suggest-input" data-suggest-source="trucking_rate_equipment" list="truckServiceOptions" value="${esc(line.service || "")}" placeholder="Search service" autocomplete="off">
         <input class="suggest-input" data-suggest-source="equipment" data-equipment-source="trucking" placeholder="Type actual equipment, asset #, plate, serial, VIN, or location" autocomplete="off" inputmode="search">
         <input type="number" min="0" max="100" step="0.01" value="0" placeholder="Discount %">
@@ -39544,7 +39556,7 @@ async function openTruckingDispatchFromRequest(requestNo) {
     add.onclick=()=>{
       const template=modalBody.querySelector('.truck-dispatch-line'); const clone=template.cloneNode(true);
       const lineNo=Math.max(0,...(linesResult.data || []).map(line=>Number(line.line_no)),...reqLines.map(line=>Number(line.line_no)))+1;
-      clone.dataset.line=String(lineNo); clone.querySelector('[name=dispatch_container_no]').value=''; clone.querySelector('input[type=checkbox]').checked=true;
+      clone.dataset.line=String(lineNo); clone.querySelector('[name=dispatch_container_no]').value=''; clone.querySelector('[name=container_move_count]').value='1'; clone.querySelector('input[type=checkbox]').checked=true;
       reqLines.push({...reqLines[0],id:undefined,line_no:lineNo,ticket_no:null,container_no:'',_newContainer:true});
       add.before(clone); truckingEnhanceSuggestInputs(clone);
     };
@@ -39651,7 +39663,7 @@ async function saveTruckingDispatch(req, reqLines) {
     const original = reqLines.find((line) => Number(line.line_no) === lineNo) || {};
     const containerNo = row.querySelector('[name=dispatch_container_no]')?.value.trim() || original.container_no || '';
     if (isContainerMoveService({service:req.service_needed}) && !containerNo) return alert('Enter a container number or To follow for each selected container.');
-    const inputs = row.querySelectorAll("input:not([name=dispatch_requested_item])");
+    const inputs = row.querySelectorAll("input:not([name=dispatch_requested_item]):not([name=container_move_count])");
     const requestedItem = row.querySelector("[name=dispatch_requested_item]")?.value.trim() || original.equipment_label || "";
     const service = inputs[1]?.value.trim() || original.service || "";
     const actualEquipmentInput = inputs[2]?.value.trim() || "";
@@ -39665,7 +39677,8 @@ async function saveTruckingDispatch(req, reqLines) {
     const tripMultiplier = tripType === "Round Trip" && !isHourlyRate ? 2 : 1;
     const tippingMultiplier = Number(req.roll_off_tons || 0) || Number.parseFloat(String(req.service_size || "")) || 0;
     const tippingCharge = req.service_needed === "Roll Off Service" ? Number(tippingRate.rate || 0) * tippingMultiplier : 0;
-    const serviceCharge = Number(rate.rate || 0) * (isHourlyRate ? 2 : volumeMultiplier * tripMultiplier);
+    const containerCount = truckingContainerMoveCount({service, container_move_count: row.querySelector('[name=container_move_count]')?.value ?? 1});
+    const serviceCharge = Number((Number(rate.rate || 0) * (isHourlyRate ? 2 : volumeMultiplier * tripMultiplier) * containerCount).toFixed(2));
     const originalCharge = serviceCharge;
     const discountPercent = Number(inputs[3]?.value || 0);
     if (discountPercent < 0 || discountPercent > 100) return alert("Discount percentage must be between 0 and 100.");
@@ -39684,6 +39697,7 @@ async function saveTruckingDispatch(req, reqLines) {
       move_description: req.move_description || req.notes || "",
       requested_equipment_label: containerNo ? [req.service_subcategory,req.service_size,containerNo].filter(Boolean).join(' | ') : requestedItem,
       container_no: containerNo,
+      container_move_count: containerCount,
       helper_driver_name: helper?.name || null,
       helper_driver_email: helper?.email || null,
       asset_source: actualAsset.source || "",
@@ -39859,6 +39873,7 @@ async function openTruckingMoveForm(ticketNo = "") {
       <label>Origin<input name="origin" value="${esc(existing?.origin || "")}"></label>
       <label>Destination<input name="destination" value="${esc(existing?.destination || "")}"></label>
       <label>Container #<input name="container_no" value="${esc(existing?.container_no || "")}"></label>
+      ${isContainerMoveService(existing || {}) ? `<label>Number of Container Moves<input name="container_move_count" type="number" min="1" step="1" value="${truckingContainerMoveCount(existing)}"><small>Service charge only; driver hours counted once.</small></label>` : ""}
       <label>Seal #<input name="seal_no" value="${esc(existing?.seal_no || "")}"></label>
       <label>Vessel / Voyage<input name="vessel_voyage" value="${esc(existing?.vessel_voyage || "")}"></label>
       <label>BL #<input name="bl_no" value="${esc(existing?.bl_no || "")}"></label>
@@ -39892,6 +39907,16 @@ async function openTruckingMoveForm(ticketNo = "") {
     const discount = truckingDiscountAmount(amount, tippingCharge, discountPercent);
     modalBody.querySelector('[name="discount_amount"]').value = String(discount);
     modalBody.querySelector('[name="amount_to_bill"]').value = String(Math.max(0, amount - discount + tippingCharge));
+  };
+  const containerCountInput = modalBody.querySelector('[name="container_move_count"]');
+  let previousContainerCount = truckingContainerMoveCount(existing || {});
+  if (containerCountInput) containerCountInput.oninput = () => {
+    const next = Number(containerCountInput.value);
+    if (!Number.isSafeInteger(next) || next < 1) return;
+    const amountInput = modalBody.querySelector('[name="amount"]');
+    amountInput.value = (Number(amountInput.value || 0) / previousContainerCount * next).toFixed(2);
+    previousContainerCount = next;
+    updateBilledAmount();
   };
   modalBody.querySelector('[name="amount"]').oninput = updateBilledAmount;
   modalBody.querySelector('[name="discount_percent"]').oninput = updateBilledAmount;
@@ -39944,6 +39969,7 @@ async function saveTruckingMove() {
   payload.end_time = String(payload.end_time || "").trim() || null;
   const timeError = truckingTimeOrderError(payload.start_time, payload.end_time);
   if (timeError) return alert(timeError);
+  payload.container_move_count = truckingContainerMoveCount(payload);
   if (!payload.ticket_no) return alert("Ticket # is required.");
   if (!payload.driver_name) return alert("Driver is required.");
   if (!payload.equipment_label) return alert("Equipment is required.");
@@ -39986,7 +40012,7 @@ async function saveTruckingMove() {
     payload.rate_type = rate.rate_type || "";
     if (!Number(payload.amount || 0)) {
       const isHourlyRate = /hour/i.test(String(rate.rate_type || ""));
-      payload.amount = Number(rate.rate || 0) * (isHourlyRate ? truckingBillableHours(payload.start_time, payload.end_time, 2) : payload.trip_type === "Round Trip" ? 2 : 1);
+      payload.amount = Number(rate.rate || 0) * (isHourlyRate ? truckingBillableHours(payload.start_time, payload.end_time, 2) : payload.trip_type === "Round Trip" ? 2 : 1) * payload.container_move_count;
     }
   }
   payload.discount_percent = Number(payload.discount_percent || 0);
@@ -40060,7 +40086,7 @@ async function printTruckingTicket(ticketNo) {
         <div class="field"><span class="field-label">Destination</span><div class="field-value">${esc(row.destination || "")}</div></div><div class="field"><span class="field-label">Time</span><div class="field-value field-time-trio"><span>In: ${esc(row.start_time || "")}</span><span>Out: ${esc(row.end_time || "")}</span><span>Standby: ${Number(row.standby_hours || 0).toFixed(2)} hr</span></div></div>
         <div class="field"><span class="field-label">Jobsite / Project</span><div class="field-value">${esc(row.project || row.jobsite || "")}</div></div><div class="field"><span class="field-label">Equipment Requested</span><div class="field-value">${esc(requestedEquipment)}</div></div>
         <div class="field"><span class="field-label">Service / Equipment Used</span><div class="field-value">${esc(row.equipment_label || row.service || "")}</div></div><div class="field"><span class="field-label">Requested By / PO #</span><div class="field-value field-pair"><span>${esc(row.requested_by || "")}</span><span>${esc(row.po_no || "")}</span></div></div>
-        <div class="field"><span class="field-label">${isContainerMoveService(row) ? "Seal # / Vessel / Voyage" : "Type of Debris / CY or Ton"}</span><div class="field-value field-pair"><span>${esc(isContainerMoveService(row) ? row.seal_no || "" : row.debris_type || "")}</span><span>${esc(isContainerMoveService(row) ? row.vessel_voyage || "" : row.cy_ton || "")}</span></div></div><div class="field"><span class="field-label">Container / Trailer #</span><div class="field-value">${esc(row.container_no || "")}</div></div>
+        <div class="field"><span class="field-label">${isContainerMoveService(row) ? "Seal # / Vessel / Voyage" : "Type of Debris / CY or Ton"}</span><div class="field-value field-pair"><span>${esc(isContainerMoveService(row) ? row.seal_no || "" : row.debris_type || "")}</span><span>${esc(isContainerMoveService(row) ? row.vessel_voyage || "" : row.cy_ton || "")}</span></div></div><div class="field"><span class="field-label">Container / Trailer #</span><div class="field-value">${esc(row.container_no || "")}${isContainerMoveService(row) ? `<br>Number of Container Moves: ${truckingContainerMoveCount(row)}` : ""}</div></div>
         <div class="field wide"><span class="field-label">Move Description</span><div class="field-value">${esc(row.move_description || row.notes || "")}</div>${Number(row.standby_hours || 0) > 0 ? `<div class="standby-ticket-notes"><span class="field-label">Standby Notes</span><div class="field-value">${esc(row.standby_notes || "")}</div></div>` : ""}</div>
       </div>
       <div class="signatures"><div class="signatory"><div class="signatory-name" style="padding:0 2px 5px;font-size:10px;font-weight:800;color:#17212b"><span style="display:block;margin-bottom:2px;font-size:8px;text-transform:uppercase;letter-spacing:.04em;color:#536273">Customer Print</span>${esc(row.customer_print || row.customer || "")}</div><div class="signature-box"><div class="signature-head"><span>Customer Signature</span><span>Date: __________</span></div><div class="signature-content">${signatureHtml(row.customer_signature)}</div><div class="signature-note">Customer acknowledgement</div></div></div><div class="signatory"><div class="signatory-name" style="padding:0 2px 5px;font-size:10px;font-weight:800;color:#17212b"><span style="display:block;margin-bottom:2px;font-size:8px;text-transform:uppercase;letter-spacing:.04em;color:#536273">Driver Print</span>${esc(row.driver_print || row.driver_name || "")}</div><div class="signature-box"><div class="signature-head"><span>Driver Signature</span><span>Date: __________</span></div><div class="signature-content">${signatureHtml(row.driver_signature)}</div><div class="signature-note">Driver certification</div></div></div></div>
