@@ -2475,7 +2475,7 @@ function isLocationSuggestInput(input) {
 }
 
 function isTruckingJobsiteSuggestInput(input) {
-  return input?.dataset?.suggestSource === "trucking_jobsites";
+  return input?.dataset?.suggestSource === "trucking_jobsites" || input?.dataset?.suggestList === "truckJobsiteOptions" || input?.getAttribute?.('list') === "truckJobsiteOptions";
 }
 
 function truckingJobsiteSuggestRows() {
@@ -2601,18 +2601,59 @@ function accountSuggestOptions(input) {
 }
 
 async function ensurePartyMasterSuggestRows(force = false) {
-  if (partyMasterMeta.loaded && !force) return partyMasterMeta;
-  const [customers, vendors] = await Promise.all([
-    (force ? getAll("customers") : getViewRows("customers")),
-    (force ? getAll("vendors") : getViewRows("vendors")),
-  ]);
-  partyMasterMeta = {
-    customers: customers.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" })),
-    vendors: vendors.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" })),
-    loaded: true,
-  };
-  productMeta.customerRows = partyMasterMeta.customers;
+  const results = await Promise.allSettled(['customers','vendors'].map(kind => loadSuggestMaster(kind, force)));
+  partyMasterMeta.loaded = results.every(result => result.status === 'fulfilled');
   return partyMasterMeta;
+}
+
+const suggestMasterLoads = new Map();
+function suggestMasterKind(input) {
+  const source = input?.dataset?.suggestSource;
+  if (['customer','customers'].includes(source)) return 'customers';
+  if (source === 'vendors') return 'vendors';
+  if (source === 'trucking_jobsites' || input?.dataset?.suggestList === 'truckJobsiteOptions' || input?.getAttribute?.('list') === 'truckJobsiteOptions') return 'trucking_jobsites';
+  return '';
+}
+async function loadSuggestMaster(kind, force = false) {
+  const user = session?.user?.id || '';
+  const key = user + ':' + kind;
+  let state = suggestMasterLoads.get(key);
+  if (state?.promise) return state.promise;
+  if (!force && state?.loaded && Date.now() - state.loaded < 300000) return;
+  state = {loading:true,error:'',loaded:0};
+  suggestMasterLoads.set(key,state);
+  state.promise = (async () => {
+    const read = table => force ? getAll(table, {strict:true}) : getPagedViewRows(table);
+    if (kind === 'customers' || kind === 'vendors') {
+      const rows = await read(kind);
+      if ((session?.user?.id || '') !== user) return;
+      partyMasterMeta[kind] = rows;
+      if (kind === 'customers') {
+        productMeta.customerRows = rows;
+        productMeta.truckingCustomerRows = rows;
+        productMeta.truckingCustomers = rows.map(row => row.name || row.customer || row.customer_name).filter(Boolean);
+      }
+    } else {
+      const results = await Promise.allSettled([
+        getAll('assets',{strict:true,columns:'id,location'}), read('asset_locations'), read('locations')
+      ]);
+      if ((session?.user?.id || '') !== user) return;
+      const rows = new Map((productMeta.truckingJobsiteRows || []).map(row => [row.name.toLowerCase(),row]));
+      results.forEach((result,index) => {
+        if (result.status !== 'fulfilled') return;
+        for (const row of result.value) {
+          const name = String(index === 0 ? row.location || '' : row.name || row.jobsite || row.location || '').trim();
+          if (name) rows.set(name.toLowerCase(),{name,source:['Fleet & Equipment','Jobsite Master','Location Master'][index]});
+        }
+      });
+      productMeta.truckingJobsiteRows = [...rows.values()].sort((a,b)=>a.name.localeCompare(b.name));
+      productMeta.truckingJobsites = productMeta.truckingJobsiteRows.map(row=>row.name);
+      if (results.some(result=>result.status==='rejected')) throw new Error('Some locations could not load. Retry to load the complete list.');
+    }
+    state.loaded = Date.now();
+  })().catch(error => {state.error = 'Could not load choices. ' + (error.message || 'Please retry.'); throw error;})
+    .finally(() => {state.loading=false;state.promise=null; if ((session?.user?.id || '') === user) refreshSuggestMenu();});
+  return state.promise;
 }
 
 function partySuggestOptions(input, rows = []) {
@@ -2626,7 +2667,8 @@ function partySuggestOptions(input, rows = []) {
     const phone = String(row.phone || "").trim();
     const termsValue = String(row.terms || "").trim();
     const status = String(row.credit_status || row.status || "").trim();
-    const haystack = `${reference} ${name} ${email} ${phone} ${termsValue} ${status}`.toLowerCase();
+    const initials = name.replace(/\b(incorporated|inc|llc|ltd|corp|corporation)\b/gi,'').match(/\b[a-z]/gi)?.join('') || '';
+    const haystack = `${reference} ${name} ${email} ${phone} ${termsValue} ${status} ${initials}`.toLowerCase();
     if (!name || !terms.every((term) => haystack.includes(term))) return null;
     const nameLower = name.toLowerCase();
     const referenceLower = reference.toLowerCase();
@@ -3137,6 +3179,10 @@ function invoiceSuggestOptionMarkup(value) {
 
 function showSuggestMenu(input) {
   if (!isSuggestPicker(input)) return;
+  const masterKind = suggestMasterKind(input);
+  const masterKey = (session?.user?.id || '') + ':' + masterKind;
+  const priorMasterState = suggestMasterLoads.get(masterKey);
+  if (masterKind && (!priorMasterState || (!priorMasterState.loading && !priorMasterState.error && Date.now() - priorMasterState.loaded >= 300000))) void loadSuggestMaster(masterKind, Boolean(priorMasterState)).catch(()=>{});
   queuePartSearch(input);
   queueWorkOrderSearch(input);
   activeSuggestInput = input;
@@ -3172,6 +3218,17 @@ function showSuggestMenu(input) {
     try { menu.showPopover(); } catch { /* The fixed-position fallback remains visible. */ }
   }
   const workOrderState = remoteWorkOrderInputs.get(input);
+  const masterState = suggestMasterLoads.get(masterKey);
+  if (masterKind && (masterState?.loading || masterState?.error)) {
+    const status = document.createElement('div'); status.className='suggest-empty'; status.setAttribute('role','status');
+    status.textContent = masterState.error || 'Loading choices…';
+    if (masterState.error) {
+      const retry=document.createElement('button'); retry.type='button'; retry.textContent='Retry';
+      retry.onclick=event=>{event.preventDefault();void loadSuggestMaster(masterKind,true).catch(()=>{});showSuggestMenu(input);};
+      status.append(retry);
+    }
+    if (!options.length) menu.replaceChildren(status); else menu.prepend(status);
+  }
   if (isWorkOrderSuggestInput(input) && (workOrderState?.loading || workOrderState?.error)) {
     const status = document.createElement('div');
     status.className = 'suggest-empty';
@@ -33942,9 +33999,9 @@ async function loadTruckingLookups({ useCache = true, formOnly = false, dispatch
     readRows("assets", { columns: "id,asset_tag,type,general_type,name,make,model,vin_serial,plate,location,status,size" }).catch(() => []),
     readRows("outside_customer_fleet", { columns: "id,reference,customer_name,vin,model,make,description,status,plate" }).catch(() => []),
     readRows("app_profiles"),
-    dispatchOnly ? Promise.resolve(productMeta.truckingCustomerRows || []) : readRows("customers").catch(() => []),
-    dispatchOnly ? Promise.resolve(productMeta.truckingJobsiteRows || []) : readRows("asset_locations").catch(() => []),
-    dispatchOnly ? Promise.resolve(productMeta.truckingJobsiteRows || []) : readRows("locations").catch(() => []),
+    dispatchOnly ? Promise.resolve(productMeta.truckingCustomerRows || []) : getPagedViewRows("customers").catch(() => null),
+    dispatchOnly ? Promise.resolve(productMeta.truckingJobsiteRows || []) : getPagedViewRows("asset_locations").catch(() => null),
+    dispatchOnly ? Promise.resolve(productMeta.truckingJobsiteRows || []) : getPagedViewRows("locations").catch(() => null),
     formOnly ? Promise.resolve([]) : readRows("trucking_payroll_hours").catch(() => []),
   ]);
   if (!dispatchOnly) productMeta.truckingMoves = moves;
@@ -34030,8 +34087,11 @@ async function loadTruckingLookups({ useCache = true, formOnly = false, dispatch
     .map((user) => [String(user.id), user]));
   productMeta.truckingPayrollPeople = [...payrollPeopleById.values()];
   if (dispatchOnly) return;
-  productMeta.truckingCustomerRows = customers || [];
-  productMeta.truckingCustomers = (customers || []).map((row) => row.name || row.customer || row.customer_name).filter(Boolean);
+  if (customers) {
+    partyMasterMeta.customers = customers;
+    productMeta.truckingCustomerRows = customers;
+    productMeta.truckingCustomers = customers.map((row) => row.name || row.customer || row.customer_name).filter(Boolean);
+  }
   const fleetJobsites = (fleet || []).flatMap((asset) => [
     asset.location,
     asset.jobsite,
@@ -34046,6 +34106,7 @@ async function loadTruckingLookups({ useCache = true, formOnly = false, dispatch
     if (!jobsiteSources.has(key)) jobsiteSources.set(key, { name, sources: new Set() });
     jobsiteSources.get(key).sources.add(source);
   };
+  if (!jobsites || !locations) (productMeta.truckingJobsiteRows || []).forEach(row => addJobsiteSource(row.name,row.source));
   fleetJobsites.forEach((value) => addJobsiteSource(value, "Fleet & Equipment"));
   (jobsites || []).forEach((row) => addJobsiteSource(row.name || row.jobsite || row.location, "Jobsite Master"));
   (locations || []).forEach((row) => addJobsiteSource(row.name || row.location, "Location Master"));
