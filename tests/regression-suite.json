@@ -146,5 +146,6 @@
   "dashboard-summary-loading",
   "request-ticket-view-search",
   "container-move-count",
-  "copy-request-dispatch"
+  "copy-request-dispatch",
+  "suggest-master-loading"
 ]
