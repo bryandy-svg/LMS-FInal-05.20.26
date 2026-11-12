@@ -1883,12 +1883,12 @@ function restoreTransientTableState(wrap) {
   const state = transientTableFilterState.get(transientTableKey(wrap));
   if (!state) return;
   wrap.querySelectorAll(".column-filter").forEach((input) => {
-    const saved = state.filters?.find((item) => item.col === (input.dataset.col || ""));
+    const saved = savedTableColumnState(state.filters, input);
     input.value = saved?.value || "";
     setSelectedExcelFilterValues(input, saved?.selected || []);
   });
   wrap.querySelectorAll(".column-sort").forEach((select) => {
-    select.value = state.sorts?.find((item) => item.col === (select.dataset.col || ""))?.value || "";
+    select.value = savedTableColumnState(state.sorts, select)?.value || "";
   });
   wrap.classList.toggle("filters-hidden", !!state.filtersHidden);
   tableFilterRows(wrap).forEach((row) => { row.hidden = !!state.filtersHidden; });
@@ -3680,14 +3680,29 @@ function getHeaderLabel(th) {
   return normalizeFilterText(th?.querySelector?.(".th-label")?.textContent || th?.textContent || "Column");
 }
 
+function tableFilterColumnKey(control) {
+  const cell = control.closest('th, td');
+  const table = control.closest('table');
+  const header = table?.tHead?.rows[0]?.cells[cell?.cellIndex];
+  const input = cell?.querySelector('.column-filter');
+  return input?.dataset.productColumnFilter || header?.dataset.colKey || header?.dataset.reportColumn
+    || input?.getAttribute('placeholder') || (header ? getHeaderLabel(header) : '') || '';
+}
+
+function savedTableColumnState(items, control) {
+  const key = tableFilterColumnKey(control);
+  return items?.find(item => item.key ? item.key === key : item.col === (control.dataset.col || ''));
+}
+
 function collectCurrentTableView(wrap) {
   return {
     filters: [...wrap.querySelectorAll(".column-filter")].map((input) => ({
       col: input.dataset.col || "",
+      key: tableFilterColumnKey(input),
       value: input.value || "",
       selected: selectedExcelFilterValues(input),
     })),
-    sorts: [...wrap.querySelectorAll(".column-sort")].map((select) => ({ col: select.dataset.col || "", value: select.value || "" })),
+    sorts: [...wrap.querySelectorAll(".column-sort")].map((select) => ({ col: select.dataset.col || "", key: tableFilterColumnKey(select), value: select.value || "" })),
     filtersHidden: wrap.classList.contains("filters-hidden"),
     compact: document.body.classList.contains("compact-tables"),
   };
@@ -3709,12 +3724,12 @@ function applySavedTableView(button) {
   const view = readTableViews(wrap).find((item) => item.name === button.dataset.applyTableView);
   if (!view) return;
   wrap.querySelectorAll(".column-filter").forEach((input) => {
-    const saved = view.filters?.find((item) => item.col === (input.dataset.col || ""));
+    const saved = savedTableColumnState(view.filters, input);
     input.value = saved?.value || "";
     setSelectedExcelFilterValues(input, saved?.selected || []);
   });
   wrap.querySelectorAll(".column-sort").forEach((select) => {
-    select.value = view.sorts?.find((item) => item.col === (select.dataset.col || ""))?.value || "";
+    select.value = savedTableColumnState(view.sorts, select)?.value || "";
   });
   wrap.classList.toggle("filters-hidden", !!view.filtersHidden);
   tableFilterRows(wrap).forEach((row) => { row.hidden = !!view.filtersHidden; });
@@ -22790,12 +22805,12 @@ function renderFilteredRepairs() {
 
 function restoreTableViewState(wrap, view) {
   wrap.querySelectorAll(".column-filter").forEach((input) => {
-    const saved = view.filters?.find((item) => item.col === (input.dataset.col || ""));
+    const saved = savedTableColumnState(view.filters, input);
     input.value = saved?.value || "";
     setSelectedExcelFilterValues(input, saved?.selected || []);
   });
   wrap.querySelectorAll(".column-sort").forEach((select) => {
-    select.value = view.sorts?.find((item) => item.col === (select.dataset.col || ""))?.value || "";
+    select.value = savedTableColumnState(view.sorts, select)?.value || "";
   });
   wrap.classList.toggle("filters-hidden", Boolean(view.filtersHidden));
   tableFilterRows(wrap).forEach((row) => { row.hidden = Boolean(view.filtersHidden); });
