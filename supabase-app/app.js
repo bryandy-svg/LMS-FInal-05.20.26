@@ -6846,7 +6846,7 @@ async function renderCompleteAccountingView(request) {
   const closeDateReady = loadAccountingCloseDate();
   const reportFrom = sessionStorage.getItem("lms.accountingReportFrom") || "";
   const reportTo = sessionStorage.getItem("lms.accountingReportTo") || today();
-  let [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers] = await Promise.all([
+  let [gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers, arWorkOrders, arAssets, arOutsideFleet] = await Promise.all([
     getViewRows("general_ledger"),
     getViewRows("chart_of_accounts"),
     getViewRows("invoices"),
@@ -6862,6 +6862,9 @@ async function renderCompleteAccountingView(request) {
     getViewRows("stock_movements"),
     getViewRows("check_runs").catch(() => []),
     getViewRows("customers").catch(() => []),
+    accountingTab === "ar" ? getPagedViewRows("work_orders") : null,
+    accountingTab === "ar" ? getPagedViewRows("assets") : null,
+    accountingTab === "ar" ? getPagedViewRows("outside_customer_fleet") : null,
     closeDateReady,
   ]);
   if (request !== accountingLoadRequest || currentView !== "accounting") return;
@@ -6889,11 +6892,11 @@ async function renderCompleteAccountingView(request) {
   }
   if (request !== accountingLoadRequest || currentView !== "accounting") return;
   console.info("[Accounting] Report ready", Date.now() - started, "ms");
-  renderLoadedAccountingView({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers, reportFrom, reportTo, reportTab: accountingTab });
+  renderLoadedAccountingView({ gl, coa, invoices, invoiceLines, payments, pos, poLines, receipts, salesOrders, salesLines, bankRows, products, movements, checkRuns, customers, arWorkOrders, arAssets, arOutsideFleet, reportFrom, reportTo, reportTab: accountingTab });
 }
 
 function renderLoadedAccountingView(source) {
-  if (source._ledgerOnly && !isLedgerOnlyAccountingTab(accountingTab)) {
+  if ((source._ledgerOnly && !isLedgerOnlyAccountingTab(accountingTab)) || (accountingTab === "ar" && !source.arWorkOrders)) {
     return renderAccountingView({ complete: true });
   }
   // A fast tab switch invalidates any older report load still in flight.
@@ -7898,12 +7901,19 @@ function poApSummary(po) {
 }
 
 function accountsReceivableRows(data) {
+  const workOrders = new Map((data.arWorkOrders || []).map(wo => [wo.wo_no, wo]));
+  const salesOrders = new Map((data.salesOrders || []).map(order => [order.order_no, order]));
   const rows = data.invoices.map((inv) => {
     const total = invoiceTotal(inv);
     const paid = invoicePaid(inv);
     const storedInvoiceNo = inv.invoice_no;
     const invoiceNo = /work order|repair/i.test(inv.type || "") && inv.source_ref ? inv.source_ref : storedInvoiceNo;
-    return { id: inv.id, customer: inv.customer, invoice_no: invoiceNo, stored_invoice_no: storedInvoiceNo, invoice_date: inv.invoice_date, due_date: inv.due_date, type: inv.type, source_ref: inv.source_ref, total, paid, balance: Math.max(0, total - paid), status: inv.status || "Open", credit_applied: 0, credit_remaining: total < 0 ? Math.abs(total) : 0 };
+    const wo = /work order|repair/i.test(inv.type || "") ? workOrders.get(inv.source_ref || storedInvoiceNo) : null;
+    const order = salesOrders.get(inv.source_ref);
+    const customer_po = inv.customer_po || wo?.customer_po || order?.customer_po || order?.source_po_no || "";
+    const jobsite = inv.jobsite_location || wo?.jobsite_location || order?.jobsite_location || "";
+    const equipment_name = wo ? wo.asset_description || (wo.asset_tag?.trim() && workOrderAssetDetailsFromLists(wo, data.arAssets, data.arOutsideFleet).name) || "" : "";
+    return { id: inv.id, customer_po, jobsite, equipment_name, customer: inv.customer, invoice_no: invoiceNo, stored_invoice_no: storedInvoiceNo, invoice_date: inv.invoice_date, due_date: inv.due_date, type: inv.type, source_ref: inv.source_ref, total, paid, balance: Math.max(0, total - paid), status: inv.status || "Open", credit_applied: 0, credit_remaining: total < 0 ? Math.abs(total) : 0 };
   }).filter((row) => !/void|reverse/i.test(row.status));
 
   // Negative Beginning AR documents are customer credits, not cash receipts.
@@ -7981,8 +7991,8 @@ function accountsReceivableRowsForTab(rows, tab = accountsReceivableTab) {
 
 function accountsReceivableTableHtml(rows) {
   currentRows = rows;
-  const heads = ["", "Customer", "Invoice #", "Invoice Date", "Due Date", "Type", "Source", "Invoice Total", "Paid / Written Off", "Balance", "Status", ""];
-  return `<div class="table-wrap ar-receivable-table"><table><thead><tr>${heads.map((head, index) => `<th>${index === 0 ? '<input id="selectVisibleArInvoices" type="checkbox" title="Select all visible invoices" aria-label="Select all visible invoices">' : esc(head)}</th>`).join("")}</tr><tr>${heads.map((head, index) => `<th>${index === 0 || index === heads.length - 1 ? "" : `<input class="column-filter" data-col="${index}" placeholder="Filter ${esc(head)}">`}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((row) => `<tr data-ar-invoice-row="${esc(row.invoice_no)}"><td><input class="ar-invoice-select" type="checkbox" value="${esc(row.invoice_no)}" ${Number(row.balance || 0) <= 0.005 ? "disabled" : ""} aria-label="Select invoice ${esc(row.invoice_no)}"></td><td>${esc(row.customer || "")}</td><td><button type="button" class="table-text-button" data-ar-invoice-view="${esc(row.invoice_no)}" title="Open invoice ${esc(row.invoice_no)}">${esc(row.invoice_no || "")}</button></td><td>${esc(formatDisplayDate(row.invoice_date))}</td><td>${esc(formatDisplayDate(row.due_date))}</td><td>${esc(row.type || "")}</td><td>${esc(row.source_ref || "")}</td><td>${money(row.total)}</td><td><button type="button" class="table-text-button money-link" data-ar-paid-history="${esc(row.invoice_no)}" title="View all payments and write-offs for ${esc(row.invoice_no)}">${money(row.paid)}</button></td><td>${money(row.balance)}</td><td>${badge(row.status)}</td><td>${arRowActions(row)}</td></tr>`).join("") : `<tr><td colspan="${heads.length}" class="empty">No records yet.</td></tr>`}</tbody></table></div>`;
+  const heads = ["", "Customer", "Invoice #", "Invoice Date", "Due Date", "Type", "Source", "Customer PO #", "Equipment Name", "Jobsite", "Invoice Total", "Paid / Written Off", "Balance", "Status", ""];
+  return `<div class="table-wrap ar-receivable-table"><table><thead><tr>${heads.map((head, index) => `<th>${index === 0 ? '<input id="selectVisibleArInvoices" type="checkbox" title="Select all visible invoices" aria-label="Select all visible invoices">' : esc(head)}</th>`).join("")}</tr><tr>${heads.map((head, index) => `<th>${index === 0 || index === heads.length - 1 ? "" : `<input class="column-filter" data-col="${index}" placeholder="Filter ${esc(head)}">`}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((row) => `<tr data-ar-invoice-row="${esc(row.invoice_no)}"><td><input class="ar-invoice-select" type="checkbox" value="${esc(row.invoice_no)}" ${Number(row.balance || 0) <= 0.005 ? "disabled" : ""} aria-label="Select invoice ${esc(row.invoice_no)}"></td><td>${esc(row.customer || "")}</td><td><button type="button" class="table-text-button" data-ar-invoice-view="${esc(row.invoice_no)}" title="Open invoice ${esc(row.invoice_no)}">${esc(row.invoice_no || "")}</button></td><td>${esc(formatDisplayDate(row.invoice_date))}</td><td>${esc(formatDisplayDate(row.due_date))}</td><td>${esc(row.type || "")}</td><td>${esc(row.source_ref || "")}</td><td>${esc(row.customer_po || "")}</td><td>${esc(row.equipment_name || "")}</td><td>${esc(row.jobsite || "")}</td><td>${money(row.total)}</td><td><button type="button" class="table-text-button money-link" data-ar-paid-history="${esc(row.invoice_no)}" title="View all payments and write-offs for ${esc(row.invoice_no)}">${money(row.paid)}</button></td><td>${money(row.balance)}</td><td>${badge(row.status)}</td><td>${arRowActions(row)}</td></tr>`).join("") : `<tr><td colspan="${heads.length}" class="empty">No records yet.</td></tr>`}</tbody></table></div>`;
 }
 
 function openArPaymentHistoryModal(data, invoiceNo) {
