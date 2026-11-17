@@ -42717,6 +42717,7 @@ async function openAssetCopyModal(asset) {
     id: null,
     asset_tag: nextTag,
     vin_serial: "",
+    engine_number: "",
     plate: "",
     old_qr_code: "",
     qr_code: "",
@@ -42775,6 +42776,9 @@ async function openAssetModal(asset = null, options = {}) {
       ${productSelect("Color", "color", assetFieldOptions("color"), asset?.color || "")}
       ${productSelect("Size", "size", assetFieldOptions("size"), asset?.size || "")}
       ${productInput("VIN / Serial", "vin_serial", asset?.vin_serial || "")}
+      ${productInput("Engine #", "engine_number", asset?.engine_number || "")}
+      ${productInput("Engine Make", "engine_make", asset?.engine_make || "")}
+      ${productInput("Engine Model", "engine_model", asset?.engine_model || "")}
       ${productInput("Plate", "plate", asset?.plate || "")}
       ${productInput("Old QR Code", "old_qr_code", isCopy ? "" : assetOldQrCode(asset || { asset_tag: assetTag }))}
       ${productInput("QR printed / tagged", "qr_printed_tagged", asset?.qr_printed_tagged || "")}
