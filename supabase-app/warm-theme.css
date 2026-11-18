@@ -65,3 +65,32 @@
   }
 }
 
+
+@media screen {
+  :root[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  :root[data-theme="dark"] select,
+  :root[data-theme="dark"] textarea {
+    background-color: #18252e !important;
+    color: #f1f5f9 !important;
+    -webkit-text-fill-color: #f1f5f9 !important;
+    border-color: #71838f;
+    caret-color: #ffffff;
+    color-scheme: dark;
+  }
+  :root[data-theme="dark"] input::placeholder,
+  :root[data-theme="dark"] textarea::placeholder {
+    color: #b4c2cc !important;
+    -webkit-text-fill-color: #b4c2cc !important;
+    opacity: 1;
+  }
+  :root[data-theme="dark"] input:autofill {
+    box-shadow: 0 0 0 1000px #18252e inset !important;
+  }
+  :root[data-theme="dark"] input:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 1000px #18252e inset !important;
+  }
+  :root[data-theme="dark"] select option {
+    background: #18252e;
+    color: #f1f5f9;
+  }
+}
