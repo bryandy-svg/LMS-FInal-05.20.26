@@ -7185,7 +7185,7 @@ function accountingPanelHtml(data, tab) {
         <button class="${accountsPayableTab === "review" ? "active" : ""}" data-ap-tab="review">Needs Review ${accountsPayableRowsForTab(allApRows, "review").length}</button>
         <button class="${accountsPayableTab === "all" ? "active" : ""}" data-ap-tab="all">All AP ${accountsPayableRowsForTab(allApRows, "all").length}</button>
       </div>
-      ${accountingTable(apRows, ["Vendor", "PO", "PO Date", "Invoice #", "Invoice Date", "Due Date", "Invoice Amount", "Written Off", "Open Balance", "Match", "Payment", "Status", ""], (r) => [r.vendor, `${accountingPurchaseOrderLink(data, r.po_no)}${r.receipt_nos ? `<small class="cell-subtext">GR: ${esc(r.receipt_nos)}</small>` : ""}`, r.po_date, r.invoice_no, r.invoice_date, r.due_date, money(r.invoice_amount), money(r.written_off), money(r.balance), badge(r.match), apPaymentCell(r), badge(r.status), apRowActions(r)])}`;
+      ${accountingTable(apRows, ["Vendor", "PO", "PO Date", "Invoice #", "Invoice Date", "Posting Date", "Due Date", "Invoice Amount", "Written Off", "Open Balance", "Match", "Payment", "Status", ""], (r) => [r.vendor, `${accountingPurchaseOrderLink(data, r.po_no)}${r.receipt_nos ? `<small class="cell-subtext">GR: ${esc(r.receipt_nos)}</small>` : ""}`, r.po_date, r.invoice_no, r.invoice_date, r.posting_date || "", r.due_date, money(r.invoice_amount), money(r.written_off), money(r.balance), badge(r.match), apPaymentCell(r), badge(r.status), apRowActions(r)])}`;
   }
   if (tab === "ar") {
     const allArRows = accountsReceivableRows(data);
@@ -7750,13 +7750,21 @@ function accountsPayableRows(data) {
       && ["Purchase Order", "Landed Cost Invoice", "Manual Journal"].includes(row.source)
       && !/reversed|void/i.test(row.status || "")
       && (!receiptGroup || normalizeCheckRunDocumentKey(row.invoice_no) === normalizeCheckRunDocumentKey(ap.invoice_no)));
+    const postingDates = uniqueTextList((data.allGl || data.gl || []).filter((row) =>
+      row.reference === po.po_no
+      && ["Purchase Order", "Landed Cost Invoice", "Manual Journal", "Beginning Balance"].includes(row.source)
+      && /accounts payable/i.test(row.account || "")
+      && Number(row.credit || 0) > 0
+      && !/reversed|void/i.test(row.status || "")
+      && (!receiptGroup || normalizeCheckRunDocumentKey(row.invoice_no) === normalizeCheckRunDocumentKey(ap.invoice_no))
+    ).map((row) => row.posting_date || row.entry_date)).sort().join(", ");
     const writtenOff = (data.allGl || data.gl || []).filter((row) => row.reference === po.po_no && /ap write-off/i.test(row.source || "") && !/reverse|void/i.test(row.status || "")).reduce((sum, row) => /accounts payable/i.test(row.account || "") ? sum + Number(row.debit || 0) - Number(row.credit || 0) : sum, 0);
     const fullyPaid = /paid/i.test(`${po.payment_status || ""} ${po.status || ""}`);
     const rawBalance = fullyPaid ? 0 : roundCurrency(ap.invoice_amount) - Math.max(0, roundCurrency(writtenOff));
     const balance = Math.abs(rawBalance) <= 0.0050001 ? 0 : Math.max(0, roundCurrency(rawBalance));
     const writeOffStatus = balance <= 0.005 && writtenOff > 0 ? "Written Off" : isBeginningAp ? "Beginning AP" : isManualJournalAp ? "Manual Journal AP" : isLandedAp ? "Landed Cost AP" : apPosted ? "AP Posted" : receiptGroup ? "Partially Received" : ap.status;
     const receiptNos = uniqueTextList(activeReceipts(scopedPo).map((row) => row.gr_no)).join(", ");
-    return { id: po.id, vendor: po.vendor, po_no: po.po_no, po_date: po.po_date, receipt_nos: receiptNos, invoice_no: ap.invoice_no, invoice_date: ap.invoice_date, due_date: ap.due_date, po_total: poTotalAmount, received, invoice_amount: ap.invoice_amount, written_off: Math.max(0, writtenOff), balance, match: isManualJournalAp ? "Matched" : ap.match, payment: balance <= 0.005 && writtenOff > 0 ? "Written Off" : isManualJournalAp ? "Ready to Pay" : ap.payment, status: writeOffStatus, ap_posted: apPosted, beginning_ap: isBeginningAp, landed_cost_ap: isLandedAp, manual_journal_ap: isManualJournalAp, partial_receipt: Boolean(receiptGroup), receipt_group_key: receiptGroup?.key || "" };
+    return { id: po.id, vendor: po.vendor, po_no: po.po_no, po_date: po.po_date, posting_date: postingDates, receipt_nos: receiptNos, invoice_no: ap.invoice_no, invoice_date: ap.invoice_date, due_date: ap.due_date, po_total: poTotalAmount, received, invoice_amount: ap.invoice_amount, written_off: Math.max(0, writtenOff), balance, match: isManualJournalAp ? "Matched" : ap.match, payment: balance <= 0.005 && writtenOff > 0 ? "Written Off" : isManualJournalAp ? "Ready to Pay" : ap.payment, status: writeOffStatus, ap_posted: apPosted, beginning_ap: isBeginningAp, landed_cost_ap: isLandedAp, manual_journal_ap: isManualJournalAp, partial_receipt: Boolean(receiptGroup), receipt_group_key: receiptGroup?.key || "" };
     });
   }).filter((row) => !/cancel/i.test(row.status)
     && Number(row.invoice_amount || row.received || 0) > 0
