@@ -7961,7 +7961,7 @@ function accountsReceivableRows(data) {
       row.status = row.credit_remaining <= 0.005 ? "Applied" : "Credit Available";
     } else if (row.balance <= 0.005) {
       row.balance = 0;
-      row.status = /written off/i.test(row.status || "") ? "Written Off" : "Paid";
+      row.status = /reclassified/i.test(row.status || "") ? "Reclassified" : /written off/i.test(row.status || "") ? "Written Off" : "Paid";
     } else if (row.paid > 0.005) {
       row.status = "Partial";
     }
@@ -8089,7 +8089,7 @@ async function openBatchArSettlementModal(data, selectedRows = null) {
   ["salesOrderSaveOnlyBtn", "salesOrderPdfModalBtn", "salesOrderInvoiceModalBtn", "salesOrderInvoiceHistoryModalBtn", "salesOrderCreatePoModalBtn", "poSaveOnlyBtn", "poReceiveBtn", "journalSaveOnlyBtn", "workOrderSaveOnlyBtn", "closeFinalizeWoBtn"].forEach((id) => document.getElementById(id)?.remove());
   $("modalTitle").textContent = `Process ${rows.length} selected invoice${rows.length === 1 ? "" : "s"}`;
   $("modalBody").innerHTML = `<div class="form-grid ar-batch-header">
-      ${productSelect("Action", "batch_action", ["Receive Payment", "Write Off"], "Receive Payment")}
+      ${productSelect("Action", "batch_action", ["Receive Payment", "Write Off", "Reclassification"], "Receive Payment")}
       ${productInput("Receipt / batch #", "receipt_no", receiptNo)}
       ${productInput("Payment date", "payment_date", today(), "date")}
       ${productInput("Customer", "customer", customers[0])}
@@ -8121,7 +8121,7 @@ async function openBatchArSettlementModal(data, selectedRows = null) {
   document.querySelectorAll(".ar-batch-amount").forEach((input) => input.addEventListener("input", updateTotal));
   const action = document.querySelector('[data-product-field="batch_action"]');
   const syncAction = () => {
-    const isWriteOff = action?.value === "Write Off";
+    const isWriteOff = ["Write Off", "Reclassification"].includes(action?.value);
     document.querySelectorAll(".ar-payment-field").forEach((field) => {
       field.hidden = isWriteOff;
       field.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = isWriteOff; });
@@ -8130,8 +8130,13 @@ async function openBatchArSettlementModal(data, selectedRows = null) {
       field.hidden = !isWriteOff;
       field.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = !isWriteOff; });
     });
+    const reclass = action?.value === "Reclassification";
+    const dateField = document.querySelector('[data-product-field="payment_date"]')?.closest(".field");
+    if (dateField) dateField.hidden = reclass;
+    const accountLabel = document.querySelector(".ar-writeoff-field label");
+    if (accountLabel) accountLabel.textContent = reclass ? "Destination account" : "Write-off charge account";
     const notice = document.getElementById("arBatchAccountingNotice");
-    if (notice) notice.innerHTML = isWriteOff
+    if (notice) notice.innerHTML = reclass ? "Debit the selected destination account and credit Accounts Receivable for each invoice allocation." : isWriteOff
       ? "<strong>Accounting entry:</strong> Debit the selected charge account for the combined write-off and credit Accounts Receivable for each invoice allocation."
       : "<strong>Accounting entry:</strong> Debit FHB Checking once for the combined payment and credit Accounts Receivable for each invoice allocation.";
   };
@@ -8180,7 +8185,7 @@ function restoreBatchArSettlementDraft(receiptNo, rows) {
 }
 
 async function finalizeBatchArSettlement(data, rows) {
-  const enteredDate = prompt("Posting date for this consolidated customer payment\n\nEnter as mm/dd/yyyy. The accounting and cash entries will use this date.", formatDisplayDate(today()));
+  const enteredDate = prompt("Posting date for this invoice settlement\n\nEnter as mm/dd/yyyy. The accounting entries will use this date.", formatDisplayDate(today()));
   if (enteredDate === null) return;
   const postingDate = parseFlexibleDate(enteredDate);
   if (!postingDate) return alert("Enter a valid posting date as mm/dd/yyyy.");
@@ -8224,9 +8229,38 @@ async function validateArSettlementAllocations(allocations, postingDate) {
   }
 }
 
+async function saveArReclassification(rows, record, postingDate) {
+  const allocations = [...document.querySelectorAll(".ar-batch-amount")].map(input => ({
+    id: rows.find(row => row.invoice_no === input.dataset.invoiceNo)?.id,
+    amount: Number(input.value || 0),
+  })).filter(item => item.id && item.amount > 0);
+  if (!record.offset_account || !String(record.notes || "").trim() || !postingDate || !allocations.length) {
+    return alert("Destination account, reason, posting date and invoice allocations are required.");
+  }
+  try {
+    const { error } = await supabase.rpc("post_ar_reclassification", {
+      p_batch: String(record.receipt_no || "").trim(),
+      p_date: postingDate,
+      p_account: record.offset_account,
+      p_reason: String(record.notes).trim(),
+      p_allocations: allocations,
+    });
+    if (error) throw error;
+    localStorage.removeItem(`lms.arPaymentDraft.${record.receipt_no}`);
+    productMeta.invoiceRows = null;
+    invalidateViewReads();
+    closeModal(true);
+    await renderAccountingView();
+    alert(`Reclassification ${record.receipt_no} posted.`);
+  } catch (error) {
+    alert(error.message || "Could not post reclassification.");
+  }
+}
+
 async function saveBatchArSettlement(data, rows, finalPostingDate = "") {
   const record = collectProductModalFields();
   const isWriteOff = record.batch_action === "Write Off";
+  if (record.batch_action === "Reclassification") return saveArReclassification(rows, record, finalPostingDate);
   const allocations = [...document.querySelectorAll(".ar-batch-amount")].map((input) => {
     const row = rows.find((item) => item.invoice_no === input.dataset.invoiceNo);
     return { row, amount: Number(input.value || 0) };
@@ -30013,8 +30047,9 @@ async function customerPaymentReversalAccount(payment) {
   const references = [...new Set([payment.receipt_no, batch].filter(Boolean))];
   const { data, error } = await supabase.from('general_ledger').select('*').in('reference', references);
   if (error) throw error;
-  const writeOff = /write.?off/i.test(payment.method || '');
-  const source = writeOff ? 'AR Write-Off' : 'Customer Payment';
+  const reclassification = payment.method === 'Reclassification';
+  const writeOff = reclassification || /write.?off/i.test(payment.method || '');
+  const source = reclassification ? 'AR Reclassification' : writeOff ? 'AR Write-Off' : 'Customer Payment';
   const rows = (data || []).filter(row => row.source === source && !/void|draft|unposted|reversed/i.test(row.status || ''));
   const allocation = rows.filter(row => subledgerAccountMatches(row.account, 'Accounts Receivable') && row.invoice_no === payment.invoice_no && row.customer === payment.customer);
   const amount = Number(payment.amount || 0);
