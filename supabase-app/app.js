@@ -3497,29 +3497,62 @@ function enhanceScrollableTables() {
 }
 
 function positionTableScrollbars() {
-  const visible = [...document.querySelectorAll(".table-top-scroll")].filter((scrollbar) => {
-    const wrap = scrollbar._tableWrap;
-    if (!wrap?.isConnected || scrollbar.hidden) return false;
+  let dock = document.getElementById("tableScrollDock");
+  if (!dock) {
+    dock = document.createElement("div");
+    dock.id = "tableScrollDock";
+    dock.className = "table-scroll-dock no-print";
+    dock.hidden = true;
+    dock.innerHTML = '<button type="button" aria-label="Scroll table left">◀</button><input type="range" min="0" step="1" value="0" aria-label="Scroll table horizontally"><button type="button" aria-label="Scroll table right">▶</button>';
+    document.body.appendChild(dock);
+    const modalRoot = document.getElementById("modal");
+    if (modalRoot) new MutationObserver(() => requestAnimationFrame(positionTableScrollbars))
+      .observe(modalRoot, { attributes: true, attributeFilter: ["style", "hidden", "class"] });
+    const slider = dock.querySelector("input");
+    const move = direction => {
+      const wrap = dock._tableWrap;
+      if (wrap) wrap.scrollLeft += direction * Math.max(100, wrap.clientWidth * 0.7);
+      positionTableScrollbars();
+    };
+    dock.firstElementChild.onclick = () => move(-1);
+    dock.lastElementChild.onclick = () => move(1);
+    slider.oninput = () => {
+      if (dock._tableWrap) dock._tableWrap.scrollLeft = Number(slider.value);
+    };
+  }
+  const modal = [...document.querySelectorAll(".modalbox")].reverse().find(box => {
+    const rect = box.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(box).visibility !== "hidden";
+  });
+  const footer = modal?.querySelector(".modalfoot")?.getBoundingClientRect();
+  const body = modal?.querySelector("#modalBody, .modalbody")?.getBoundingClientRect();
+  const visibleTop = body?.top || 0;
+  const visibleBottom = Math.min(window.innerHeight, footer?.top || body?.bottom || window.innerHeight);
+  const candidates = [...document.querySelectorAll(".table-top-scroll")].map(bar => {
+    bar.classList.remove("table-screen-scroll");
+    const wrap = bar._tableWrap;
+    wrap?.classList.remove("screen-scroll-source");
+    if (!wrap?.isConnected || (modal && !modal.contains(wrap))) return null;
     const rect = wrap.getBoundingClientRect();
-    return rect.top < window.innerHeight - 18 && rect.bottom > 18 && rect.width > 0 && rect.height > 0;
-  });
-  const active = visible.sort((a, b) => b._tableWrap.getBoundingClientRect().top - a._tableWrap.getBoundingClientRect().top)[0] || null;
-  document.querySelectorAll(".table-top-scroll").forEach((scrollbar) => {
-    const wrap = scrollbar._tableWrap;
-    const shouldFloat = scrollbar === active;
-    scrollbar.classList.toggle("table-screen-scroll", shouldFloat);
-    wrap?.classList.toggle("screen-scroll-source", shouldFloat);
-    if (shouldFloat) {
-      const rect = wrap.getBoundingClientRect();
-      const left = Math.max(0, rect.left);
-      const right = Math.min(window.innerWidth, rect.right);
-      scrollbar.style.left = `${left}px`;
-      scrollbar.style.width = `${Math.max(0, right - left)}px`;
-    } else {
-      scrollbar.style.removeProperty("left");
-      scrollbar.style.removeProperty("width");
-    }
-  });
+    const visibleHeight = Math.min(rect.bottom, visibleBottom) - Math.max(rect.top, visibleTop);
+    if (rect.width <= 0 || visibleHeight <= 32 || wrap.scrollWidth <= wrap.clientWidth + 1) return null;
+    return { wrap, rect, visibleHeight };
+  }).filter(Boolean).sort((a, b) => b.visibleHeight - a.visibleHeight);
+  const active = candidates[0];
+  dock.hidden = !active;
+  dock._tableWrap = active?.wrap || null;
+  if (!active) return;
+  const left = Math.max(8, active.rect.left);
+  const right = Math.min(window.innerWidth - 8, active.rect.right);
+  dock.style.left = left + "px";
+  dock.style.width = Math.max(0, right - left) + "px";
+  dock.style.bottom = Math.max(8, window.innerHeight - visibleBottom + 4) + "px";
+  const slider = dock.querySelector("input");
+  const max = active.wrap.scrollWidth - active.wrap.clientWidth;
+  slider.max = String(max);
+  slider.value = String(active.wrap.scrollLeft);
+  dock.firstElementChild.disabled = active.wrap.scrollLeft <= 0;
+  dock.lastElementChild.disabled = active.wrap.scrollLeft >= max - 1;
 }
 
 function positionOpenActionMenus() {
