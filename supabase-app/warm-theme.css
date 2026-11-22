@@ -96,31 +96,13 @@
 }
 
 @media screen {
-  .table-scroll-dock {
-    position: fixed;
-    z-index: 12000;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 6px 10px;
-    box-sizing: border-box;
-    border: 1px solid #7b9296;
-    border-radius: 10px;
-    background: #edf3f3;
-    box-shadow: 0 -3px 12px #0003;
-  }
-  .table-scroll-dock[hidden] { display: none; }
-  .table-scroll-dock input[type="range"] {
-    flex: 1;
-    width: 0;
-    min-width: 30px;
-    height: 32px;
-    margin: 0;
-    padding: 0;
-    accent-color: #245d62;
-    cursor: ew-resize;
-  }
-  .table-scroll-dock button { min-width: 44px; min-height: 36px; padding: 4px 10px; }
-  :root[data-theme="dark"] .table-scroll-dock { background: #18252e; border-color: #71838f; }
-  .table-wrap, .tablewrap, .purchase-order-table-wrap, .trial-balance-table-wrap { scroll-padding-bottom: 56px; }
+  :root { --scroll-thumb: #52777b; --scroll-track: #e5ece8; }
+  :root[data-theme="dark"] { --scroll-thumb: #a3b9c2; --scroll-track: #24323b; }
+  * { scrollbar-width: auto; scrollbar-color: var(--scroll-thumb) var(--scroll-track); }
+  ::-webkit-scrollbar { width: 16px; height: 16px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: var(--scroll-track); }
+  ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border: 3px solid var(--scroll-track); border-radius: 8px; min-height: 36px; }
+  ::-webkit-scrollbar-thumb:hover { background: #367078; }
+  .frozen-table-scroll::-webkit-scrollbar, .tablewrap::-webkit-scrollbar, .asset-table-wrap::-webkit-scrollbar { width: 16px; height: 16px; }
+  .modalbody { scrollbar-gutter: stable; }
 }

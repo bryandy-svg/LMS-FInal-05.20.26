@@ -3379,8 +3379,6 @@ function setupUiRecommendations() {
   });
   window.addEventListener("scroll", positionOpenActionMenus, true);
   window.addEventListener("resize", positionOpenActionMenus);
-  window.addEventListener("scroll", positionTableScrollbars, true);
-  window.addEventListener("resize", positionTableScrollbars);
   document.addEventListener("click", (event) => {
     const tab = event.target.closest?.(".tabbtn");
     if (tab && !tab.classList.contains("active")) clearTransientViewState();
@@ -3449,30 +3447,6 @@ function enhanceScrollableTables() {
     wrap.dataset.scrollHeaderEnhanced = "1";
     wrap.classList.add("frozen-table-scroll");
 
-    const topScroll = document.createElement("div");
-    topScroll.className = "table-top-scroll no-print";
-    topScroll.setAttribute("aria-label", "Horizontal table scrollbar");
-    topScroll.innerHTML = '<div class="table-top-scroll-content"></div>';
-    wrap.parentNode?.insertBefore(topScroll, wrap.nextSibling);
-    topScroll._tableWrap = wrap;
-    const topScrollContent = topScroll.firstElementChild;
-
-    let syncing = false;
-    const syncFromTop = () => {
-      if (syncing) return;
-      syncing = true;
-      wrap.scrollLeft = topScroll.scrollLeft;
-      syncing = false;
-    };
-    const syncFromTable = () => {
-      if (syncing) return;
-      syncing = true;
-      topScroll.scrollLeft = wrap.scrollLeft;
-      syncing = false;
-    };
-    topScroll.addEventListener("scroll", syncFromTop, { passive: true });
-    wrap.addEventListener("scroll", syncFromTable, { passive: true });
-
     const refresh = () => {
       if (!wrap.isConnected || !table.isConnected) return;
       const headerRows = [...table.tHead.rows].filter((row) => !row.hidden && getComputedStyle(row).display !== "none");
@@ -3481,10 +3455,6 @@ function enhanceScrollableTables() {
         [...row.cells].forEach((cell) => cell.style.setProperty("--sticky-table-row-top", `${top}px`));
         top += row.getBoundingClientRect().height;
       });
-      topScrollContent.style.width = `${Math.max(table.scrollWidth, wrap.clientWidth)}px`;
-      topScroll.hidden = table.scrollWidth <= wrap.clientWidth + 1;
-      topScroll.scrollLeft = wrap.scrollLeft;
-      positionTableScrollbars();
     };
 
     requestAnimationFrame(refresh);
@@ -3494,65 +3464,6 @@ function enhanceScrollableTables() {
       observer.observe(table);
     }
   });
-}
-
-function positionTableScrollbars() {
-  let dock = document.getElementById("tableScrollDock");
-  if (!dock) {
-    dock = document.createElement("div");
-    dock.id = "tableScrollDock";
-    dock.className = "table-scroll-dock no-print";
-    dock.hidden = true;
-    dock.innerHTML = '<button type="button" aria-label="Scroll table left">◀</button><input type="range" min="0" step="1" value="0" aria-label="Scroll table horizontally"><button type="button" aria-label="Scroll table right">▶</button>';
-    document.body.appendChild(dock);
-    const modalRoot = document.getElementById("modal");
-    if (modalRoot) new MutationObserver(() => requestAnimationFrame(positionTableScrollbars))
-      .observe(modalRoot, { attributes: true, attributeFilter: ["style", "hidden", "class"] });
-    const slider = dock.querySelector("input");
-    const move = direction => {
-      const wrap = dock._tableWrap;
-      if (wrap) wrap.scrollLeft += direction * Math.max(100, wrap.clientWidth * 0.7);
-      positionTableScrollbars();
-    };
-    dock.firstElementChild.onclick = () => move(-1);
-    dock.lastElementChild.onclick = () => move(1);
-    slider.oninput = () => {
-      if (dock._tableWrap) dock._tableWrap.scrollLeft = Number(slider.value);
-    };
-  }
-  const modal = [...document.querySelectorAll(".modalbox")].reverse().find(box => {
-    const rect = box.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && getComputedStyle(box).visibility !== "hidden";
-  });
-  const footer = modal?.querySelector(".modalfoot")?.getBoundingClientRect();
-  const body = modal?.querySelector("#modalBody, .modalbody")?.getBoundingClientRect();
-  const visibleTop = body?.top || 0;
-  const visibleBottom = Math.min(window.innerHeight, footer?.top || body?.bottom || window.innerHeight);
-  const candidates = [...document.querySelectorAll(".table-top-scroll")].map(bar => {
-    bar.classList.remove("table-screen-scroll");
-    const wrap = bar._tableWrap;
-    wrap?.classList.remove("screen-scroll-source");
-    if (!wrap?.isConnected || (modal && !modal.contains(wrap))) return null;
-    const rect = wrap.getBoundingClientRect();
-    const visibleHeight = Math.min(rect.bottom, visibleBottom) - Math.max(rect.top, visibleTop);
-    if (rect.width <= 0 || visibleHeight <= 32 || wrap.scrollWidth <= wrap.clientWidth + 1) return null;
-    return { wrap, rect, visibleHeight };
-  }).filter(Boolean).sort((a, b) => b.visibleHeight - a.visibleHeight);
-  const active = candidates[0];
-  dock.hidden = !active;
-  dock._tableWrap = active?.wrap || null;
-  if (!active) return;
-  const left = Math.max(8, active.rect.left);
-  const right = Math.min(window.innerWidth - 8, active.rect.right);
-  dock.style.left = left + "px";
-  dock.style.width = Math.max(0, right - left) + "px";
-  dock.style.bottom = Math.max(8, window.innerHeight - visibleBottom + 4) + "px";
-  const slider = dock.querySelector("input");
-  const max = active.wrap.scrollWidth - active.wrap.clientWidth;
-  slider.max = String(max);
-  slider.value = String(active.wrap.scrollLeft);
-  dock.firstElementChild.disabled = active.wrap.scrollLeft <= 0;
-  dock.lastElementChild.disabled = active.wrap.scrollLeft >= max - 1;
 }
 
 function positionOpenActionMenus() {
