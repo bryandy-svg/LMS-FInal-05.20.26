@@ -13,7 +13,7 @@ module.exports = async function(req,res) {
   const auth=await fetch(base+'/auth/v1/user',{headers:{apikey:key,Authorization:'Bearer '+token},signal:AbortSignal.timeout(15000)});
   if(!auth.ok)throw fail('Please sign in again.',401);
   const user=await auth.json();
-  const db=async(path,body)=>{const r=await fetch(base+'/rest/v1/'+path,{method:body?'POST':'GET',headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(20000)});if(!r.ok)throw fail('Could not complete the request. Please retry.',503);return r.json();};
+  const db=async(path,body)=>{const r=await fetch(base+'/rest/v1/'+path,{method:body?'POST':'GET',headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(20000)});if(!r.ok)throw fail('Could not complete the request. Please retry.',503);const text=await r.text();return text?JSON.parse(text):null;};
   const profiles=await db('app_profiles?id=eq.'+encodeURIComponent(user.id)+'&select=role');
   if(profiles[0]?.role!=='Administrator')throw fail('Only administrators can manage request portal accounts.',403);
   const input=typeof req.body==='string'?JSON.parse(req.body):req.body||{};
