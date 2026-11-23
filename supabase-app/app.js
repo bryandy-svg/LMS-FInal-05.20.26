@@ -5377,6 +5377,7 @@ async function loadView(view, listOptions = {}) {
     if (view === "aging") return await renderAgingSummaryView();
     if (view === "settings") return await renderSettingsView();
     if (tableMap[view]?.derived) return await renderDerived(view);
+    if (view === "users" && requestPortalUsersTab) return await renderRequestPortalUsers();
     currentCfg = tableMap[view];
     $("viewTitle").textContent = currentCfg.title;
     $("viewSub").textContent = currentCfg.sub;
@@ -45122,11 +45123,39 @@ async function incrementSequence(key) {
   await supabase.from("app_sequences").update({ next_number: Number(data.next_number || 0) + 1 }).eq("key", key);
 }
 
+let requestPortalUsersTab = false;
+function userAccountTabs() {
+ return `<div class="tabs"><button id="companyUsersTab" class="tabbtn ${!requestPortalUsersTab?'active':''}">Company Users</button><button id="portalUsersTab" class="tabbtn ${requestPortalUsersTab?'active':''}">Request Portal Users</button></div>`;
+}
+function bindUserAccountTabs() {
+ $('companyUsersTab').onclick=()=>{requestPortalUsersTab=false;loadView('users');};
+ $('portalUsersTab').onclick=()=>{requestPortalUsersTab=true;loadView('users');};
+}
+async function portalUsersAdmin(action,body={}) {
+ const response=await authenticatedAppFetch('/api/request-portal-admin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...body})});
+ const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not manage portal users.');return result;
+}
+async function renderRequestPortalUsers() {
+ $('viewTitle').textContent='Users';$('viewSub').textContent='Manage accounts created through Request Access.';
+ $('content').innerHTML=userAccountTabs()+'<section class="panel"><div class="toolbar"><input id="portalUserSearch" class="searchbox" placeholder="Search name, username, or email"></div><div id="portalUserResults" class="empty">Loading portal users…</div></section>';
+ bindUserAccountTabs();const host=$('portalUserResults');const search=$('portalUserSearch');const users=[];
+ const render=()=>{if(!host.isConnected)return;const q=search.value.toLowerCase();const rows=users.filter(u=>[u.full_name,u.username,u.email].join(' ').toLowerCase().includes(q));host.className='table-wrap';host.innerHTML=`<table><thead><tr><th>Name</th><th>Username</th><th>Email</th><th>Registered</th><th>Action</th></tr></thead><tbody>${rows.map(u=>`<tr><td>${esc(u.full_name)}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(formatDateTime(u.created_at))}</td><td><button data-portal-reset="${esc(u.id)}">Reset password</button></td></tr>`).join('')||'<tr><td colspan="5">No matching registered users.</td></tr>'}</tbody></table>`;host.querySelectorAll('[data-portal-reset]').forEach(b=>b.onclick=()=>openPortalPasswordReset(users.find(u=>u.id===b.dataset.portalReset)));};
+ search.oninput=render;
+ try {let page;do {page=(await portalUsersAdmin('list',{offset:users.length})).users;users.push(...page);if(!host.isConnected)return;}while(page.length===200);render();}catch(e){if(host.isConnected)host.textContent=e.message;}
+}
+function openPortalPasswordReset(user) {
+ $('modalTitle').textContent='Reset portal password';
+ $('modalBody').innerHTML=`<p><strong>${esc(user.full_name)}</strong><br>${esc(user.username)} · ${esc(user.email)}</p><div class="form-grid"><label>New password<input id="portalNewPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128"></label><label>Confirm new password<input id="portalConfirmPassword" type="password" autocomplete="new-password"></label></div><p>Use 10–128 characters. Existing portal sessions will be signed out. Share the new password with this person securely.</p><p id="portalPasswordMessage" role="status"></p>`;
+ $('modal').style.display='flex';$('modalSave').disabled=false;
+ $('modalSave').onclick=async()=>{const password=$('portalNewPassword').value;const message=$('portalPasswordMessage');if(password.length<10||password.length>128){message.textContent='Use 10–128 characters.';return;}if(password!==$('portalConfirmPassword').value){message.textContent='Passwords do not match.';return;}$('modalSave').disabled=true;message.textContent='Resetting password…';try{await portalUsersAdmin('reset',{id:user.id,password});$('portalNewPassword').value='';$('portalConfirmPassword').value='';message.textContent='Password reset. The user can now sign in with the new password.';}catch(e){message.textContent=e.message;$('modalSave').disabled=false;}};
+}
+
 function renderTableModule() {
   const masterUploadActions = ["vendors", "customers"].includes(currentView)
     ? `<button id="masterTemplateBtn">Download template</button><button id="masterUploadBtn">Upload master</button>`
     : "";
   $("content").innerHTML = `
+    ${currentView === "users" ? userAccountTabs() : ""}
     <section class="panel">
       <div class="toolbar">
         <input class="searchbox" id="search" placeholder="Search this module">
@@ -45135,6 +45164,7 @@ function renderTableModule() {
       <div class="panel-head"><div class="panel-title"><strong>${esc(currentCfg.title)}</strong><span>${esc(currentRows.length)} records shown.</span></div><div class="actions">${masterUploadActions}<button id="csvBtn">Excel CSV</button><button id="printBtn">PDF / Print</button></div></div>
       <div id="tableHost">${tableHtml(currentRows)}</div>
     </section>`;
+  if (currentView === "users") bindUserAccountTabs();
   $("search").oninput = () => {
     const q = $("search").value.toLowerCase();
     $("tableHost").innerHTML = tableHtml(currentRows.filter((r) => Object.values(r).join(" ").toLowerCase().includes(q)));

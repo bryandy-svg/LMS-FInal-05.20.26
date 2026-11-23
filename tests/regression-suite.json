@@ -147,5 +147,6 @@
   "request-ticket-view-search",
   "container-move-count",
   "copy-request-dispatch",
-  "suggest-master-loading"
+  "suggest-master-loading",
+  "portal-user-admin"
 ]
