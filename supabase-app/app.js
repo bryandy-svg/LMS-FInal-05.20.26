@@ -16393,7 +16393,7 @@ function purchaseLineRowHtml(line = {}, index = 0) {
     <td data-label="UOM"><input data-po-line="unit" data-line-index="${index}" value="${esc(line.unit || product.unit || "")}" readonly></td>
     <td data-label="On Hand">${esc(product.qty ?? "")}</td>
     <td data-label="Ordered Qty"><input type="number" step="0.01" data-po-line="qty" data-line-index="${index}" value="${esc(line.qty || "")}"></td>
-    <td data-label="Reserved for Destination" class="po-destination-qty-column"><input type="number" min="0" step="0.01" data-po-line="destination_qty" data-line-index="${index}" value="${esc(destinationQty)}"></td>
+    <td data-label="Reserved for Destination" class="po-destination-qty-column"><input type="number" min="0" step="0.01" data-po-line="destination_qty" data-destination-explicit="${line.id ? "1" : "0"}" data-line-index="${index}" value="${esc(destinationQty)}"></td>
     <td data-label="To Stock" class="po-destination-qty-column"><strong data-po-stock-qty>${esc(Math.max(0, Number(line.qty || 0) - destinationQty))}</strong></td>
     <td data-label="Weight"><input type="number" step="0.01" data-po-line="weight" data-line-index="${index}" value="${esc(line._allocation_weight || "")}" placeholder="Optional"></td>
     <td data-label="Foreign Cost"><input type="number" step="0.01" data-po-line="foreign_unit_cost" data-line-index="${index}" value="${esc(line.foreign_unit_cost || "")}" placeholder="If foreign"></td>
@@ -16641,6 +16641,8 @@ function refreshPurchaseLineCalculations() {
     inventoryTotal += vendorAmount + allocation;
     const destinationInput = line.row.querySelector('[data-po-line="destination_qty"]');
     if (destinationInput) {
+      const purpose = document.querySelector('[data-product-field="purchase_purpose"]')?.value || "Inventory Stock";
+      if (purpose === "Work Order" && destinationInput.dataset.destinationExplicit !== "1") destinationInput.value = Math.max(0, line.qty);
       const destinationQty = Math.min(line.qty, Math.max(0, Number(destinationInput.value || 0)));
       destinationInput.max = String(Math.max(0, line.qty));
       if (Number(destinationInput.value || 0) !== destinationQty) destinationInput.value = destinationQty;
@@ -16657,7 +16659,7 @@ function bindPurchaseLineCalculations() {
   document.querySelectorAll('#poLineBody [data-po-line="qty"], #poLineBody [data-po-line="destination_qty"], #poLineBody [data-po-line="weight"], #poLineBody [data-po-line="foreign_unit_cost"], #poLineBody [data-po-line="unit_cost"]').forEach((input) => {
     if (input.dataset.poCalculationBound === "1") return;
     input.dataset.poCalculationBound = "1";
-    input.addEventListener("input", refreshPurchaseLineCalculations);
+    input.addEventListener("input", () => { if(input.dataset.poLine === "destination_qty") input.dataset.destinationExplicit="1"; refreshPurchaseLineCalculations(); });
     input.addEventListener("change", refreshPurchaseLineCalculations);
   });
   ["landed_cost_enabled", "landed_cost_method", "freight_amount", "duty_amount", "other_landed_cost_amount", "foreign_order", "exchange_rate"].forEach((field) => {
@@ -16897,7 +16899,8 @@ async function performPurchaseOrderSave({ receiveAfterSave = false, closeBlanket
       }
     }
     if (record.purchase_purpose === "Work Order") {
-      lineRows = lineRows.map((line) => ({ ...line, wo_no: record.ap_support_wo_no }));
+      if (lineRows.length && !lineRows.some(line => Number(line.destination_qty) > 0)) throw new Error("This PO is assigned to a work order, but every Work Order Qty is zero. Enter the quantity for the work order, or change Purchase Purpose to Inventory Stock.");
+      lineRows = lineRows.map((line) => ({ ...line, wo_no: Number(line.destination_qty) > 0 ? record.ap_support_wo_no : null }));
     } else {
       lineRows = lineRows.map((line) => ({ ...line, wo_no: null }));
     }

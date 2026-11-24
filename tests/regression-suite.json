@@ -150,5 +150,6 @@
   "suggest-master-loading",
   "portal-user-admin",
   "mechanic-clock-role",
-  "outside-repair-request"
+  "outside-repair-request",
+  "po-work-order-allocation"
 ]
