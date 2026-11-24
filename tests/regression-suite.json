@@ -151,5 +151,6 @@
   "portal-user-admin",
   "mechanic-clock-role",
   "outside-repair-request",
-  "po-work-order-allocation"
+  "po-work-order-allocation",
+  "work-order-save-close"
 ]
