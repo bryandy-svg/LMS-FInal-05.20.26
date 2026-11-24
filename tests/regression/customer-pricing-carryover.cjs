@@ -32,6 +32,6 @@ assert.equal(cells.selling_price.value,175,'No customer markup uses saved produc
 assert.equal(cells.markup_percent.value,'');
 customer.parts_markup_percent=40;
 const writes=[];
-Object.assign(c,{currentRows:[{wo_no:'W1',id:'wo1',bill_to_customer:'LMS'}],currentMechanicName:()=>'Tech',activeLaborForMechanic:()=>null,CSS:{escape:x=>x},confirm:()=>true,alert:x=>{throw Error(x);},currentMechanicRate:()=>35,insertOneWithOptionalColumns:async(t,row)=>writes.push(row),supabase:{from:()=>({update:()=>({eq:async()=>{}})})},renderRepairsView:async()=>{}});
+Object.assign(c,{currentRows:[{wo_no:'W1',id:'wo1',bill_to_customer:'LMS'}],currentMechanicName:()=>'Tech',chooseMechanicClockRole:async()=> 'primary',activeLaborForMechanic:()=>null,CSS:{escape:x=>x},confirm:()=>true,alert:x=>{throw Error(x);},currentMechanicRate:()=>35,insertOneWithOptionalColumns:async(t,row)=>writes.push(row),supabase:{from:()=>({update:()=>({eq:async()=>{}})})},renderRepairsView:async()=>{}});
 vm.runInContext(functions(['mechanicQuickClockIn']),c);
 (async()=>{await c.mechanicQuickClockIn('W1');assert.equal(writes[0].hourly_rate,50,'Quick clock-in saves the customer starting rate');customer.mechanic_hourly_rate=null;await c.mechanicQuickClockIn('W1');assert.equal(writes[1].hourly_rate,35);})().catch(error=>{console.error(error);process.exitCode=1;});
