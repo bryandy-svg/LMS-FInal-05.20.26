@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');const {functions}=require('../source.cjs');
+const rows=[{sku:'A',name:'Bolt',warehouse:'Main',bin_shelf:'B01, B02'},{sku:'B',warehouse:'Main',bin_shelf:'B010'},{sku:'C',warehouse:'Other',bin_shelf:'B01'},{sku:'D',warehouse:'Main',bin_shelf:''}];
+const el={inventoryCountBin:{value:'B01'},inventoryCountWarehouse:{value:'Main'},inventoryCountSearch:{value:''}};
+const c=vm.createContext({inventoryCountSessionRows:rows,$:id=>el[id],esc:String});vm.runInContext(functions(['inventoryCountBinValues','inventoryCountLocationOptions','inventoryCountProductSearchText','inventoryCountMatchesFilters','inventoryCountFilteredRows']),c);
+assert.deepEqual(Array.from(c.inventoryCountFilteredRows(),r=>r.sku),['A']);
+el.inventoryCountBin.value='B02';assert.equal(c.inventoryCountFilteredRows()[0].sku,'A');
+el.inventoryCountBin.value='__unassigned__';assert.equal(c.inventoryCountFilteredRows()[0].sku,'D');
+el.inventoryCountBin.value='B01';el.inventoryCountSearch.value='missing';assert.equal(c.inventoryCountFilteredRows().length,0);
+assert(c.inventoryCountLocationOptions('bin_shelf').includes('B01 (2)'));
+el.inventoryCountSearch.value='';el.inventoryCountWarehouse.value='';assert.equal(c.inventoryCountFilteredRows().length,2);
+c.inventoryCountSessionRows=Array.from({length:600},(_,i)=>({sku:String(i),bin_shelf:'B01'}));assert.equal(c.inventoryCountFilteredRows().length,600,'Filtered download includes all matches beyond display limit');

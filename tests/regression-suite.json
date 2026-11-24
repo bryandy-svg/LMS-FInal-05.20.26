@@ -152,5 +152,6 @@
   "mechanic-clock-role",
   "outside-repair-request",
   "po-work-order-allocation",
-  "work-order-save-close"
+  "work-order-save-close",
+  "inventory-count-bin-filter"
 ]

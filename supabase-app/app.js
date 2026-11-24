@@ -14599,6 +14599,8 @@ function openInventoryCountSheet() {
     <div class="form-grid">
       ${productInput("Count date", "count_date", draft?.count_date || today(), "date")}
       <div class="field wide"><label>Count reason / approval note</label><textarea data-product-field="count_reason" required placeholder="Example: Monthly physical count - Mall Lot Parts Shop">${esc(draft?.reason || "")}</textarea></div>
+      <div class="field"><label for="inventoryCountWarehouse">Warehouse</label><select id="inventoryCountWarehouse">${inventoryCountLocationOptions("warehouse")}</select></div>
+      <div class="field"><label for="inventoryCountBin">Bin / Shelf</label><select id="inventoryCountBin">${inventoryCountLocationOptions("bin_shelf")}</select><small>Numbers in brackets show the number of parts assigned to each bin.</small></div>
       <div class="field wide"><label>Search parts</label><input id="inventoryCountSearch" placeholder="Search SKU, product, warehouse, bin, category" autocomplete="off"><small>Search only changes what is visible; entered counts remain saved on the sheet.</small></div>
     </div>
     <div class="actions table-actions"><button type="button" class="rowbtn" id="downloadInventoryCountSheetBtn">Download blank count sheet</button><button type="button" class="rowbtn" id="saveInventoryCountDraftBtn">Save &amp; Continue Later</button><button type="button" class="primary" id="implementInventoryCountBtn">Apply Selected</button><span id="inventoryCountSelectionSummary" aria-live="polite"></span></div>
@@ -14612,10 +14614,12 @@ function openInventoryCountSheet() {
   document.querySelector(".modalbox")?.classList.add("wide-modal");
   $("modal").style.display = "flex";
   bindInventoryCountRows();
-  $("downloadInventoryCountSheetBtn").onclick = () => downloadInventoryCountSheet(rows);
+  $("downloadInventoryCountSheetBtn").onclick = () => downloadInventoryCountSheet(inventoryCountFilteredRows());
   $("saveInventoryCountDraftBtn").onclick = saveInventoryCountDraft;
   $("implementInventoryCountBtn").onclick = saveInventoryCountSheet;
   $("inventoryCountSearch").oninput = filterInventoryCountRows;
+  $("inventoryCountBin").onchange = filterInventoryCountRows;
+  $("inventoryCountWarehouse").onchange = filterInventoryCountRows;
   document.querySelectorAll('[data-product-field="count_date"], [data-product-field="count_reason"]').forEach(input => input.oninput = persistInventoryCountDraft);
 }
 
@@ -14641,16 +14645,40 @@ function inventoryCountRowHtml(product, draftItem = null) {
   </tr>`;
 }
 
+function inventoryCountBinValues(value) {
+  return [...new Set(String(value || "").split(/[,;|]/).map(bin=>bin.trim()).filter(Boolean))];
+}
+
+function inventoryCountLocationOptions(field) {
+  const values = new Map();
+  for (const product of inventoryCountSessionRows) {
+    const labels = field === "bin_shelf" ? inventoryCountBinValues(product[field]) : [String(product[field] || "").trim()].filter(Boolean);
+    for (const label of labels.length ? labels : ["(Not assigned)"]) values.set(label,(values.get(label)||0)+1);
+  }
+  return '<option value="">All '+(field === "bin_shelf" ? 'bins' : 'warehouses')+'</option>' + [...values].sort(([a],[b])=>a.localeCompare(b,undefined,{numeric:true})).map(([label,count])=>'<option value="'+esc(label==='(Not assigned)'?'__unassigned__':label)+'">'+esc(label)+' ('+count+')</option>').join('');
+}
+
+function inventoryCountMatchesFilters(product, query = "", warehouse = "", bin = "") {
+  const warehouseValue=String(product.warehouse || "").trim();
+  const bins=inventoryCountBinValues(product.bin_shelf);
+  return (!query || inventoryCountProductSearchText(product).includes(query.toLowerCase()))
+    && (!warehouse || (warehouse==='__unassigned__' ? !warehouseValue : warehouseValue===warehouse))
+    && (!bin || (bin==='__unassigned__' ? !bins.length : bins.includes(bin)));
+}
+
+function inventoryCountFilteredRows() {
+  return inventoryCountSessionRows.filter(product=>inventoryCountMatchesFilters(product,
+    String($("inventoryCountSearch")?.value || "").trim(),$("inventoryCountWarehouse")?.value || "",$("inventoryCountBin")?.value || ""));
+}
+
 function filterInventoryCountRows() {
   captureInventoryCountVisibleRows();
   const query = String($("inventoryCountSearch")?.value || "").trim().toLowerCase();
-  const matches = inventoryCountSessionRows.filter((product) => !query || inventoryCountProductSearchText(product).includes(query));
+  const matches = inventoryCountFilteredRows();
   const visible = matches.slice(0, PRODUCT_RENDER_LIMIT);
   $("inventoryCountBody").innerHTML = visible.map((product) => inventoryCountRowHtml(product, inventoryCountSessionItems[product.sku])).join("");
   const notice = $("inventoryCountResultNotice");
-  if (notice) notice.textContent = query
-    ? `${matches.length.toLocaleString()} product${matches.length === 1 ? "" : "s"} match “${query}”.${matches.length > PRODUCT_RENDER_LIMIT ? ` Showing the first ${PRODUCT_RENDER_LIMIT.toLocaleString()}.` : ""}`
-    : `${inventoryCountSessionRows.length.toLocaleString()} products are available. Showing the first ${Math.min(PRODUCT_RENDER_LIMIT, inventoryCountSessionRows.length).toLocaleString()}; Search Parts searches the full list.`;
+  if (notice) notice.textContent = matches.length.toLocaleString()+" parts match the selected warehouse, bin and search. Showing "+visible.length.toLocaleString()+". Download blank count sheet includes all matching parts. Entered counts and selections are kept when switching bins.";
   bindInventoryCountRows();
 }
 
