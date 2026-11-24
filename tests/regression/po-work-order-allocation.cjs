@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {functions}=require('../source.cjs');
+const qty={value:'1',dataset:{poLine:'qty'},addEventListener(){}};
+const dest={value:'0',dataset:{poLine:'destination_qty',destinationExplicit:'0'},events:{},addEventListener(k,f){this.events[k]=f;}};
+const stock={textContent:''};const purpose={value:'Inventory Stock'};
+const row={querySelector(s){return s.includes('destination_qty')?dest:s.includes('"qty"')?qty:s==='[data-po-stock-qty]'?stock:null;}};
+const document={querySelector(s){return s.includes('purchase_purpose')?purpose:null;},querySelectorAll(s){return s==='#poLineBody tr'?[row]:s.includes('#poLineBody')?[qty,dest]:[];}};
+const c=vm.createContext({document,editing:null,$:()=>null,money:String});
+vm.runInContext(functions(['refreshPurchaseLineCalculations','bindPurchaseLineCalculations']),c);
+c.bindPurchaseLineCalculations();assert.equal(Number(dest.value),0);
+purpose.value='Work Order';c.refreshPurchaseLineCalculations();assert.equal(Number(dest.value),1,'New WO line defaults to ordered quantity');
+qty.value='5';c.refreshPurchaseLineCalculations();assert.equal(Number(dest.value),5);
+dest.value='2';dest.events.input();qty.value='6';c.refreshPurchaseLineCalculations();assert.equal(Number(dest.value),2,'Explicit partial allocation is preserved');assert.equal(Number(stock.textContent),4);
+dest.value='0';dest.events.input();c.refreshPurchaseLineCalculations();assert.equal(Number(dest.value),0,'Explicit stock-only line stays stock');
