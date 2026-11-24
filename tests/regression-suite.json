@@ -149,5 +149,6 @@
   "copy-request-dispatch",
   "suggest-master-loading",
   "portal-user-admin",
-  "mechanic-clock-role"
+  "mechanic-clock-role",
+  "outside-repair-request"
 ]

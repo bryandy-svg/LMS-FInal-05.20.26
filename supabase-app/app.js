@@ -31132,24 +31132,26 @@ function repairQueueArchived(asset) {
 }
 async function renderEquipmentRepairQueueView() {
   if (requestPortalIdentity || isDualRequestPortalUser()) return await renderEquipmentRepairRequestMobile();
-  currentCfg = { heads: ["asset_tag", "name", "location", "gps_location", "assigned_operator", "requested_by", "approved_by", "repair_po_no", "status", "_openWoIssue", "wo_no"], labels: ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Status", "Issue / Request", "Assigned WO"] };
+  currentCfg = { heads: ["asset_tag", "repair_requested_date", "name", "location", "gps_location", "assigned_operator", "requested_by", "approved_by", "repair_po_no", "status", "_openWoIssue", "wo_no"], labels: ["Asset #", "Date Requested", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Status", "Issue / Request", "Assigned WO"] };
   $("viewTitle").textContent = "Equipment Repair Requests";
   $("viewSub").textContent = "Repair requests submitted from mobile login, QR scan, or Fleet & Equipment before work-order assignment.";
-  const [assets, workOrders, locations, types, customers] = await Promise.all([
+  const [assets, workOrders, locations, types, customers, outsideFleet] = await Promise.all([
     getViewRows("assets"),
     getViewRows("work_orders"),
     getViewRows("asset_locations"),
     getViewRows("asset_types"),
     getViewRows("customers"),
+    getViewRows("outside_customer_fleet"),
   ]);
-  productMeta.assets = attachOpenWorkOrderToAssets(assets, workOrders).map(asset => {
+  productMeta.outsideFleet=outsideFleet;
+  productMeta.assets = attachOpenWorkOrderToAssets([...assets,...outsideFleet.map(outsideRepairAsset)], workOrders).map(asset => {
     const completed = workOrders.filter(wo => String(wo.asset_tag || '').trim().toLowerCase()===String(asset.asset_tag || '').trim().toLowerCase() && !/void|cancel/i.test(wo.status || '') && (wo.invoice_no || /closed|complete|invoiced/i.test(wo.status || '')))
       .sort((a,b)=>String(b.wo_date || '').localeCompare(String(a.wo_date || '')))[0];
     const requestDates=[...String(asset.notes || '').matchAll(/Repair requested (\d{1,2}\/\d{1,2}\/\d{4})/gi)];
     const requestedAt=requestDates.length?new Date(requestDates.at(-1)[1]):null;
     const completedAt=completed?new Date(completed.wo_date+'T23:59:59'):null;
     const newerRequest=requestedAt && completedAt && requestedAt>completedAt && !repairQueueArchived(asset);
-    return {...asset,_completedWo:!newerRequest?completed || null:null};
+    return {...asset,repair_requested_date:repairRequestDate(asset),_completedWo:!newerRequest?completed || null:null};
   });
   productMeta.locations = locations.map((l) => l.name).filter(Boolean).sort();
   productMeta.assetTypes = types.map((t) => t.name).filter(Boolean).sort();
@@ -31174,14 +31176,15 @@ async function renderEquipmentRepairQueueView() {
 async function renderEquipmentRepairRequestMobile() {
   $("viewTitle").textContent = "";
   $("viewSub").textContent = "";
-  productMeta.assets = await getViewRows("assets").catch(() => []);
+  const [assets,outsideFleet]=await Promise.all([getViewRows("assets"),getViewRows("outside_customer_fleet")]);
+  productMeta.assets=assets;productMeta.outsideFleet=outsideFleet;
   $("content").innerHTML = `
     <section class="request-portal request-form-only">
       ${dualRequestPortalTabs("equipmentrepairqueue")}
       <div class="request-choice-intro compact">
         <span class="eyebrow">Fleet &amp; Equipment</span>
         <h2>Equipment Repair Request</h2>
-        <p>Select equipment from Fleet &amp; Equipment. Its asset details will fill automatically. A PO number and repair issue are required.</p>
+        <p>Select equipment from Fleet &amp; Equipment or Outside Customer Fleet. Its asset details will fill automatically. A PO number and repair issue are required.</p>
       </div>
       <button class="primary" id="mobileNewEquipmentRepairRequestBtn">New equipment repair request</button>
     </section>`;
@@ -31189,10 +31192,14 @@ async function renderEquipmentRepairRequestMobile() {
   $("mobileNewEquipmentRepairRequestBtn").onclick = openEquipmentRepairRequestModal;
 }
 
+function outsideRepairAsset(row) {
+ return {...row,asset_tag:String(row.reference||'').trim(),name:row.description||[row.make,row.model].filter(Boolean).join(' '),vin_serial:row.vin,_repairSource:'outside'};
+}
+
 function selectedRepairRequestAsset(value) {
   const exact = String(value || "").trim().toLowerCase();
   const assetTag = exact.split("|")[0].trim();
-  return (productMeta.assets || []).find((asset) => {
+  return [...(productMeta.assets || []),...(productMeta.outsideFleet || []).map(outsideRepairAsset)].find((asset) => {
     const tag = String(asset.asset_tag || "").trim().toLowerCase();
     const label = [asset.asset_tag, asset.name || asset.description].filter(Boolean).join(" | ").toLowerCase();
     return tag === assetTag || label === exact;
@@ -31210,7 +31217,7 @@ function fillEquipmentRepairRequestAsset(input) {
     <div><span>Current operator</span><strong>${esc(asset.assigned_operator || "-")}</strong></div>
     <div><span>Plate #</span><strong>${esc(asset.plate || asset.license_plate || "-")}</strong></div>
     <div><span>Serial / VIN</span><strong>${esc(asset.vin_serial || asset.vin || asset.serial_no || "-")}</strong></div>`
-    : `<p>Select a valid Fleet &amp; Equipment record to show its details.</p>`;
+    : `<p>Select registered fleet or outside-customer equipment to show its details.</p>`;
 }
 
 function openEquipmentRepairRequestModal() {
@@ -31254,7 +31261,7 @@ async function saveEquipmentRepairRequestModal() {
   const values = {};
   document.querySelectorAll("[data-repair-request-field]").forEach((field) => { values[field.dataset.repairRequestField] = String(field.value || "").trim(); });
   const asset = selectedRepairRequestAsset(values.asset_lookup);
-  if (!asset) throw new Error("Select a valid equipment record from Fleet & Equipment.");
+  if (!asset) throw new Error("Select registered equipment from Fleet & Equipment or Outside Customer Fleet.");
   if (!values.requested_by) throw new Error("Requested by is required.");
   if (!values.email || !/^\S+@\S+\.\S+$/.test(values.email)) throw new Error("Enter a valid requestor email address.");
   if (!values.po_no) throw new Error("PO # is required for an equipment repair request.");
@@ -31278,8 +31285,11 @@ async function saveEquipmentRepairRequestModal() {
     notes: [asset.notes || "", requestNote].filter(Boolean).join("\n"),
   };
   const poFile = document.querySelector("[data-repair-po-upload]")?.files?.[0];
-  if(requestPortalIdentity) return submitRequestPortal('repair',{...values,asset_id:asset.id},[],poFile?await prepareEquipmentRequestPoAttachment(poFile):null);
-  if (poFile) await saveRepairRequestWithPo(asset.id, record, poFile);
+  if(requestPortalIdentity) return submitRequestPortal('repair',{...values,asset_id:asset.id,asset_source:asset._repairSource||'assets'},[],poFile?await prepareEquipmentRequestPoAttachment(poFile):null);
+  if(asset._repairSource==='outside') {
+    const {error}=await supabase.rpc('submit_outside_repair_request',{p_asset_id:asset.id,p_changes:{...record,request_note:requestNote},p_po:poFile?await prepareEquipmentRequestPoAttachment(poFile):null});
+    if(error)throw error;
+  } else if (poFile) await saveRepairRequestWithPo(asset.id, record, poFile);
   else {
     const { error } = await supabase.from("assets").update(record).eq("id", asset.id);
     if (error) throw error;
@@ -42199,10 +42209,16 @@ function appendDatedNote(existing, note) {
   return [existing, line].filter(Boolean).join("\n");
 }
 
+function repairRequestDate(asset) {
+ if(asset.repair_requested_date)return asset.repair_requested_date;
+ const matches=[...String(asset.notes||'').matchAll(/Repair requested (\d{1,2})\/(\d{1,2})\/(\d{4})/gi)];
+ const m=matches.at(-1);return m ? m[3]+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0') : '';
+}
 function equipmentRepairQueueTable(rows) {
-  const heads = ["Asset #", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Jobsite for Charging", "PO File", "Status", "Issue / Request", "Assigned WO", ""];
+  const heads = ["Asset #", "Date Requested", "Description", "Location", "GPS", "Operator", "Requested By", "Approved By", "PO #", "Jobsite for Charging", "PO File", "Status", "Issue / Request", "Assigned WO", ""];
   return `<div class="table-wrap"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr><tr>${heads.map((h, i) => h ? `<th><input class="column-filter" data-col="${i}" placeholder="Filter ${esc(h)}"></th>` : "<th></th>").join("")}</tr></thead><tbody>${rows.length ? rows.map((asset) => `<tr>
     <td>${esc(asset.asset_tag || "")}</td>
+    <td>${esc(repairRequestDate(asset)?formatDisplayDate(repairRequestDate(asset)):"Not recorded")}</td>
     <td>${esc(asset.name || "")}</td>
     <td>${esc(asset.location || "")}</td>
     <td>${gpsCellHtml(asset.gps_location)}</td>
@@ -42211,7 +42227,7 @@ function equipmentRepairQueueTable(rows) {
     <td>${esc(asset.approved_by || "")}</td>
     <td>${esc(asset.repair_po_no || "")}</td>
     <td>${esc(asset.repair_jobsite_location || "")}</td>
-    <td><button type="button" class="rowbtn" data-repair-po-view="${esc(asset.id)}">View PO files</button></td>
+    <td><button type="button" class="rowbtn" data-repair-po-view="${esc(asset.id)}" data-repair-po-source="${esc(asset._repairSource||'assets')}">View PO files</button></td>
     <td>${badge(asset.status || "")}</td>
     <td>${esc(asset._openWo?.description || repairRequestText(asset) || "")}</td>
     <td>${asset._openWo ? badge(asset._openWo.wo_no || "") : ""}</td>
@@ -42238,13 +42254,13 @@ function renderFilteredEquipmentRepairQueue() {
 }
 
 function repairRequestWorkOrderPrefill(asset = {}) {
-  return { assetTag: asset.asset_tag, requestedBy: asset.requested_by || '', customerPO: asset.repair_po_no || '', jobsiteLocation: asset.repair_jobsite_location || '', actualLocation: asset.location || '', operator: asset.assigned_operator || '', description: repairRequestText(asset) };
+  return { ...(asset._repairSource==='outside'?{outsideReference:asset.reference,billToCustomer:asset.customer_name}:{assetTag:asset.asset_tag}), requestedBy: asset.requested_by || '', customerPO: asset.repair_po_no || '', jobsiteLocation: asset.repair_jobsite_location || '', actualLocation: asset.location || '', operator: asset.assigned_operator || '', description: repairRequestText(asset) };
 }
 
 function bindEquipmentRepairQueue() {
   document.querySelectorAll('[data-edit-repair-request]').forEach(button => button.onclick = () => editPendingRepairRequest(button.dataset.editRepairRequest));
   document.querySelectorAll('[data-cancel-repair-request]').forEach(button => button.onclick = () => cancelPendingRepairRequest(button.dataset.cancelRepairRequest));
-  document.querySelectorAll("[data-repair-po-view]").forEach(button => button.onclick = () => openRepairPoFiles(button.dataset.repairPoView));
+  document.querySelectorAll("[data-repair-po-view]").forEach(button => button.onclick = () => openRepairPoFiles(button.dataset.repairPoView,button.dataset.repairPoSource));
   document.querySelectorAll("[data-create-wo-asset]").forEach((b) => b.onclick = () => openNewWorkOrderModal(repairRequestWorkOrderPrefill(currentRows.find((a) => a.asset_tag === b.dataset.createWoAsset))));
   document.querySelectorAll("[data-asset-operational]").forEach((b) => b.onclick = () => markAssetOperational(b.dataset.assetOperational));
   document.querySelectorAll("[data-open-wo]").forEach((b) => b.onclick = () => {
@@ -42257,10 +42273,10 @@ function bindEquipmentRepairQueue() {
 }
 
 async function updatePendingRepairRequest(asset, changes) {
-  const { data: orders, error: orderError } = await supabase.from('work_orders').select('wo_no,status,invoice_no').eq('asset_tag', asset.asset_tag);
+  const { data: orders, error: orderError } = await supabase.from('work_orders').select('wo_no,status,invoice_no').in('asset_tag', [...new Set([asset.asset_tag,asset.reference].filter(Boolean))]);
   if (orderError) throw orderError;
   if ((orders || []).some(wo => !/void|cancel|closed|complete|invoiced/i.test(wo.status || '') && !wo.invoice_no)) throw new Error('This equipment now has an active work order. Refresh and edit the work order instead.');
-  let query = supabase.from('assets').update({ ...changes, last_update_date: localToday() }).eq('id', asset.id);
+  let query = supabase.from(asset._repairSource==='outside'?'outside_customer_fleet':'assets').update({ ...changes, last_update_date: localToday() }).eq('id', asset.id);
   query = asset.notes == null ? query.is('notes', null) : query.eq('notes', asset.notes);
   query = asset.status == null ? query.is('status', null) : query.eq('status', asset.status);
   const { data, error } = await query.select('id');
@@ -42310,7 +42326,7 @@ async function markAssetOperational(assetTag) {
   try {
     const stamp = new Date().toLocaleString();
     const notes = [asset.notes || "", `Marked operational ${stamp}`].filter(Boolean).join("\n");
-    const { error } = await supabase.from("assets").update({ status: "Operational", notes, last_update_date: localToday() }).eq("asset_tag", asset.asset_tag);
+    const { error } = await supabase.from(asset._repairSource==='outside'?'outside_customer_fleet':'assets').update({ status: "Operational", notes, last_update_date: localToday() }).eq("id", asset.id);
     if (error) throw error;
     await renderEquipmentRepairQueueView();
   } catch (error) {
@@ -42324,10 +42340,11 @@ function attachOpenWorkOrderToAssets(assets, workOrders) {
     .filter((wo) => wo.asset_tag && !wo.invoice_no && !/closed|complete|invoiced|void|cancel/i.test(wo.status || ""))
     .sort((a, b) => String(b.wo_date || "").localeCompare(String(a.wo_date || "")))
     .forEach((wo) => {
-      if (!openByAsset.has(wo.asset_tag)) openByAsset.set(wo.asset_tag, wo);
+      const key=String(wo.asset_tag).trim().toLowerCase();
+      if (!openByAsset.has(key)) openByAsset.set(key, wo);
     });
   return (assets || []).map((asset) => {
-    const wo = openByAsset.get(asset.asset_tag);
+    const wo = openByAsset.get(String(asset.asset_tag||"").trim().toLowerCase());
     return {
       ...asset,
       _openWo: wo || null,
@@ -47709,9 +47726,9 @@ async function saveRepairRequestWithPo(assetId, record, file) {
   const {error}=await supabase.rpc('submit_repair_request_with_po',{p_asset_id:assetId,p_changes:record,p_po:po});
   if(error)throw new Error('Repair request and PO were not saved. '+error.message);
 }
-async function openRepairPoFiles(assetId) {
+async function openRepairPoFiles(assetId,source="assets") {
   try {
-    const {data,error}=await supabase.from('repair_request_po_files').select('id,po_no,po_attachment_name,created_at').eq('asset_id',assetId).order('created_at',{ascending:false});
+    const {data,error}=await supabase.from('repair_request_po_files').select('id,po_no,po_attachment_name,created_at').eq(source==='outside'?'outside_asset_id':'asset_id',assetId).order('created_at',{ascending:false});
     if(error)throw error;
     const dialog=document.createElement('dialog');dialog.style.cssText='max-width:90vw;width:600px;border:1px solid #ccd6df;border-radius:12px;padding:24px';
     dialog.innerHTML='<h2>Repair PO files</h2>'+((data || []).map(row=>'<p><button type="button" data-open-repair-po="'+esc(row.id)+'">'+esc(row.po_attachment_name)+'</button><br>PO # '+esc(row.po_no)+' · '+esc(formatDisplayDate(String(row.created_at).slice(0,10)))+'</p>').join('') || '<p>No uploaded PO files for this equipment.</p>')+'<button type="button" data-close-repair-po>Close</button>';
