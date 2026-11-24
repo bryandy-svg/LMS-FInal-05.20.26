@@ -23763,6 +23763,19 @@ async function mechanicPortalAskHelp(woNo) {
   }
 }
 
+async function chooseMechanicClockRole(wo, mechanic) {
+  const {data: labor,error}=await supabase.from("work_order_labor").select("mechanic,issue,work_done,clock_in").eq("wo_id",wo.id).is("clock_out",null);
+  if(error)throw error;
+  const primary=String((labor||[]).find(row=>row.clock_in&&!isHelperLabor(row))?.mechanic||"").trim();
+  return new Promise(resolve=>{
+    const dialog=document.createElement("dialog");dialog.className="mechanic-role-dialog";
+    dialog.innerHTML=`<h2>Clock in to ${esc(wo.wo_no)}</h2><p>${esc(mechanic)}, are you the primary mechanic or an assistant?</p><p>${primary?'Currently clocked-in primary: <strong>'+esc(primary)+'</strong>':'No primary is clocked in. You may start as the primary mechanic.'}</p><p>The primary records the work report. Assistants record their own hours without a report.</p><div class="actions"><button type="button" data-role="primary" ${primary?'disabled':''}>Primary mechanic</button><button type="button" data-role="assistant">Assistant</button><button type="button" data-role="cancel">Cancel</button></div>`;
+    document.body.append(dialog);let finished=false;const finish=value=>{if(finished)return;finished=true;dialog.remove();resolve(value);};
+    dialog.querySelectorAll('[data-role]').forEach(button=>button.onclick=()=>finish(button.dataset.role==='cancel'?null:button.dataset.role));
+    dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.showModal();
+  });
+}
+
 async function mechanicQuickClockIn(woNo) {
   const wo = currentRows.find((row) => row.wo_no === woNo);
   const mechanic = currentMechanicName();
@@ -23777,16 +23790,18 @@ async function mechanicQuickClockIn(woNo) {
     alert(`${mechanic} is already clocked in on ${wo.wo_no}.`);
     return;
   }
-  if (!confirm(`Clock in now?\n\nMechanic: ${mechanic}\nWork order: ${wo.wo_no}\nTime: ${new Date().toLocaleString()}`)) return;
   try {
+    const role=await chooseMechanicClockRole(wo,mechanic);
+    if(!role)return;
+    const assistant=role==='assistant';
     await insertOneWithOptionalColumns("work_order_labor", {
       wo_id: wo.id,
       mechanic,
-      issue,
+      issue: assistant ? `Helper labor - ${issue}` : issue,
       clock_in: new Date().toISOString(),
       clock_out: null,
       hourly_rate: customerMechanicRate(wo.bill_to_customer || wo.customer, mechanic, currentMechanicRate(mechanic)),
-      work_done: "",
+      work_done: assistant ? "Helper hours only" : "",
       entry_mode: "Clock",
     }, ["entry_mode"], "Clock-in was saved, but run the labor entry-mode SQL update for the correct report format.");
     await supabase.from("work_orders").update({ status: "In Progress" }).eq("id", wo.id);
@@ -25818,7 +25833,11 @@ function openMechanicTimeModal(wo) {
   mechanicInput.oninput = () => {
     if (rateInput.dataset.manualRate !== "true") rateInput.value = customerMechanicRate(wo.bill_to_customer || wo.customer, mechanicInput.value, currentMechanicRate(mechanicInput.value));
     $("mechanicClockStatus").innerHTML = mechanicClockStatusHtml(mechanicInput.value, wo);
+    const assistant=isHelperLabor(activeLaborForMechanic(mechanicInput.value)||{});
+    const note=document.querySelector('[data-product-field="work_done"]');
+    if(note)note.closest(".field").hidden=assistant;
   };
+  mechanicInput.oninput();
   $("clockInNowBtn").onclick = () => clockInMechanic(wo);
   $("clockOutNowBtn").onclick = () => clockOutMechanic(wo);
   $("saveMechanicWorkBtn").onclick = () => saveMechanicWorkAndRefresh(wo, false);
@@ -27135,17 +27154,19 @@ async function clockInMechanic(wo) {
     alert(`${mechanic} is already clocked in on ${wo.wo_no}.`);
     return;
   }
-  if (!confirm(`Clock in ${mechanic} on ${wo.wo_no} now?\n\nTime: ${new Date().toLocaleString()}`)) return;
   try {
-    await saveMechanicModalWork(wo, mechanic, issue);
+    const role=await chooseMechanicClockRole(wo,mechanic);
+    if(!role)return;
+    const assistant=role==='assistant';
+    if(!assistant) await saveMechanicModalWork(wo, mechanic, issue);
     await insertOneWithOptionalColumns("work_order_labor", {
       wo_id: wo.id,
       mechanic,
-      issue,
+      issue: assistant ? `Helper labor - ${issue}` : issue,
       clock_in: new Date().toISOString(),
       clock_out: null,
       hourly_rate: hourlyRate,
-      work_done: "",
+      work_done: assistant ? "Helper hours only" : "",
       entry_mode: "Clock",
     }, ["entry_mode"], "Clock-in was saved, but run the labor entry-mode SQL update for the correct report format.");
     await refreshMechanicTimeModal(wo.wo_no);
@@ -27159,7 +27180,8 @@ async function clockOutMechanic(wo) {
   const workDone = document.querySelector('[data-product-field="work_done"]')?.value || "";
   const manualClockOut = document.querySelector('[data-product-field="manual_clock_out"]')?.value || "";
   const active = activeLaborForMechanic(mechanic);
-  if (!String(workDone).trim()) return alert("Work note is required before clocking out. Describe the work completed, findings, or next step.");
+  const assistant=isHelperLabor(active || {});
+  if (!assistant && !String(workDone).trim()) return alert("Work note is required before clocking out. Describe the work completed, findings, or next step.");
   if (!active || active._wo?.id !== wo.id) {
     alert(`${mechanic || "This mechanic"} is not currently clocked in on ${wo.wo_no}.`);
     return;
@@ -27182,15 +27204,15 @@ async function clockOutMechanic(wo) {
   const previewHours = laborHours({ clock_in: active.clock_in, clock_out: clockOutIso });
   if (!confirm(`Confirm clock out for ${mechanic} on ${wo.wo_no}\n\nClock in: ${formatDateTime(active.clock_in)}\nClock out: ${new Date(clockOutIso).toLocaleString()}\nTotal labor: ${previewHours.toFixed(2)} hours\n\nPost this labor time?`)) return;
   try {
-    await saveMechanicModalWork(wo, mechanic, active.issue || "General work order");
+    if(!assistant) await saveMechanicModalWork(wo, mechanic, active.issue || "General work order");
     await updateOneWithOptionalColumns("work_order_labor", {
       clock_out: clockOutIso,
-      work_done: workDone || active.work_done || "",
+      work_done: assistant ? "Helper hours only" : workDone || active.work_done || "",
       entry_mode: manualClockOut ? "Manual" : "Clock",
     }, "id", active.id, ["entry_mode"], "Clock-out was saved, but run the labor entry-mode SQL update for the correct report format.");
-    if (workDone) await appendIssueWorkNote(wo, active.issue || "General work order", mechanic, workDone);
+    if (!assistant && workDone) await appendIssueWorkNote(wo, active.issue || "General work order", mechanic, workDone);
     await refreshMechanicTimeModal(wo.wo_no);
-    promptPartsUsedAfterClockOut(wo, mechanic, active.issue || "General work order");
+    if (!assistant) promptPartsUsedAfterClockOut(wo, mechanic, active.issue || "General work order");
   } catch (error) {
     alert(error.message || error);
   }

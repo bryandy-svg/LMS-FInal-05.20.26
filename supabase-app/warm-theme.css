@@ -106,3 +106,8 @@
   .frozen-table-scroll::-webkit-scrollbar, .tablewrap::-webkit-scrollbar, .asset-table-wrap::-webkit-scrollbar { width: 16px; height: 16px; }
   .modalbody { scrollbar-gutter: stable; }
 }
+@media screen {
+ .mechanic-role-dialog { max-width: min(520px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 14px; padding: 24px; color: var(--text); background: var(--panel); }
+ .mechanic-role-dialog::backdrop { background: #0008; }
+ .mechanic-role-dialog .actions { flex-wrap: wrap; }
+}
