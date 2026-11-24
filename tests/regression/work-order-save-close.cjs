@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {functions}=require('../source.cjs');
+let saves=0;const body={dataset:{},querySelectorAll:()=>[],scrollTop:40};
+const elements={modalBody:body,modalSave:{},modalCancel:{},modalClose:{}};
+const c=vm.createContext({workOrderEditorCloseState:{body},workOrderEditorSaving:false,modalSaveInProgress:false,modalDirty:true,document:{getElementById:()=>body},$:id=>elements[id],runExclusiveModalSave:(_,f)=>f(),saveWorkOrderEditModal:()=>{saves++;}});
+vm.runInContext(functions(['handleWorkOrderEditorClose']),c);
+assert.equal(c.handleWorkOrderEditorClose(),true);assert.equal(saves,1,'Closing dirty editor saves');
+assert.equal(c.handleWorkOrderEditorClose('discard'),false);assert.equal(saves,1,'Cancel does not save');
+c.workOrderEditorSaving=true;assert.equal(c.handleWorkOrderEditorClose('discard'),true);assert.equal(saves,1,'Cannot discard during save');assert.equal(c.handleWorkOrderEditorClose(true),false,'Successful save may close');
+c.workOrderEditorSaving=false;c.modalDirty=false;assert.equal(c.handleWorkOrderEditorClose(),false);
+let failParts=false;const calls=[];
+const fields=Object.entries({wo_date:'2026-11-24',requested_by:'User',work_type:'Repair',priority:'High',status:'Open',asset_tag:'A'}).map(([k,v])=>({dataset:{productField:k},value:v}));
+Object.assign(c,{editing:{id:'w',wo_no:'W1',asset_tag:'A'},document:{querySelectorAll:()=>fields},validateWorkOrderCustomerJobsite:()=>true,getAll:async()=>[],saveWorkOrderMasterLocations:async()=>{},saveWorkOrderIssueEdits:async()=>calls.push('issues'),saveWorkOrderPartEdits:async()=>{calls.push('parts');if(failParts)throw Error('parts failed');},saveWorkOrderLaborEdits:async()=>calls.push('labor'),updateOneWithOptionalColumns:async()=>calls.push('header'),refreshWorkOrderWaitingPartsStatus:async()=>{},closeModal:()=>calls.push('close'),renderRepairsView:async()=>calls.push('refresh'),alert:()=>calls.push('error')});
+vm.runInContext(functions(['saveWorkOrderEditModal']),c);
+(async()=>{await c.saveWorkOrderEditModal();assert.deepEqual(calls,['issues','parts','labor','header','refresh','close']);assert.equal(body.inert,false);assert.equal(c.workOrderEditorSaving,false);calls.length=0;failParts=true;await c.saveWorkOrderEditModal();assert.deepEqual(calls,['issues','parts','error'],'Failed parts must not close or mark header saved');assert.equal(body.inert,false);assert.equal(elements.modalCancel.disabled,false);})().catch(e=>{console.error(e);process.exitCode=1;});

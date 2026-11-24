@@ -22596,19 +22596,19 @@ async function collapseDuplicatePendingWorkOrderPoReservations(parts = []) {
 async function repairDataAfterRecordChange(reference) {
   const key = reference?.id ? "id" : "wo_no";
   const value = reference?.id || reference?.wo_no || reference;
-  const headers = await workOrderScopedRows("work_orders", key, [value]);
+  const headers = await salesDeliveryRows("work_orders", key, [value]);
   if (!headers.length) throw new Error("The changed work order could not be refreshed.");
   const wo = headers[0];
   const previous = currentRows.find((row) => row.id === wo.id) || {};
   const [issues, parts, labor, movements, poContext] = await Promise.all([
-    workOrderScopedRows("work_order_issues", "wo_id", [wo.id]),
-    workOrderScopedRows("work_order_parts", "wo_id", [wo.id]),
-    workOrderScopedRows("work_order_labor", "wo_id", [wo.id]),
-    workOrderScopedRows("stock_movements", "document_no", [wo.wo_no]),
+    salesDeliveryRows("work_order_issues", "wo_id", [wo.id]),
+    salesDeliveryRows("work_order_parts", "wo_id", [wo.id]),
+    salesDeliveryRows("work_order_labor", "wo_id", [wo.id]),
+    salesDeliveryRows("stock_movements", "document_no", [wo.wo_no]),
     loadWorkOrderPartCostContext({ ...wo, _parts: previous._parts || [] }),
   ]);
   const productIds = [...new Set([...(previous._parts || []), ...parts].map((part) => part.product_id).filter(Boolean))];
-  const products = await workOrderScopedRows("products", "id", productIds);
+  const products = await salesDeliveryRows("products", "id", productIds);
   const merge = (before, after) => [...new Map([...before, ...after].map((row) => [row.id, row])).values()];
   const others = currentRows.filter((row) => row.id !== wo.id);
   return [
@@ -24689,6 +24689,9 @@ async function loadWorkOrderEditorRecord(wo) {
   return { ...wo, ...headers[0], _parts: parts.map(part => ({ ...previousParts.get(part.id), ...part })), _issues: issues, _labor: labor };
 }
 
+let workOrderEditorCloseState = null;
+let workOrderEditorSaving = false;
+
 async function openWorkOrderEditModal(wo, options = {}) {
   if (!wo) return;
   let costContext;
@@ -24836,6 +24839,12 @@ async function openWorkOrderEditModal(wo, options = {}) {
   if (!auditReadOnly) bindWorkOrderMechanicTransfer(wo);
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => quickCreateCustomerInOpenModal());
   if (auditReadOnly) applyAuditReadOnlyModal();
+  workOrderEditorCloseState = auditReadOnly ? null : {body:document.getElementById("adminPartBody")};
+  if (!auditReadOnly) {
+    $("modalCancel").textContent = "Cancel";
+    $("modalCancel").onclick = () => closeModal("discard");
+    $("modalClose").onclick = closeModal;
+  }
 }
 
 function activeWorkOrderForAsset(assetTag, excludingWorkOrderId = null) {
@@ -25015,6 +25024,7 @@ async function parkWorkOrderForPartsIssuance(wo, trigger) {
 }
 
 async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance = false } = {}) {
+  if (workOrderEditorSaving) return null;
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
   if (!validateWorkOrderCustomerJobsite(record)) return;
@@ -25047,6 +25057,12 @@ async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance =
     alert("Customer PO # is required for billable repairs unless manager override, override by, and override reason are completed.");
     return;
   }
+  const savingBody = $("modalBody");
+  const editorView = {scrollTop:savingBody.scrollTop, expanded:[...savingBody.querySelectorAll("details")].map(panel=>panel.open)};
+  workOrderEditorSaving = true;
+  savingBody.inert = true;
+  $("modalCancel").disabled = true;
+  $("modalClose").disabled = true;
   try {
     const transferBody = $("modalBody");
     const previousAssetTag = transferBody?.dataset.workOrderPreviousAssetTag || editing?.asset_tag || "";
@@ -25067,6 +25083,9 @@ async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance =
     }
     await saveWorkOrderMasterLocations(record);
     const previousWorkOrderNo = editing?.wo_no;
+    await saveWorkOrderIssueEdits(editing);
+    await saveWorkOrderPartEdits(editing);
+    await saveWorkOrderLaborEdits(editing);
     await updateOneWithOptionalColumns("work_orders", record, "id", editing.id, ["created_by", "jobsite_location", "actual_location", "ready_to_close_at", "closed_date", "closed_by", "operator", "requested_by", "requestor_email"], "Some work-order fields were not saved because the database needs the latest work-order SQL updates.");
     if (parkForPartsIssuance) await writeAuditLog({ tableName: "work_orders", action: "Parked for Parts Issuance", beforeData: editing, afterData: { ...editing, ...record }, reason: "Repair work complete; parts issuance details pending" });
     if (/closed|complete|invoiced/i.test(String(record.status || ""))) await releaseCompletedWorkOrderEquipment({ ...editing, ...record });
@@ -25085,9 +25104,6 @@ async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance =
         await syncOutsideCustomerFleetLocation(record.asset_tag, record.actual_location);
       }
     }
-    await saveWorkOrderIssueEdits(editing);
-    await saveWorkOrderPartEdits(editing);
-    await saveWorkOrderLaborEdits(editing);
     await refreshWorkOrderWaitingPartsStatus({ ...editing, status: record.status });
     const savedId = editing.id;
     const savedNumber = record.wo_no;
@@ -25096,15 +25112,23 @@ async function saveWorkOrderEditModal({ keepOpen = false, parkForPartsIssuance =
       await renderRepairsView({ id: savedId, wo_no: savedNumber });
       const refreshed = currentRows.find((row) => row.id === savedId || row.wo_no === savedNumber) || editing;
       await openWorkOrderEditModal(refreshed);
+      [...savingBody.querySelectorAll("details")].forEach((panel,index)=>{panel.open=Boolean(editorView.expanded[index]);});
+      savingBody.scrollTop=editorView.scrollTop;
+      modalDirty=false;
       return refreshed;
     } else {
-      closeModal(true);
       await renderRepairsView({ id: savedId, wo_no: savedNumber });
-      return editing;
+      closeModal(true);
+      return { id: savedId, wo_no: savedNumber };
     }
   } catch (error) {
-    alert(error.message || error);
+    alert(`Work order save could not finish. Your entries remain in this form.\n\n${error.message || error}`);
     return null;
+  } finally {
+    savingBody.inert = false;
+    workOrderEditorSaving = false;
+    $("modalCancel").disabled = false;
+    $("modalClose").disabled = false;
   }
 }
 
@@ -25185,6 +25209,7 @@ async function saveWorkOrderPartEdits(wo) {
     const get = (field) => tr.querySelector(`[data-admin-part="${field}"]`)?.value || "";
     const existing = (wo._parts || []).find((part) => String(part.id || "") === String(id));
     const product = resolveProductLookup(get("product_lookup"));
+    if (get("product_lookup").trim() && !product && get("product_lookup").trim().toLowerCase() !== String(existing?.sku || "").trim().toLowerCase()) throw new Error(`Select a matching Product Master part for ${get("product_lookup")}. Your entry has not been discarded.`);
     const description = get("product_name").trim();
     const qtyNeeded = Number(get("qty_needed") || 0);
     const acceptedQty = Number(get("accepted_qty") || 0);
@@ -45925,7 +45950,20 @@ async function quickCreateMasterTermInModal() {
   }
 }
 
+function handleWorkOrderEditorClose(force) {
+  const workOrderEditor = workOrderEditorCloseState?.body && workOrderEditorCloseState.body === document.getElementById("adminPartBody");
+  if (workOrderEditor && force !== true) {
+    if (workOrderEditorSaving || modalSaveInProgress) return true;
+    if (force !== "discard" && modalDirty) {
+      void runExclusiveModalSave($("modalSave"), () => saveWorkOrderEditModal({keepOpen:false}));
+      return true;
+    }
+  }
+  return false;
+}
+
 function closeModal(force = false) {
+  if (handleWorkOrderEditorClose(force)) return false;
   const savedSuccessfully = modalSaveInProgress;
   if (force !== true && modalDirty && !savedSuccessfully && !confirm("You have unsaved changes. Close this popup and discard them?")) return false;
   if (modalPopoutWindow && !modalPopoutWindow.closed) modalPopoutWindow.close();
@@ -45957,6 +45995,7 @@ function closeModal(force = false) {
     ["position", "left", "top", "width", "height", "maxWidth", "maxHeight", "margin"].forEach((property) => { modalBox.style[property] = ""; });
   }
   editing = null;
+  workOrderEditorCloseState = null;
   $("modalSave").style.display = "";
   $("modalSave").textContent = "Save";
   $("modalCancel").textContent = "Cancel";
