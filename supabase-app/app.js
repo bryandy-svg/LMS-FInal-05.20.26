@@ -24491,7 +24491,7 @@ function resolveAssetLookup(value) {
     const plate = String(asset.plate || "").trim().toLowerCase();
     return (reference && reference === key) || (vin && vin === key) || (plate && plate === key);
   });
-  return outside ? { id: null, asset_tag: outside.reference || outside.vin, name: outside.description, make: outside.make, model: outside.model, vin_serial: outside.vin, plate: outside.plate, location: outside.location, status: outside.status, _outsideFleetReference: outside.reference } : null;
+  return outside ? { ...outside, id: null, asset_tag: outside.reference || outside.vin, name: outside.name || outside.description, make: outside.make, model: outside.model, vin_serial: outside.vin, plate: outside.plate, location: outside.location, status: outside.status, _outsideFleetReference: outside.reference } : null;
 }
 
 function fillWorkOrderAssetReadings(value) {
@@ -31249,7 +31249,7 @@ async function renderEquipmentRepairRequestMobile() {
 }
 
 function outsideRepairAsset(row) {
- return {...row,asset_tag:String(row.reference||'').trim(),name:row.description||[row.make,row.model].filter(Boolean).join(' '),vin_serial:row.vin,_repairSource:'outside'};
+ return {...row,asset_tag:String(row.reference||'').trim(),name:row.name||row.description||[row.make,row.model].filter(Boolean).join(' '),vin_serial:row.vin,_repairSource:'outside'};
 }
 
 function selectedRepairRequestAsset(value) {
@@ -31994,8 +31994,33 @@ async function openOutsideFleetModal(row = null) {
       ${productInput("Reference", "reference", reference)}
       ${productSelect("Customer name", "customer_name", productMeta.customers || [], row?.customer_name || "", "New customer")}
       ${productInput("PO #", "po_no", row?.po_no || "")}
+      ${productInput("Name", "name", row?.name || "")}
+      ${productInput("Type of equipment", "type", row?.type || "")}
+      ${productInput("Equipment classification", "general_type", row?.general_type || "")}
+      ${productInput("Year", "year", row?.year || "")}
+      ${productInput("Color", "color", row?.color || "")}
+      ${productInput("Size", "size", row?.size || "")}
+      ${productInput("Engine #", "engine_number", row?.engine_number || "")}
+      ${productInput("Engine Make", "engine_make", row?.engine_make || "")}
+      ${productInput("Engine Model", "engine_model", row?.engine_model || "")}
+      ${productInput("Fuel / power", "fuel_power", row?.fuel_power || "")}
+      ${productInput("Assigned operator", "assigned_operator", row?.assigned_operator || "")}
+      ${productInput("Parent asset", "parent_asset_tag", row?.parent_asset_tag || "")}
+      ${productInput("Relationship", "relationship_type", row?.relationship_type || "")}
+      ${productInput("Compatible with", "compatible_with", row?.compatible_with || "")}
+      ${productInput("Insurance / policy", "insurance_policy", row?.insurance_policy || "")}
+      ${productInput("Mileage / odometer", "odometer", row?.odometer ?? "", "number")}
+      ${productInput("Engine hours", "engine_hours", row?.engine_hours ?? "", "number")}
+      ${productInput("Purchase cost", "purchase_cost", row?.purchase_cost ?? "", "number")}
+      ${productSelect("Mileage unit", "odometer_unit", ["mi", "km"], row?.odometer_unit || "mi")}
+      ${productInput("Purchase date", "purchase_date", row?.purchase_date || "", "date")}
+      ${productInput("Registration expiry", "registration_expiry", row?.registration_expiry || "", "date")}
+      ${productInput("Last update date", "last_update_date", row?.last_update_date || "", "date")}
+      ${productInput("Return date", "return_date", row?.return_date || "", "date")}
+      <div class="field"><label>Location</label><input class="suggest-input" data-suggest-source="locations" data-product-field="location" value="${esc(row?.location || "")}" autocomplete="off"></div>
+      <div class="field"><label>Equipment photo</label>${row?.photo_url ? `<img class="thumb large" src="${esc(row.photo_url)}" alt="Equipment photo">` : ""}<input type="file" accept="image/*" data-asset-file="photo_url"><input type="hidden" data-product-field="photo_url" value="${esc(row?.photo_url || "")}"></div>
       ${productInput("Plate #", "plate", row?.plate || "")}
-      ${productInput("VIN #", "vin", row?.vin || "")}
+      ${productInput("VIN / Serial", "vin", row?.vin || "")}
       ${productInput("Model", "model", row?.model || "")}
       ${productInput("Make", "make", row?.make || "")}
       ${productSelect("Status", "status", ["Open", "For Repair", "WO Assigned", "Closed", "Inactive"], row?.status || "Open")}
@@ -32003,6 +32028,8 @@ async function openOutsideFleetModal(row = null) {
       <div class="field wide"><label>Description</label><textarea data-product-field="description">${esc(row?.description || "")}</textarea></div>
       <div class="field wide"><label>Notes</label><textarea data-product-field="notes">${esc(row?.notes || "")}</textarea></div>
     </div>`;
+  enhanceSuggestInputs($("modalBody"));
+  setupImageDropzones($("modalBody"));
   $("modalSave").onclick = saveOutsideFleetModal;
   $("modal").style.display = "flex";
   document.querySelectorAll("[data-product-quick]").forEach((b) => b.onclick = () => quickCreateCustomerInOpenModal());
@@ -32011,6 +32038,12 @@ async function openOutsideFleetModal(row = null) {
 async function saveOutsideFleetModal() {
   const record = collectProductModalFields();
   if (!record.reference || !record.customer_name) return alert("Reference and Customer Name are required.");
+  for (const key of ["odometer", "engine_hours", "purchase_cost"]) {
+    const value = String(record[key] ?? "").trim();
+    if (value && (!Number.isFinite(Number(value)) || Number(value) < 0)) return alert("Mileage, engine hours, and purchase cost must be zero or greater.");
+    record[key] = value ? Number(value) : null;
+  }
+  for (const key of ["purchase_date", "registration_expiry", "last_update_date", "return_date"]) record[key] = record[key] || null;
   const requestedWorkOrder = String(record.wo_no || "").trim();
   if (/inactive/i.test(String(record.status || ""))) {
     record.wo_no = null;
@@ -32024,6 +32057,8 @@ async function saveOutsideFleetModal() {
     record.wo_no = null;
   }
   try {
+    const file = document.querySelector("[data-asset-file]")?.files?.[0];
+    if (file) record.photo_url = await uploadAssetPhoto(record.reference, file);
     await upsertOneWithOptionalColumns("outside_customer_fleet", record, "reference", ["plate"], "The unit was saved, but Plate # requires the 20260810 Outside Customer Fleet plate SQL update.");
     if (!editing) await incrementSequence("outside_fleet");
     closeModal();
@@ -42660,25 +42695,62 @@ async function openAssetWorkOrder(assetTag, preferOpen = false) {
   openNewWorkOrderModal({ assetTag, description: asset._openWoIssue || "" });
 }
 
+async function equipmentHistoryAssetRows(table, column, assetTag, columns = "*") {
+  const tag = String(assetTag || "").trim();
+  if (!tag) return [];
+  const pattern = "%" + tag.replace(/[\\%_]/g, value => "\\" + value) + "%";
+  return getViewData(`equipment-history:${table}:${column}:${tag.toLowerCase()}:${columns}`, async signal => {
+    const rows = [];
+    for (let offset = 0; ; offset += 500) {
+      const {data,error} = await supabase.from(table).select(columns).ilike(column,pattern).order("id").range(offset,offset+499).abortSignal(signal);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if ((data || []).length < 500) return rows;
+    }
+  });
+}
+
+async function loadEquipmentHistory(assetTag) {
+  const key = String(assetTag || "").trim().toLowerCase();
+  const workPromise = equipmentHistoryAssetRows("work_orders","asset_tag",assetTag)
+    .then(rows=>rows.filter(row=>String(row.asset_tag || "").trim().toLowerCase()===key));
+  const linesPromise = equipmentHistoryAssetRows("trucking_request_lines","asset_tag",assetTag)
+    .then(rows=>rows.filter(row=>String(row.asset_tag || "").trim().toLowerCase()===key));
+  const fuelColumns = "id,report_no,fuel_date,jobsite,asset_tag,fuel_truck,gallons,status,company";
+  // Mixed legacy asset_items representations need the shared tag parser. Fetch only
+  // location fields here, never the stored signatures or PO attachment payloads.
+  const equipmentPromise = getViewData("equipment-history:equipment_requests:locations", signal=>getAll("equipment_requests",{
+    strict:true,signal,columns:"id,request_no,request_date,asset_tag,asset_items,from_date,to_date,location,customer_name,requested_by"
+  })).then(rows=>rows.filter(row=>fleetReportAssetTagsFromRequest(row).some(tag=>tag.toLowerCase()===key)));
+  const detailPromise = workPromise.then(async workOrders=>{
+    const ids=workOrders.map(row=>row.id);
+    const [parts,labor,issues]=await Promise.all([
+      salesDeliveryRows("work_order_parts","wo_id",ids),
+      salesDeliveryRows("work_order_labor","wo_id",ids,"id,wo_id,clock_in,clock_out,break_minutes"),
+      salesDeliveryRows("work_order_issues","wo_id",ids,"id,wo_id,issue")
+    ]);
+    return {workOrders,parts,labor,issues};
+  });
+  const requestsPromise = linesPromise.then(lines=>salesDeliveryRows("trucking_requests","request_no",lines.map(row=>row.request_no),"id,request_no,needed_date,request_date,destination,customer,jobsite,project_jobsite"));
+  const [detail,equipmentRequests,fuelReceived,fuelDispensed,truckingRequestLines,truckingRequests] = await Promise.all([
+    detailPromise,equipmentPromise,equipmentHistoryAssetRows("fuel_logs","asset_tag",assetTag,fuelColumns),
+    equipmentHistoryAssetRows("fuel_logs","fuel_truck",assetTag,fuelColumns),linesPromise,requestsPromise
+  ]);
+  return {...detail,equipmentRequests,fuelLogs:[...new Map([...fuelReceived,...fuelDispensed].map(row=>[row.id,row])).values()],truckingRequestLines,truckingRequests};
+}
+
 async function openAssetHistoryModal(assetTag, sourceAsset = null) {
   const asset = sourceAsset || currentRows.find((row) => row.asset_tag === assetTag) || (productMeta.assets || []).find((row) => row.asset_tag === assetTag);
   if (!asset) return;
   $("modalTitle").textContent = `Equipment history - ${assetTag}`;
   $("modalBody").innerHTML = `<div class="empty">Loading equipment history...</div>`;
+  const loadingPanel = $("modalBody").firstElementChild;
   $("modalSave").onclick = closeModal;
   $("modalSave").textContent = "Close";
   $("modal").style.display = "flex";
   try {
-    const [workOrders, parts, labor, issues, equipmentRequests, fuelLogs, truckingRequests, truckingRequestLines] = await Promise.all([
-      getAll("work_orders"),
-      getAll("work_order_parts"),
-      getAll("work_order_labor"),
-      getAll("work_order_issues"),
-      getAll("equipment_requests"),
-      getAll("fuel_logs"),
-      getAll("trucking_requests"),
-      getAll("trucking_request_lines"),
-    ]);
+    const {workOrders, parts, labor, issues, equipmentRequests, fuelLogs, truckingRequests, truckingRequestLines} = await loadEquipmentHistory(assetTag);
+    if ($("modal").style.display === "none" || $("modalBody").firstElementChild !== loadingPanel) return;
     const locationEvents = buildFleetLocationEvents({ assets: [], workOrders, equipmentRequests, fuelLogs, truckingRequests, truckingRequestLines })
       .filter(row => String(row.asset_tag || '').trim().toLowerCase() === String(assetTag).trim().toLowerCase())
       .sort((a, b) => b.event_date.localeCompare(a.event_date));
@@ -42692,7 +42764,7 @@ async function openAssetHistoryModal(assetTag, sourceAsset = null) {
       event.jobsite = record?.jobsite_location || record?.jobsite || record?.project_jobsite || record?.location || "";
     });
     const locationHistoryHtml = `<section class="subpanel"><div class="panel-title"><strong>Location history</strong><span>Current recorded location: ${esc(asset.location || asset.actual_location || 'Not recorded')}. Historical locations below come from dated operational records; requests are not confirmation of movement.</span></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Location</th><th>Customer</th><th>Jobsite</th><th>Source</th><th>Reference</th><th>Details</th></tr></thead><tbody>${locationEvents.length ? locationEvents.map(row => `<tr><td>${esc(formatDisplayDate(row.event_date))}</td><td>${esc(row.location)}</td><td>${esc(row.customer)}</td><td>${esc(row.jobsite)}</td><td>${esc(row.source)}</td><td>${row.source === "Work Order" ? woLink(row.reference) : esc(row.reference)}</td><td>${esc(row.detail)}</td></tr>`).join('') : '<tr><td colspan="7" class="empty">No dated location history found for this equipment.</td></tr>'}</tbody></table></div></section>`;
-    const assetWos = workOrders.filter((wo) => String(wo.asset_tag || "").toLowerCase() === String(assetTag || "").toLowerCase());
+    const assetWos = workOrders;
     const woIds = new Set(assetWos.map((wo) => wo.id));
     const woNoById = new Map(assetWos.map((wo) => [wo.id, wo.wo_no]));
     const partRows = parts.filter((part) => woIds.has(part.wo_id));
@@ -42741,6 +42813,7 @@ async function openAssetHistoryModal(assetTag, sourceAsset = null) {
       XLSX.writeFile(workbook,assetTag+'-equipment-history.xlsx');
     } catch(error) { alert(error.message || error); } };
   } catch (error) {
+    if ($("modal").style.display === "none" || $("modalBody").firstElementChild !== loadingPanel) return;
     $("modalBody").innerHTML = `<div class="notice error">${esc(error.message || error)}</div>`;
   }
 }

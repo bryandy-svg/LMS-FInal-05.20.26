@@ -153,5 +153,7 @@
   "outside-repair-request",
   "po-work-order-allocation",
   "work-order-save-close",
-  "inventory-count-bin-filter"
+  "inventory-count-bin-filter",
+  "equipment-history-scoped",
+  "outside-fleet-details"
 ]
