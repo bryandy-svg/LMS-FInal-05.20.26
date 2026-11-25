@@ -79,7 +79,7 @@ function sessionWarmTables() {
     [["invoices"], ["invoices"]],
     [["rentals"], ["rentals"]],
   ];
-  groups.push(...[[["dashboard"],["products"]],[["products"],["products","vendors","categories","units","warehouses","product_bins","product_mother_components","purchase_orders","goods_receipts","sales_orders","sales_order_lines","work_order_parts","work_orders","invoices","invoice_lines"]],[["movements"],["products","goods_receipts","purchase_orders","purchase_order_lines","sales_orders","sales_order_lines","work_orders","work_order_parts","warehouses","assets","outside_customer_fleet"]],[["inventory"],["products","goods_receipts","sales_orders","sales_order_lines","work_orders","work_order_parts"]],[["partsreport"],["products","invoices","invoice_lines","goods_receipts","work_orders","work_order_parts"]],[["purchasing"],["purchase_orders","purchase_order_lines","goods_receipts","vendors","customers","work_orders","master_terms","incoterms","standard_po_notes","warehouses","assets","locations","asset_locations"]],[["receipts"],["goods_receipts","products"]],[["quotes"],["quotations","quotation_lines","customers","products","sales_orders"]],[["orders"],["sales_orders","sales_order_lines","customers","products","product_alternates","sales_pricing_rates","work_orders","asset_locations","assets","outside_customer_fleet"]],[["salesrates"],["sales_pricing_rates"]],[["laborrates"],["labor_pricing_rates"]],[["salestopurchase"],["sales_orders","sales_order_lines","products"]],[["rentalbids"],["equipment_rental_bids","equipment_rental_bid_lines"]],[["rentals"],["rentals","customers","assets","products","equipment_rental_rates"]],[["invoices"],["invoices","invoice_lines","customer_payments","customers","products","work_orders","work_order_issues","work_order_parts","work_order_labor","assets","outside_customer_fleet","sales_orders"]],[["payments"],["customer_payments","invoices","invoice_lines","customers"]],[["accounting"],["chart_of_accounts"]],[["coa"],["chart_of_accounts"]],[["checkrun"],["purchase_orders","purchase_order_lines","goods_receipts","check_runs","chart_of_accounts","work_orders","assets"]],[["bank"],["bank_transactions","chart_of_accounts","bank_beginning_balances","bank_reconciliations"]],[["assets"],["assets","asset_locations","asset_types","work_orders"]],[["fleetreport"],["assets","equipment_requests","work_orders","trucking_requests","trucking_request_lines"]],[["outsidefleet"],["outside_customer_fleet","work_orders","customers"]],[["equipmentrepairquotes"],["equipment_repair_quotes","customers","assets","outside_customer_fleet"]],[["repairreport"],["work_orders","work_order_issues","work_order_parts","work_order_labor","assets","mechanics","invoices","invoice_lines"]],[["equipmentrequests"],["equipment_requests","assets"]],[["customerforms"],["customer_equipment_forms"]],[["truckingrequests"],["trucking_request_lines"]],[["truckingquotes"],["trucking_quotations","trucking_quotation_lines"]],[["truckingreport"],["fuel_pricing_periods","trucking_request_lines"]],[["truckingrates"],["trucking_rates"]],[["propertymaster"],["property_maintenance_properties"]],[["propertyrequests"],["property_maintenance_requests","property_maintenance_properties"]],[["propertyworkorders"],["property_maintenance_work_orders","property_maintenance_properties","property_maintenance_requests"]],[["propertyreport"],["property_maintenance_work_orders"]],[["equipmentrepairqueue"],["assets","work_orders","asset_locations","asset_types","customers"]],[["repairs"],["work_orders","work_order_issues","work_order_parts","work_order_labor","assets","outside_customer_fleet","mechanics","customers","products","purchase_orders","purchase_order_lines"]],[["partsrequests"],["products","work_order_parts"]],[["supplies"],["products","mechanics","work_orders","work_order_parts"]],[["aging"],["invoices","invoice_lines","customer_payments","purchase_orders","purchase_order_lines","goods_receipts","check_runs"]]]);
+  groups.push(...[[["dashboard"],["products"]],[["products"],["products","vendors","categories","units","warehouses","product_bins","product_mother_components","purchase_orders","goods_receipts","sales_orders","sales_order_lines","work_order_parts","work_orders","invoices","invoice_lines"]],[["movements"],["products","goods_receipts","purchase_orders","purchase_order_lines","sales_orders","sales_order_lines","work_orders","work_order_parts","warehouses","assets","outside_customer_fleet"]],[["inventory"],["products","goods_receipts","sales_orders","sales_order_lines","work_orders","work_order_parts"]],[["partsreport"],["products","invoices","invoice_lines","goods_receipts","work_orders","work_order_parts"]],[["purchasing"],["purchase_orders","purchase_order_lines","goods_receipts","vendors","customers","work_orders","master_terms","incoterms","standard_po_notes","warehouses","assets","locations","asset_locations"]],[["receipts"],["goods_receipts","products"]],[["quotes"],["quotations","quotation_lines","customers","products","sales_orders"]],[["orders"],["sales_orders","sales_order_lines","customers","products","product_alternates","sales_pricing_rates","work_orders","asset_locations","assets","outside_customer_fleet"]],[["salesrates"],["sales_pricing_rates"]],[["laborrates"],["labor_pricing_rates"]],[["salestopurchase"],["sales_orders","sales_order_lines","products","work_orders","work_order_parts"]],[["rentalbids"],["equipment_rental_bids","equipment_rental_bid_lines"]],[["rentals"],["rentals","customers","assets","products","equipment_rental_rates"]],[["invoices"],["invoices","invoice_lines","customer_payments","customers","products","work_orders","work_order_issues","work_order_parts","work_order_labor","assets","outside_customer_fleet","sales_orders"]],[["payments"],["customer_payments","invoices","invoice_lines","customers"]],[["accounting"],["chart_of_accounts"]],[["coa"],["chart_of_accounts"]],[["checkrun"],["purchase_orders","purchase_order_lines","goods_receipts","check_runs","chart_of_accounts","work_orders","assets"]],[["bank"],["bank_transactions","chart_of_accounts","bank_beginning_balances","bank_reconciliations"]],[["assets"],["assets","asset_locations","asset_types","work_orders"]],[["fleetreport"],["assets","equipment_requests","work_orders","trucking_requests","trucking_request_lines"]],[["outsidefleet"],["outside_customer_fleet","work_orders","customers"]],[["equipmentrepairquotes"],["equipment_repair_quotes","customers","assets","outside_customer_fleet"]],[["repairreport"],["work_orders","work_order_issues","work_order_parts","work_order_labor","assets","mechanics","invoices","invoice_lines"]],[["equipmentrequests"],["equipment_requests","assets"]],[["customerforms"],["customer_equipment_forms"]],[["truckingrequests"],["trucking_request_lines"]],[["truckingquotes"],["trucking_quotations","trucking_quotation_lines"]],[["truckingreport"],["fuel_pricing_periods","trucking_request_lines"]],[["truckingrates"],["trucking_rates"]],[["propertymaster"],["property_maintenance_properties"]],[["propertyrequests"],["property_maintenance_requests","property_maintenance_properties"]],[["propertyworkorders"],["property_maintenance_work_orders","property_maintenance_properties","property_maintenance_requests"]],[["propertyreport"],["property_maintenance_work_orders"]],[["equipmentrepairqueue"],["assets","work_orders","asset_locations","asset_types","customers"]],[["repairs"],["work_orders","work_order_issues","work_order_parts","work_order_labor","assets","outside_customer_fleet","mechanics","customers","products","purchase_orders","purchase_order_lines"]],[["partsrequests"],["products","work_order_parts"]],[["supplies"],["products","mechanics","work_orders","work_order_parts"]],[["aging"],["invoices","invoice_lines","customer_payments","purchase_orders","purchase_order_lines","goods_receipts","check_runs"]]]);
   return [...new Set(groups.filter(([views]) => views.some(canAccess)).flatMap(([, tables]) => tables))];
 }
 async function warmNextSessionTable() {
@@ -842,7 +842,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { fetch
 const modules = [
   { group: "Home", items: [["dashboard", "Dashboard"]] },
   { group: "Inventory", items: [["products", "Products"], ["movements", "Stock Movement"], ["inventory", "Inventory Balance"], ["partsissuance", "Parts Issuance"], ["partsissues", "Parts Issues"], ["partsreport", "Parts Reports"], ["purchasing", "Purchasing"], ["receipts", "Goods Receipts"]] },
-  { group: "Sales & Billing", items: [["quotes", "Quotations"], ["orders", "Sales Orders"], ["salesrates", "Pricing Rates"], ["salestopurchase", "Parts to Order"], ["invoices", "Invoices"], ["payments", "Customer Payments"]] },
+  { group: "Sales & Billing", items: [["quotes", "Quotations"], ["orders", "Sales Orders"], ["salesrates", "Pricing Rates"], ["salestopurchase", "Parts Requirements"], ["invoices", "Invoices"], ["payments", "Customer Payments"]] },
   { group: "Fleet & Repairs", items: [["assets", "Fleet & Equipment"], ["fleetreport", "Fleet & Equipment Reports"], ["outsidefleet", "Outside Customer Fleet"], ["customerforms", "Customer Equipment Forms"], ["equipmentrepairquotes", "Equipment Repair Quotes"], ["equipmentrequests", "Equipment Requests"], ["equipmentrepairqueue", "Equipment Repair Requests"], ["equipmenthistory", "Equipment History"], ["repairs", "Repairs"], ["repairreport", "Repair Reports"], ["laborrates", "Labor Pricing Rates"], ["supplies", "Supplies Issuance"], ["partsrequests", "Parts Requests"], ["fuel", "Fuel Portal"], ["mechanics", "Mechanics"]] },
   { group: "Trucking", items: [["truckingquotes", "Quotations"], ["truckingrequests", "Move Requests"], ["trucking", "Dispatcher Scheduler"], ["truckingassigned", "Assigned Driver"], ["truckingticketentry", "Ticket Entry"], ["truckingtickets", "Tickets"], ["truckinglabor", "Driver Labor Details"], ["truckingreport", "Trucking Report"], ["truckingrates", "Rate Sheet"]] },
   { group: "Rentals", items: [["rentalbids", "Bids / Quotations"], ["rentals", "Rental Contracts"], ["rentalrates", "Rental Rate Sheet"]] },
@@ -934,7 +934,7 @@ const tableMap = {
   orders: { table: "sales_orders", key: "order_no", title: "Sales Orders", sub: "Customer demand, payment references, line items, fulfillment, and invoicing.", heads: ["order_no", "order_date", "created_by", "customer", "customer_po", "payment_mode", "manager_override", "override_by", "status", "invoice_no"], labels: ["Order", "Date", "Created By", "Customer", "PO / Reference", "Payment Mode", "Override", "Override By", "Status", "Invoice"] },
   salesrates: { table: "sales_pricing_rates", key: "id", title: "Pricing Rates", sub: "Reusable Internal, External Customer, and Special cost-multiplier rules for Sales Orders.", heads: ["rate_type", "rate_name", "markup_percent", "description", "status"], labels: ["Rate Type", "Rate Name", "Rate Multiplier %", "Description", "Status"] },
   laborrates: { table: "labor_pricing_rates", key: "id", title: "Labor Pricing Rates", sub: "Reusable Internal, External Customer, and Special cost-multiplier rates for Work Orders.", heads: ["rate_type", "rate_name", "hourly_rate", "description", "status"], labels: ["Rate Type", "Rate Name", "Rate Multiplier %", "Description", "Status"] },
-  salestopurchase: { title: "Parts to Order", sub: "Customer sales demand that is reserved or backordered until stock is received.", derived: true },
+  salestopurchase: { title: "Parts Requirements", sub: "Work-order and sales-order requirements, shortages, and pending issuance.", derived: true },
   assets: { table: "assets", key: "asset_tag", title: "Fleet & Equipment", sub: "Track vehicles, heavy equipment, readings, ownership, locations, photos, QR codes, requests, and parent/child attachments.", heads: ["photo_url", "qr_update_url", "old_qr_code", "asset_tag", "name", "type", "general_type", "parent_asset_tag", "relationship_type", "compatible_with", "make", "model", "color", "size", "vin_serial", "plate", "location", "gps_location", "last_update_date", "scanned_date", "odometer", "engine_hours", "assigned_operator", "requested_by", "approved_by", "repair_po_no", "status"], labels: ["Photo", "New QR", "Old QR Code", "Asset #", "Description", "Type", "General Type", "Parent Asset", "Relationship", "Compatible With", "Make", "Model", "Color", "Size", "VIN / Serial", "Plate", "Location", "GPS", "Last Update Date", "Scanned Date", "Odometer", "Hours", "Operator", "Requested By", "Approved By", "Repair PO #", "Status"] },
   outsidefleet: { table: "outside_customer_fleet", key: "reference", title: "Outside Customer Fleet", sub: "Customer-owned equipment that can be requested, inspected, repaired, and billed without adding it to LMS owned fleet.", heads: ["reference", "customer_name", "po_no", "plate", "vin", "model", "make", "description", "status", "wo_no"], labels: ["Reference", "Customer Name", "PO #", "Plate #", "VIN #", "Model", "Make", "Description", "Status", "WO #"] },
   equipmentrepairquotes: { table: "equipment_repair_quotes", key: "quote_no", title: "Equipment Repair Quotes", sub: "Prepare equipment repair estimates and convert accepted quotes into work orders.", heads: ["quote_no", "quote_date", "expires_on", "customer_name", "asset_tag", "asset_description", "scope_of_work", "parts_amount", "labor_amount", "other_amount", "total_amount", "status", "work_order_no"], labels: ["Quote #", "Date", "Expires", "Customer", "Equipment", "Description", "Scope of Work", "Parts", "Labor", "Other", "Total", "Status", "Work Order"] },
@@ -18186,6 +18186,8 @@ async function saveGoodsReceiptModalOnce() {
     await renderPurchasingView();
     const closedLandedCostCount = await promptCloseCompletedLandedCostPos(po.po_no);
     if (closedLandedCostCount) await renderPurchasingView();
+    await openGoodsReceiptLinkedDocuments(po);
+    if (await notifyReceivedPartsRequirements(receiptRows)) return;
     if (isWorkOrderPurchaseOrder(po)) {
       alert(`Goods Receipt posted. Received quantities allocated to the work order were automatically issued and accepted. Any balance remains in inventory.`);
     } else if (isShopIssuancePurchaseOrder(po)) {
@@ -18195,7 +18197,6 @@ async function saveGoodsReceiptModalOnce() {
       const action = po.linked_sales_order_no ? "Open the linked Sales Order now?" : "Create a prefilled Sales Order now?";
       if (confirm(`Goods Receipt posted for customer ${po.linked_customer}.\n\n${action}`)) await openSalesOrderFromPurchaseOrder(po.po_no);
     }
-    await openGoodsReceiptLinkedDocuments(po);
   } catch (error) {
     alert(error.message || error);
   }
@@ -20742,28 +20743,140 @@ async function useSalesAlternate(lineRow, sourceProduct, alternateProduct) {
   }
 }
 
-async function renderSalesPartsToOrderView() {
-  currentCfg = tableMap.salestopurchase;
-  $("viewTitle").textContent = "Parts to Order";
-  $("viewSub").textContent = "Reserved customer demand that cannot be fulfilled until inventory is received.";
-  const [orders, lines, products] = await Promise.all([
-    getViewRows("sales_orders"),
-    getViewRows("sales_order_lines"),
-    getViewRows("products"),
+function buildPartsRequirementRows(orders, salesLines, workOrders, parts, products) {
+  const norm = value => String(value || '').trim().toLowerCase();
+  const byId = new Map(products.map(row => [row.id, row]));
+  const bySku = new Map(products.map(row => [norm(row.sku), row]));
+  const productFor = row => byId.get(row.product_id) || bySku.get(norm(row.sku));
+  const keyFor = row => productFor(row)?.id || norm(row.sku) || `unassigned:${row.id}`;
+  const free = new Map(products.map(row => [row.id, Math.max(0, Number(row.qty || 0))]));
+  const orderMap = new Map(orders.filter(row => !/quotation|fulfilled|paid|cancel|void|invoiced|closed/i.test(row.status || '')).map(row => [row.id, row]));
+  const woMap = new Map(workOrders.filter(isOpenWorkOrder).map(row => [row.id, row]));
+  const rows = [];
+  for (const line of [...salesLines].sort((a,b)=>String(orderMap.get(a.order_id)?.order_date||'').localeCompare(String(orderMap.get(b.order_id)?.order_date||'')) || String(orderMap.get(a.order_id)?.order_no||'').localeCompare(String(orderMap.get(b.order_id)?.order_no||'')))) {
+    const order = orderMap.get(line.order_id);
+    if (!order || /cancel|void|removed/i.test(line.status || '')) continue;
+    const required = Math.max(0, Number(line.qty || 0));
+    const completed = Math.max(0, Number(line.shipped_qty || 0), Number(line.invoiced_qty || 0));
+    const pending = Math.max(0, required - completed);
+    const held = Math.min(pending, Math.max(0, Number(line.issued_qty || 0) - completed));
+    const key = keyFor(line);
+    const coveredReservation=Math.min(held,free.get(key)||0);
+    free.set(key, Math.max(0, (free.get(key) || 0) - coveredReservation));
+    if (!pending) continue;
+    rows.push({source:'Sales Order', reference:order.order_no, date:order.order_date, customer:order.customer, customer_po:order.customer_po, asset:'', jobsite:order.jobsite_location || '', required, completed, pending, reserved:held, coveredReservation, line, key});
+  }
+  for (const line of parts) {
+    const wo = woMap.get(line.wo_id);
+    if (!wo || /cancel|void|returned|released|removed/i.test(line.status || '')) continue;
+    const required = Math.max(0, Number(line.qty_needed || 0));
+    const completed = Math.max(0, Number(line.accepted_qty || 0));
+    const pending = Math.max(0, required - completed);
+    if (!pending) continue;
+    rows.push({source:'Work Order', reference:wo.wo_no, date:wo.wo_date, customer:wo.bill_to_customer, customer_po:wo.customer_po, asset:wo.asset_tag, jobsite:wo.jobsite_location, required, completed, pending, reserved:0, coveredReservation:0, line, key:keyFor(line)});
+  }
+  return rows.sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')) || String(a.reference||'').localeCompare(String(b.reference||''))).map(row=>{
+    const product = productFor(row.line);
+    const allocation = Math.min(row.pending-row.coveredReservation, free.get(row.key)||0);
+    free.set(row.key, Math.max(0,(free.get(row.key)||0)-allocation));
+    const shortage = Math.max(0,row.pending-row.coveredReservation-allocation);
+    const {line,key,coveredReservation,...detail} = row;
+    return {...detail, product_id:product?.id || line.product_id, sku:line.sku || product?.sku || '', description:line.product_name || line.description || line.requested_description || product?.name || '', on_hand:Math.max(0,Number(product?.qty||0)), available:allocation+row.coveredReservation, shortage, vendor:product?.source_vendor || '', status:!product ? 'Select part' : shortage>0 ? 'Shortage / Back order' : 'Ready for review'};
+  });
+}
+
+async function loadPartsRequirements(receiptRows = null) {
+  const orderColumns='id,order_no,order_date,customer,customer_po,jobsite_location,status';
+  const lineColumns='id,order_id,product_id,sku,product_name,description,qty,issued_qty,shipped_qty,invoiced_qty';
+  const woColumns='id,wo_no,wo_date,bill_to_customer,customer_po,asset_tag,jobsite_location,status';
+  const partColumns='id,wo_id,product_id,sku,product_name,qty_needed,accepted_qty,status';
+  const productColumns='id,sku,name,qty,source_vendor';
+  if(receiptRows) {
+    const ids=[...new Set(receiptRows.map(row=>row.product_id).filter(Boolean))];
+    const skus=[...new Set(receiptRows.map(row=>String(row.sku||'').trim()).filter(Boolean))];
+    const matching=async(table,idColumn,columns)=>{
+      const [byId,bySku]=await Promise.all([salesDeliveryRows(table,idColumn,ids,columns),salesDeliveryRows(table,'sku',skus,columns)]);
+      return [...new Map([...byId,...bySku].map(row=>[row.id,row])).values()];
+    };
+    const [products,lines,parts]=await Promise.all([matching('products','id',productColumns),canAccess('orders')?matching('sales_order_lines','product_id',lineColumns):[],canAccess('repairs')?matching('work_order_parts','product_id',partColumns):[]]);
+    const [orders,workOrders]=await Promise.all([salesDeliveryRows('sales_orders','id',lines.map(row=>row.order_id),orderColumns),salesDeliveryRows('work_orders','id',parts.map(row=>row.wo_id),woColumns)]);
+    return buildPartsRequirementRows(orders,lines,workOrders,parts,products);
+  }
+  const [orders, lines, workOrders, parts, products] = await Promise.all([
+    canAccess('orders') ? getAll('sales_orders',{strict:true,columns:orderColumns}) : [],
+    canAccess('orders') ? getAll('sales_order_lines',{strict:true,columns:lineColumns}) : [],
+    canAccess('repairs') ? getAll('work_orders',{strict:true,columns:woColumns}) : [],
+    canAccess('repairs') ? getAll('work_order_parts',{strict:true,columns:partColumns}) : [],
+    getAll('products',{strict:true,columns:productColumns})
   ]);
-  currentRows = buildSalesPartsToOrderRows(orders, lines, products);
-  $("content").innerHTML = `
-    <div class="toolbar">
-      <input class="searchbox" id="partsToOrderSearch" placeholder="Search by customer, order, SKU, product, status">
-    </div>
-    <section class="panel">
-      <div class="panel-head"><div class="panel-title"><strong>Parts to Order</strong><span>Sales orders are allowed, but issue and invoice stay blocked until these shortages are received.</span></div><div class="actions"><button id="partsToOrderCsvBtn">Excel</button><button onclick="window.print()">PDF / Print</button><button class="primary" id="partsToOrderPoBtn">New PO</button></div></div>
-      <div id="partsToOrderHost">${salesPartsToOrderTableHtml(currentRows)}</div>
-    </section>`;
-  $("partsToOrderSearch").oninput = renderFilteredSalesPartsToOrder;
-  $("partsToOrderCsvBtn").onclick = exportSalesPartsToOrderCsv;
-  $("partsToOrderPoBtn").onclick = () => loadView("purchasing");
-  bindPartsToOrderRows();
+  return buildPartsRequirementRows(orders,lines,workOrders,parts,products);
+}
+
+function partsRequirementsTable(rows) {
+  const heads=['Source','Order','Date','Customer','Customer PO','Equipment','Jobsite','Part #','Description','Required','Issued / Shipped','Pending','SO Reserved','On Hand','Available for Requirement','Shortage / Back Order','Status',''];
+  return `<div class="table-wrap"><table><thead><tr>${heads.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((r,index)=>`<tr>${[r.source,r.reference,formatDisplayDate(r.date),r.customer,r.customer_po,r.asset,r.jobsite,r.sku,r.description,r.required,r.completed,r.pending,r.reserved,r.on_hand,r.available,r.shortage,r.status].map(v=>`<td>${esc(v??'')}</td>`).join('')}<td><button class="rowbtn" type="button" data-requirement-index="${index}">Review ${r.source==='Work Order'?'WO':'SO'}</button></td></tr>`).join('') || `<tr><td colspan="${heads.length}" class="empty">No matching pending requirements.</td></tr>`}</tbody></table></div>`;
+}
+
+function bindPartsRequirements(host, rows) {
+  host.querySelectorAll('[data-requirement-index]').forEach(button=>button.onclick=async()=>{
+    const row=rows[Number(button.dataset.requirementIndex)];
+    button.disabled=true;
+    try {
+      closeModal();
+      if(row.source==='Work Order') {
+        await loadView('repairs');
+        const {data,error}=await supabase.from('work_orders').select('*').eq('wo_no',row.reference).single();
+        if(error)throw error;
+        await openWorkOrderEditModal(data);
+      } else {
+        await loadView('orders');
+        const {data:order,error}=await supabase.from('sales_orders').select('*').eq('order_no',row.reference).single();
+        if(error)throw error;
+        const lines=await salesDeliveryRows('sales_order_lines','order_id',[order.id]);
+        await openSalesOrderModal({...order,_lines:lines});
+      }
+    } catch(error) {alert(error.message||error);} finally {button.disabled=false;}
+  });
+}
+
+async function renderSalesPartsToOrderView() {
+  currentCfg=tableMap.salestopurchase;
+  $('viewTitle').textContent='Parts Requirements / Back Orders';
+  $('viewSub').textContent='Pending work-order and sales-order parts, shortages, and stock ready for issuance review.';
+  currentRows=await loadPartsRequirements();
+  $('content').innerHTML=`<div class="toolbar"><input class="searchbox" id="requirementsSearch" placeholder="Search order, customer, equipment, jobsite or part"><select id="requirementsStatus"><option value="shortage">Shortage / Back order</option><option value="all">All pending requirements</option><option value="ready">Ready for review</option></select><select id="requirementsSource"><option value="">All sources</option><option>Work Order</option><option>Sales Order</option></select><button id="requirementsExport">Excel</button>${canAccess("purchasing")?'<button id="requirementsPo">New PO</button>':""}<button onclick="window.print()">PDF / Print</button></div><div class="notice">Available stock is shared across requirements in date order, after existing sales reservations. These are planning quantities, not new reservations. Review the source order before issuing. Work-order issued quantities are accepted parts; sales completed quantities are shipped/invoiced parts.</div><div id="requirementsCount"></div><div id="requirementsHost"></div>`;
+  let shown=[];
+  const render=()=>{
+    const query=$('requirementsSearch').value.trim().toLowerCase(),mode=$('requirementsStatus').value,source=$('requirementsSource').value;
+    shown=currentRows.filter(row=>(!source||row.source===source)&&(mode==='all'||(mode==='ready'?row.shortage===0:row.shortage>0))&&(!query||Object.values(row).join(' ').toLowerCase().includes(query)));
+    $('requirementsCount').textContent=`${shown.length} pending requirement(s)`;
+    $('requirementsHost').innerHTML=partsRequirementsTable(shown);
+    bindPartsRequirements($('requirementsHost'),shown);
+  };
+  $('requirementsSearch').oninput=render;
+  $('requirementsStatus').onchange=render;
+  $('requirementsSource').onchange=render;
+  if($('requirementsPo'))$('requirementsPo').onclick=()=>loadView('purchasing');
+  $('requirementsExport').onclick=()=>{const keys=['source','reference','date','customer','customer_po','asset','jobsite','sku','description','required','completed','pending','reserved','on_hand','available','shortage','status'];downloadCsv([keys,...shown.map(row=>keys.map(k=>row[k]??''))],'parts-requirements.csv');};
+  render();
+}
+
+async function notifyReceivedPartsRequirements(receiptRows) {
+  if(!canAccess('orders')&&!canAccess('repairs'))return false;
+  const viewAtStart=state.view, bodyAtStart=$('modalBody').firstElementChild;
+  try {
+    const ids=new Set(receiptRows.map(row=>row.product_id).filter(Boolean));
+    const skus=new Set(receiptRows.map(row=>String(row.sku||'').trim().toLowerCase()).filter(Boolean));
+    const rows=(await loadPartsRequirements(receiptRows)).filter(row=>ids.has(row.product_id)||skus.has(String(row.sku||'').trim().toLowerCase()));
+    if(!rows.length || state.view!==viewAtStart || $('modalBody').firstElementChild!==bodyAtStart)return false;
+    $('modalTitle').textContent='Parts received — pending issuance review';
+    $('modalBody').innerHTML=`<div class="notice success">Goods Receipt is saved. These received parts have ${rows.length} pending requirement(s). Directly linked work-order allocations keep their automatic issuance; remaining requirements below need review. Use Review WO / SO to decide what to issue or sell. Shared stock is not a guarantee that every order can be filled.</div>${partsRequirementsTable(rows)}`;
+    $('modalSave').textContent='Close';$('modalSave').onclick=closeModal;$('modal').style.display='flex';
+    bindPartsRequirements($('modalBody'),rows);
+    return true;
+  } catch(error) {
+    alert('Goods Receipt is saved, but pending issuance review could not load. Do not receive again. Open Sales & Billing > Parts Requirements to review.\n\n'+(error.message||error));
+  }
 }
 
 function buildSalesPartsToOrderRows(orders, lines, products) {

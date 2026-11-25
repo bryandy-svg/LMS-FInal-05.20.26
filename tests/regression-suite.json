@@ -155,5 +155,6 @@
   "work-order-save-close",
   "inventory-count-bin-filter",
   "equipment-history-scoped",
-  "outside-fleet-details"
+  "outside-fleet-details",
+  "parts-requirements"
 ]
