@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict'),vm=require('node:vm'),{functions,source}=require('../source.cjs');
+(async()=>{const ctx={};vm.createContext(ctx);vm.runInContext(functions(['isOpenWorkOrder','buildPartsRequirementRows']),ctx);
+const products=[{id:'p',sku:'P1',qty:5,name:'Part'}];
+const orders=[{id:'s1',order_no:'SO1',order_date:'2026-11-02',status:'Reserved',jobsite_location:'Job'},{id:'void',status:'Void'}];
+const lines=[{id:'l',order_id:'s1',product_id:'p',qty:6,issued_qty:3,shipped_qty:1},{order_id:'void',product_id:'p',qty:100}];
+const wos=[{id:'w',wo_no:'W1',wo_date:'2026-11-01',status:'Open'},{id:'closed',status:'Closed'}];
+const parts=[{id:'wp',wo_id:'w',product_id:'p',qty_needed:4,accepted_qty:1,status:'Shortage'},{wo_id:'closed',product_id:'p',qty_needed:100},{wo_id:'w',product_id:'p',qty_needed:100,status:'Cancelled'},{wo_id:'w',product_id:'p',qty_needed:2,accepted_qty:2,status:'Accepted'}];
+const rows=ctx.buildPartsRequirementRows(orders,lines,wos,parts,products);assert.equal(rows.length,2);assert.equal(rows[0].pending,3);assert.equal(rows[0].available,3);assert.equal(rows[0].shortage,0);assert.equal(rows[1].pending,5);assert.equal(rows[1].reserved,2);assert.equal(rows[1].available,2);assert.equal(rows[1].shortage,3);assert.equal(rows[1].jobsite,'Job');assert.equal(rows.reduce((n,r)=>n+r.available,0),5);
+const overbooked=ctx.buildPartsRequirementRows(orders,[{...lines[0],issued_qty:10,qty:10}],[],[],[{...products[0],qty:1}]);assert.equal(overbooked[0].available,1);assert.equal(overbooked[0].shortage,8);
+products[0].qty=0;assert.equal(ctx.buildPartsRequirementRows([],[],wos,parts,products)[0].shortage,3);
+assert.equal(ctx.buildPartsRequirementRows([],[],wos,[{id:'missing',wo_id:'w',qty_needed:1,status:'Requested'}],[])[0].status,'Select part');
+const calls=[];Object.assign(ctx,{canAccess:()=>true,salesDeliveryRows:async(t,k,ids)=>{calls.push([t,k,ids]);return t==='products'?products:t==='sales_order_lines'?lines.slice(0,1):t==='work_order_parts'?parts.slice(0,1):t==='sales_orders'?orders:wos;}});vm.runInContext(functions(['loadPartsRequirements']),ctx);const scoped=await ctx.loadPartsRequirements([{product_id:'p',sku:'P1'}]);assert.equal(scoped.length,2);assert(calls.filter(c=>c[1]==='product_id').every(c=>JSON.stringify(c[2])==='["p"]'));
+const save=functions(['saveGoodsReceiptModalOnce']);assert(save.indexOf('acceptReceivedWorkOrderParts(po, receiptRows)')<save.indexOf('notifyReceivedPartsRequirements(receiptRows)'));assert(save.indexOf('postGoodsReceiptLedger(receiptRows)')<save.indexOf('notifyReceivedPartsRequirements(receiptRows)'));
+console.log('Combined shortages share stock, respect reservations/partial completion, exclude terminal rows, and preserve automatic receipt issuance');})().catch(e=>{console.error(e);process.exit(1)});
