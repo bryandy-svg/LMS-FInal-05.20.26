@@ -20976,6 +20976,14 @@ async function quickCreateSalesCustomer(order) {
   }
 }
 
+function salesOrderSavePeriodError(record, existing) {
+  const historical = existing?.id && isLockedAccountingDate(existing.order_date);
+  if (historical && String(record.order_date || '') !== String(existing.order_date || '')) return 'Keep the original sales-order date for this closed-period order. Use an open posting date for new deliveries, invoices, or deposits.';
+  if (!isLockedAccountingDate(record.order_date)) return '';
+  if (historical && record.order_no === existing.order_no && salesOrderCanEdit(existing) && !salesOrderAccountingReady(existing) && !salesOrderAccountingReady(record)) return '';
+  return 'This sales-order date is inside the closed accounting period. Only pending operational updates to an existing order can retain that date.';
+}
+
 async function saveSalesOrderModal({ keepOpen = false } = {}) {
   const record = {};
   document.querySelectorAll("[data-product-field]").forEach((el) => record[el.dataset.productField] = el.value || null);
@@ -21046,7 +21054,9 @@ async function saveSalesOrderModal({ keepOpen = false } = {}) {
     line.issued_qty = shipped + Math.min(remainingOrder, available);
     line.wo_no = record.work_order_no || null;
   });
-  if (isLockedAccountingDate(record.order_date)) return alert("This sales-order date is inside the closed accounting period.");
+  const periodError = salesOrderSavePeriodError(record, editing);
+  if (periodError) return alert(periodError);
+  if (record.deposit_amount > 0 && !editing?.deposit_invoice_no && isLockedAccountingDate($("salesOrderDepositDate")?.value || record.order_date)) return alert("The deposit date is inside the closed accounting period. Choose the actual payment date in an open period before saving.");
   const duplicateOrder = (currentRows || []).find((row) => row.order_no === record.order_no && row.id !== editing?.id);
   if (duplicateOrder) return alert(`Sales order ${record.order_no} already exists.`);
   const duplicateCustomerPo = record.customer_po && (currentRows || []).find((row) => row.id !== editing?.id
@@ -21497,6 +21507,11 @@ async function requireSalesAccountingAccounts() {
 
 async function syncSalesOrderInitialAccounting(order, lines, products = [], options = {}) {
   if (!order?.order_no) return;
+  // Operational changes to historical backorders must never rewrite closed-period journals.
+  if (isLockedAccountingDate(order.order_date)) {
+    if (salesOrderAccountingReady(order)) throw new Error("This sales order date is inside the closed accounting period. Post delivery or invoicing using an open posting date.");
+    return;
+  }
   await supabase.from("general_ledger").delete().eq("reference", order.order_no).eq("source", "Sales Order");
   if (String(order.work_order_no || "").trim()) {
     await supabase.from("general_ledger").delete().eq("reference", order.order_no).eq("source", "Sales Fulfillment");
